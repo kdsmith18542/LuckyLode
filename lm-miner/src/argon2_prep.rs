@@ -18,7 +18,7 @@
 //! NOTE: written but not yet compiled (grind window). Verify with
 //! `cargo test -p lm-miner argon2_prep` before GPU work starts.
 
-use blake2::digest::VariableOutput;
+use blake2::digest::{Update, VariableOutput};
 use blake2::{Blake2b512, Blake2bVar, Digest};
 
 /// Argon2 parameters, frozen by doc 05.
@@ -90,7 +90,9 @@ pub fn h0(seed: &[u8], salt: &[u8], ad: &[u8]) -> [u8; 64] {
     d.update(0u32.to_le_bytes()); // no secret
     d.update((ad.len() as u32).to_le_bytes());
     d.update(ad);
-    d.finalize().into()
+    let mut out = [0u8; 64];
+    out.copy_from_slice(&d.finalize());
+    out
 }
 
 /// The two initial blocks per lane: `blake2b_long(H0 || LE32(i) || LE32(l))`.
@@ -130,19 +132,49 @@ fn blamka_step(a: &mut u64, b: &mut u64, c: &mut u64, d: &mut u64) {
     *b = (*b ^ *c).rotate_right(63);
 }
 
-fn permute16(v: [&mut u64; 16]) {
-    let [v0, v1, v2, v3, v4, v5, v6, v7, v8, v9, v10, v11, v12, v13, v14, v15] = v;
-    blamka_step(v0, v4, v8, v12);
-    blamka_step(v1, v5, v9, v13);
-    blamka_step(v2, v6, v10, v14);
-    blamka_step(v3, v7, v11, v15);
-    blamka_step(v0, v5, v10, v15);
-    blamka_step(v1, v6, v11, v12);
-    blamka_step(v2, v7, v8, v13);
-    blamka_step(v3, v4, v9, v14);
+/// Permute 16 words. Takes and returns the array by value: Rust's borrow
+/// checker rejects simultaneous `&mut v[i]` borrows (even at constant
+/// indices), so the words are moved into 16 named locals, permuted, and
+/// moved back — the compile-safe equivalent of the kernel's pointer
+/// indexing, bit-identical by construction.
+fn permute16(mut v: [u64; 16]) -> [u64; 16] {
+    let (mut v0, mut v1, mut v2, mut v3) = (v[0], v[1], v[2], v[3]);
+    let (mut v4, mut v5, mut v6, mut v7) = (v[4], v[5], v[6], v[7]);
+    let (mut v8, mut v9, mut v10, mut v11) = (v[8], v[9], v[10], v[11]);
+    let (mut v12, mut v13, mut v14, mut v15) = (v[12], v[13], v[14], v[15]);
+    blamka_step(&mut v0, &mut v4, &mut v8, &mut v12);
+    blamka_step(&mut v1, &mut v5, &mut v9, &mut v13);
+    blamka_step(&mut v2, &mut v6, &mut v10, &mut v14);
+    blamka_step(&mut v3, &mut v7, &mut v11, &mut v15);
+    blamka_step(&mut v0, &mut v5, &mut v10, &mut v15);
+    blamka_step(&mut v1, &mut v6, &mut v11, &mut v12);
+    blamka_step(&mut v2, &mut v7, &mut v8, &mut v13);
+    blamka_step(&mut v3, &mut v4, &mut v9, &mut v14);
+    v[0] = v0;
+    v[1] = v1;
+    v[2] = v2;
+    v[3] = v3;
+    v[4] = v4;
+    v[5] = v5;
+    v[6] = v6;
+    v[7] = v7;
+    v[8] = v8;
+    v[9] = v9;
+    v[10] = v10;
+    v[11] = v11;
+    v[12] = v12;
+    v[13] = v13;
+    v[14] = v14;
+    v[15] = v15;
+    v
 }
 
 /// Argon2 compression G: `P(prev ^ ref) ^ (prev ^ ref)`.
+///
+/// The 16 words of each round are copied into locals before permuting:
+/// Rust's borrow checker rejects 16 simultaneous `&mut q[i]` borrows, and
+/// the locals pattern is the compile-safe equivalent of the kernel's
+/// pointer indexing (bit-identical result).
 fn compress(prev: &[u64; BLOCK_WORDS], reference: &[u64; BLOCK_WORDS]) -> [u64; BLOCK_WORDS] {
     let mut r = [0u64; BLOCK_WORDS];
     for i in 0..BLOCK_WORDS {
@@ -151,45 +183,39 @@ fn compress(prev: &[u64; BLOCK_WORDS], reference: &[u64; BLOCK_WORDS]) -> [u64; 
     let mut q = r;
     for row in 0..8 {
         let b = row * 16;
-        permute16([
-            &mut q[b],
-            &mut q[b + 1],
-            &mut q[b + 2],
-            &mut q[b + 3],
-            &mut q[b + 4],
-            &mut q[b + 5],
-            &mut q[b + 6],
-            &mut q[b + 7],
-            &mut q[b + 8],
-            &mut q[b + 9],
-            &mut q[b + 10],
-            &mut q[b + 11],
-            &mut q[b + 12],
-            &mut q[b + 13],
-            &mut q[b + 14],
-            &mut q[b + 15],
-        ]);
+        let mut v = [0u64; 16];
+        v.copy_from_slice(&q[b..b + 16]);
+        let v = permute16(v);
+        q[b..b + 16].copy_from_slice(&v);
     }
     for col in 0..8 {
         let b = col * 2;
-        permute16([
-            &mut q[b],
-            &mut q[b + 1],
-            &mut q[b + 16],
-            &mut q[b + 17],
-            &mut q[b + 32],
-            &mut q[b + 33],
-            &mut q[b + 48],
-            &mut q[b + 49],
-            &mut q[b + 64],
-            &mut q[b + 65],
-            &mut q[b + 80],
-            &mut q[b + 81],
-            &mut q[b + 96],
-            &mut q[b + 97],
-            &mut q[b + 112],
-            &mut q[b + 113],
-        ]);
+        let mut v = [0u64; 16];
+        let idx = [
+            b,
+            b + 1,
+            b + 16,
+            b + 17,
+            b + 32,
+            b + 33,
+            b + 48,
+            b + 49,
+            b + 64,
+            b + 65,
+            b + 80,
+            b + 81,
+            b + 96,
+            b + 97,
+            b + 112,
+            b + 113,
+        ];
+        for (k, &i) in idx.iter().enumerate() {
+            v[k] = q[i];
+        }
+        let v = permute16(v);
+        for (k, &i) in idx.iter().enumerate() {
+            q[i] = v[k];
+        }
     }
     for i in 0..BLOCK_WORDS {
         q[i] ^= r[i];
