@@ -1,7 +1,8 @@
 # Lucky Lode — Plan Index
 
 **Name:** Lucky Lode — decided 2026-10-11; primary domain `luckylode.cc`
-(register on sight). **Docs renamed to Lucky Lode 2026-10-11.** Remaining
+**registered 2026-10-11** (RDAP-verified, expires 2027-10-11).
+**Docs renamed to Lucky Lode 2026-10-11.** Remaining
 legacy identifiers, kept deliberately: crate names `lm-*` and the wire
 profile string `lowmine/1` (rename deferred to rebrand execution), and the
 **frozen consensus strings** `LMv1` / `lowmine-pow/v1` — those never
