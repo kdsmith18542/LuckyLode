@@ -17,36 +17,36 @@ designed as a game you keep playing, not a chore you automate and forget.
 
 ## Docs
 
-- [`01-thesis-and-positioning.md`](01-thesis-and-positioning.md) — why this
+- [`01-thesis-and-positioning.md`](docs/01-thesis-and-positioning.md) — why this
   niche is open, who it's for, what killed the predecessors.
-- [`02-technical-stack.md`](02-technical-stack.md) — fork-Verus analysis,
+- [`02-technical-stack.md`](docs/02-technical-stack.md) — fork-Verus analysis,
   algorithm strategy, modular modern stack (what to keep, what to rewrite,
   what language where).
-- [`03-fun-and-retention.md`](03-fun-and-retention.md) — the excitement
+- [`03-fun-and-retention.md`](docs/03-fun-and-retention.md) — the excitement
   layer: lottery blocks, device-class leagues, streaks, seasons, badges, and
   the anti-fade engine. This is the core differentiator — read it first
   after the thesis.
-- [`04-economics-launch-roadmap.md`](04-economics-launch-roadmap.md) —
+- [`04-economics-launch-roadmap.md`](docs/04-economics-launch-roadmap.md) —
   emission (incl. tail), dev funding without breaking fair-launch trust,
   launch sequence, phased roadmap, and honest risks (botnets, league
   spoofing, app-store policy, ASICs).
-- [`05-pow-algorithm.md`](05-pow-algorithm.md) — **EmberHash v1**: the
+- [`05-pow-algorithm.md`](docs/05-pow-algorithm.md) — **EmberHash v1**: the
   custom low-end-hardware PoW, FROZEN rev 1.0 with real test vectors,
   difficulty rules, fairness posture, and mainnet gates.
-- [`06-jackpot-lottery.md`](06-jackpot-lottery.md) — jackpot blocks (~1%,
+- [`06-jackpot-lottery.md`](docs/06-jackpot-lottery.md) — jackpot blocks (~1%,
   PoW-hash-as-ticket, expectation-neutral, progressive pool splits),
   FROZEN rev 1.0 with testnet gates.
-- [`07-android-miner.md`](07-android-miner.md) — Android app + frozen
+- [`07-android-miner.md`](docs/07-android-miner.md) — Android app + frozen
   thermal/power scheduler policy (hysteresis, derate, overnight mode),
   iOS companion scope, platform risks.
-- [`09-gpu-posture.md`](09-gpu-posture.md) — GPU policy (tunable, not
+- [`09-gpu-posture.md`](docs/09-gpu-posture.md) — GPU policy (tunable, not
   spec): 10× tripwire vs best low-end box, pre-committed `m_cost`→4 MiB
   first lever, measurement cadence, explicit non-triggers.
-- [`11-transactions-and-staking.md`](11-transactions-and-staking.md) —
+- [`11-transactions-and-staking.md`](docs/11-transactions-and-staking.md) —
   design: cheap/fast/anon transaction posture (honest finality), why
   classic masternodes are redundant here, and two PoS extensions (season
   stakes now, keeper nodes later).
-- [`12-network-as-game.md`](12-network-as-game.md) — deep design: the
+- [`12-network-as-game.md`](docs/12-network-as-game.md) — deep design: the
   network as a game under one law (variance-dressed labor, never
   wagering), mechanic catalog (fee-rebate lottery, bingo, stake draws,
   near-miss feed), funding conservation table, stake-bonded keeper tie-in,
