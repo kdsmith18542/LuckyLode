@@ -1,4 +1,4 @@
-# Lucky Lode — Plan Index
+# Lucky Lode — Design Docs & Reference Code
 
 **Name:** Lucky Lode — decided 2026-10-11; primary domain `luckylode.cc`
 **registered 2026-10-11** (RDAP-verified, expires 2027-10-11).
