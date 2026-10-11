@@ -70,9 +70,15 @@ impl NodeProvider {
     }
 
     fn refresh(&self) {
-        let mut st = self.state.lock().expect("state");
-        if st.fetched_at.elapsed() < REFRESH_INTERVAL {
-            return;
+        // Check due-ness under the lock, then release it for the RPC: a
+        // slow node must not block every connection thread's `current()`
+        // (audit fix — the lock used to be held across the HTTP call).
+        // Concurrent refreshes are benign: both fetch, last write wins.
+        {
+            let st = self.state.lock().expect("state");
+            if st.fetched_at.elapsed() < REFRESH_INTERVAL {
+                return;
+            }
         }
         match self
             .rpc
@@ -80,6 +86,7 @@ impl NodeProvider {
             .and_then(|gbt| parse_gbt(&gbt))
         {
             Ok((tpl, txs)) => {
+                let mut st = self.state.lock().expect("state");
                 st.template = tpl;
                 st.txs = txs;
                 st.fetched_at = Instant::now();
@@ -87,6 +94,7 @@ impl NodeProvider {
             Err(_) => {
                 // Keep serving the last known template; the chain may just
                 // be busy. Polling resumes on the next tick.
+                let mut st = self.state.lock().expect("state");
                 st.fetched_at = Instant::now() - REFRESH_INTERVAL + Duration::from_millis(200);
             }
         }
