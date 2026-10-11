@@ -304,3 +304,70 @@ the Season-1 prize set → doc 06 rev 1.1 (table, reserve resize, gates) →
 consensus only after review. The `lm-rewards::luck` module is the seed of
 that revision's executable spec.
 
+
+## 12.11 Lucky events calendar (designed 2026-10-11)
+
+**Principle: events amplify existing systems; they never add new ones.** Every
+event ships with a published budget cap *before* it runs, explicit funding
+from a named pool, the §12.1 no-wager law untouched, a kill-switch, and a
+four-week retention read. If it doesn't move engagement, it retires — no
+zombie mechanics.
+
+### A. Amplification events (boost what already exists)
+
+- **Lucky Hours** — 2–4 h windows where luck-table thresholds tighten
+  (e.g. mythic 1/100k → 1/25k). The odds delta is an explicit cost paid
+  from the league pool; calendar public in advance; 1–2 per week max.
+- **Seasonal luck tables** — each season reshapes the class mix *inside the
+  same levy envelope* (winter boosts aurora; summer adds a "meteor shower"
+  class). Seasons feel mechanically different without changing total
+  expectation. Re-audited each season.
+- **Double-rebate nights** — tx rider-rebate multiplier for the window,
+  funded from the rebate budget. Rewards using the network during events
+  (the doc 12 §12.3 core hook), still zero fee→odds selling.
+
+### B. Milestone events (community-wide, threshold-triggered)
+
+- **Rain** — when a public threshold is hit (block height, miner count,
+  wallet count), a fixed league-pool budget drops across recent active
+  miners by PPLNS weight. Announced in advance; one-time per threshold.
+- **Eclipse blocks** — every N blocks (e.g. 10 000), one scheduled block's
+  draw splits across the top contributors of its PPLNS window instead of a
+  single finder. Group spectacle: everyone's watching the same block.
+  Fully visible in the calendar beforehand.
+
+### C. Community/social events (low prize value, high cheer)
+
+- **So-Close prize** — weekly: the block *closest* to a mythic (without
+  hitting) wins a small consolation from the league pool. Manufactures
+  near-miss drama from real data (§12.3.2).
+- **Tip roulette nights** — faucet-funded random tips to online league
+  members (already catalogued); runs as event nights.
+- **Ghost replay matinees** — scheduled replays of the week's near-blocks
+  and mythic hits as animated artifacts.
+- **Bingo season cards** — per-season cards, rows pay from league pool.
+- **Stake-uptime draws** — weekly draw among stakers with uninterrupted
+  attested uptime (doc 11 §11.6 Direction B tie-in; the mine→stake→play loop).
+- **Keeper-notarized draws** — when keeper nodes exist (doc 11 Direction A,
+  P3+), *all event draws* get cosigned notarization so any player can
+  verify the game ran honestly. Keepers never custody, never lift odds.
+
+### Cadence guardrails (anti-bloat, the part that protects the fun)
+
+1. **One headline event at a time, ever.** Boosts never stack; a block is
+   never under two odds multipliers at once.
+2. **Marquee ≤ 1 per season; weekly slots rotate** between Lucky Hours,
+   So-Close, and stake draws.
+3. Every event = cap + cost + kill-switch + 4-week metric, on the
+   dashboard (doc 04 §4.2 discipline applied to fun money).
+4. Ledger of record: all settlements flow from the league pool
+   (`lm-pool`) or rebate/faucet budgets; consensus-covered prizes auto-pay,
+   off-chain prizes claim-and-expire (§12.10). **No event ever touches
+   player principal.**
+
+### Rejected by the law (for the record)
+
+Buy-in tournaments, paid spins, wager-backed pots, prediction markets,
+ad-hoc random-recipient drops, odds-for-fees (§12.10 fee wall), anything
+with a rake. Also rejected: stacking events to manufacture hype — the
+calendar's scarcity is what keeps any single event special.
