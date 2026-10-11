@@ -1,0 +1,9 @@
+# Rust build artifacts (regenerate via `cargo test --workspace` at repo root)
+target/
+lm-pow/target/
+lm-rewards/target/
+lm-sched/target/
+
+# Verus fork working tree — lives in its own repository (fork of VerusCoin),
+# branch `lowmine-pow-eval`. Tracked separately, never inside this repo.
+verus/

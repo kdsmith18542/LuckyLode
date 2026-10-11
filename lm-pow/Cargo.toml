@@ -1,0 +1,20 @@
+[package]
+name = "lm-pow"
+version = "0.1.0"
+edition = "2021"
+description = "Reference implementation of EmberHash v1 (lowmine PoW, doc 05)"
+license = "GPL-3.0-only"
+# Vendored deps in the fork tree (BLAKE3, Argon2) retain their own licenses.
+
+[dependencies]
+argon2 = "0.6.0"
+blake3 = "1.8.7"
+primitive-types = "0.14.0"
+
+[dev-dependencies]
+criterion = "0.5"
+hex = "0.4.3"
+
+[[bench]]
+name = "pow"
+harness = false

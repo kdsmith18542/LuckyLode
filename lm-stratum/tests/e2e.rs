@@ -1,0 +1,124 @@
+//! Testnet-in-a-box: real TCP, real hashes, real money rules.
+//!
+//! Spins up the reference pool on a mock instant-block chain, drives it with
+//! the blocking client, and asserts the whole path: subscribe → authorize →
+//! job → grind → submit → share → block → reserve levy → jackpot split →
+//! ledger + reconciliation. No mocks past the chain itself.
+
+use lm_pow::{is_jackpot, meets_target, pow_hash};
+use lm_stratum::client::PoolClient;
+use lm_stratum::provider::MockProvider;
+use lm_stratum::server::spawn_server;
+use lm_stratum::v1::worker_id;
+use primitive_types::U256;
+use std::time::Duration;
+
+const BASE: u64 = 1_000_000;
+const LEVY: u64 = 50_000; // 5% of BASE
+
+fn grind_share(header: &[u8], height: u64, target: &[u8; 32]) -> (u64, [u8; 32]) {
+    for n in 0..10_000u64 {
+        let out = pow_hash(header, n, height);
+        if meets_target(&out, target) {
+            return (n, out);
+        }
+    }
+    panic!("no share in 10k nonces against pool target");
+}
+
+fn grind_jackpot(header: &[u8], height: u64, net: &[u8; 32]) -> u64 {
+    let t = U256::from_big_endian(net);
+    for n in 0..10_000u64 {
+        if is_jackpot(&pow_hash(header, n, height), t) {
+            return n;
+        }
+    }
+    panic!("no jackpot nonce in 10k tries at 1% odds (p ≈ 0)");
+}
+
+#[test]
+fn full_loop_share_block_jackpot_and_money() {
+    let server = spawn_server(MockProvider::instant(BASE), "127.0.0.1:0").expect("bind");
+    let mut c = PoolClient::connect(server.addr()).expect("connect");
+    assert!(c.subscribe("lm-miner/0.1").expect("subscribe"));
+    assert!(c.authorize("alice").expect("authorize"));
+    let alice = worker_id("alice");
+
+    // First job + first share (also the first block on the instant chain).
+    let job = c.read_job(Duration::from_secs(5)).expect("io").expect("job");
+    assert_eq!(job.height, 1);
+    let (n, _) = grind_share(&job.header, job.height, &job.pool_target);
+    let (ok, err) = c.submit("alice", &job.id, n).expect("submit");
+    assert!(ok, "first share rejected: {err:?}");
+    assert_eq!(server.chain_blocks(), 1);
+    assert_eq!(server.chain_height(), 2);
+
+    // Immediate replay is a duplicate, not a second share.
+    let (ok, err) = c.submit("alice", &job.id, n).expect("resubmit");
+    assert!(!ok);
+    assert_eq!(err.map(|(code, _)| code), Some(21));
+    assert_eq!(server.stats().shares, 1);
+
+    // Unknown job id is rejected distinctly from stale/dupes.
+    let (ok, err) = c.submit("alice", "deadbeef", 0).expect("submit");
+    assert!(!ok);
+    assert_eq!(err.map(|(code, _)| code), Some(23));
+
+    // Fresh job at the new height; grind a real jackpot nonce for it.
+    let job2 = c.read_job(Duration::from_secs(5)).expect("io").expect("job2");
+    assert_eq!(job2.height, 2);
+    let jn = grind_jackpot(&job2.header, job2.height, &job2.net_target);
+    let (ok, err) = c.submit("alice", &job2.id, jn).expect("jackpot submit");
+    assert!(ok, "jackpot share rejected: {err:?}");
+
+    // The block record carries a real bonus split over the PPLNS window.
+    let blocks = server.blocks();
+    assert_eq!(blocks.len(), 2);
+    let last = blocks.last().expect("jackpot record");
+    assert_eq!(last.finder, alice);
+    assert!(last.bonus > 0, "reserve held prior levies — bonus must pay");
+    assert_eq!(last.payouts.iter().map(|(_, p)| p).sum::<u64>(), last.bonus);
+
+    // Whole-pool money reconciliation: every levied unit is bonus paid,
+    // reserve held, or league overflow — nothing created or destroyed.
+    let bonus_total: u64 = blocks.iter().map(|b| b.bonus).sum();
+    let levied = server.chain_blocks() * LEVY;
+    assert_eq!(levied, bonus_total + server.reserve() + server.league_balance());
+
+    // The ledger saw alice's work and ranks her.
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let agg = server.aggregate(30 * 86_400, now);
+    assert_eq!(agg.len(), 1);
+    assert_eq!(agg[0].miner, alice);
+    assert!(agg[0].raw_work >= 2);
+
+    server.stop();
+}
+
+#[test]
+fn protocol_edges_are_typed() {
+    let server = spawn_server(MockProvider::instant(BASE), "127.0.0.1:0").expect("bind");
+    let mut c = PoolClient::connect(server.addr()).expect("connect");
+
+    // Garbage line → JSON-RPC parse error, connection survives.
+    let m = c.raw("{not json").expect("raw");
+    let err = m.error.expect("error tuple");
+    assert_eq!(err.as_array().expect("array")[0], -32700);
+    assert!(c.subscribe("probe").expect("subscribe after garbage"));
+
+    // Unknown method → -32601.
+    let m = c.raw(r#"{"id":9,"method":"mining.nope","params":[]}"#).expect("raw");
+    assert_eq!(m.error.expect("e").as_array().expect("a")[0], -32601);
+
+    // Submit before authorize → rejected, not recorded.
+    let m = c
+        .raw(r#"{"id":10,"method":"mining.submit","params":["bob","j","0000000000000000"]}"#)
+        .expect("raw");
+    assert_eq!(m.error.expect("e").as_array().expect("a")[0], -32600);
+    assert_eq!(server.stats().shares, 0);
+
+    server.stop();
+}

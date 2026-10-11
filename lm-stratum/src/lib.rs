@@ -1,0 +1,17 @@
+//! Reference pool wire layer (lowmine): Stratum V1 framing with the
+//! Lowmine job profile, a mock-chain template provider, a threaded TCP pool
+//! server, and a blocking client.
+//!
+//! - [`v1`]: protocol types, job registry, share evaluation, JSON-RPC shapes.
+//! - [`provider`]: [`provider::TemplateProvider`] seam + [`provider::MockProvider`].
+//! - [`server`]: [`server::spawn_server`] — testnet-in-a-box reference pool.
+//! - [`client`]: blocking client for tooling and the e2e suite.
+//!
+//! Production path (doc 02 §2.3): Stratum V2 replaces `v1` framing; the
+//! provider seam, ledger wiring, and money rules carry over unchanged.
+
+pub mod client;
+pub mod provider;
+pub mod server;
+pub mod v1;
+pub mod vardiff;

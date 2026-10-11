@@ -1,0 +1,3 @@
+[workspace]
+members = ["lm-pow", "lm-rewards", "lm-sched", "lm-miner", "lm-pool", "lm-stratum"]
+resolver = "2"
