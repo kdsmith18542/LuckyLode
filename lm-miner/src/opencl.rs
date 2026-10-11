@@ -132,6 +132,7 @@ const CL_DEVICE_TYPE_GPU: u64 = 1 << 2;
 const CL_DEVICE_TYPE_ALL: u64 = 0xFFFF_FFFF;
 const CL_MEM_READ_ONLY: u64 = 1 << 0;
 const CL_MEM_WRITE_ONLY: u64 = 1 << 1;
+const CL_MEM_READ_WRITE: u64 = 1 << 2;
 const CL_DEVICE_NAME: u32 = 0x102B;
 const CL_PROGRAM_BUILD_LOG: u32 = 0x1183;
 const CL_TRUE: u32 = 1;
@@ -152,6 +153,13 @@ pub struct GpuDevice {
     kernel: *mut c_void,
     device: *mut c_void,
     name: String,
+}
+
+impl GpuDevice {
+    /// Raw cl_device_id (for future queries/telemetry).
+    pub fn raw_device(&self) -> *mut c_void {
+        self.device
+    }
 }
 
 // OpenCL handles are context-bound and this type is used from one thread.
