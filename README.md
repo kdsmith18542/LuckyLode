@@ -80,8 +80,9 @@ overnight weights, device-class leagues, PPLNS ledger, jackpot + league
 payouts, leaderboard; docs 03, 06);
 [`lm-stratum/`](lm-stratum/) — reference pool wire layer (Stratum V1 framing
 + Lucky Lode job profile, mock-chain template provider with real jackpot/money
-rules, threaded server + `pool_server` binary + client; testnet-in-a-box,
-Stratum V2 tracked).
+rules, threaded server + `pool_server` binary + client; **real-node
+provider verified live** (getblocktemplate/submitblock, blocks mined
+through the pool on regtest); Stratum V2 tracked).
 
 ```sh
 cargo test --workspace   # all 100 tests across the six crates
