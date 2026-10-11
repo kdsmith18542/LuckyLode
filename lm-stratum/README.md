@@ -7,9 +7,13 @@ the *real* money rules. No async runtime — std threads only.
 - `v1` — protocol types, job registry (4-job window), pure share
   evaluation (accept/stale/dupe/low-diff/unknown-job/bad-nonce with typed
   reject codes 20–24), JSON-RPC shapes, worker→id mapping (FNV-1a).
-- `provider` — `TemplateProvider` seam (the forked node implements this
-  over its RPC in P1) + `MockProvider`: real EmberHash verification, real
-  `T/100` jackpot trigger, real levy/bonus/cap machine, height advance.
+- `provider` — `TemplateProvider` seam + `MockProvider`: real EmberHash
+  verification, real `T/100` jackpot trigger, real levy/bonus/cap machine,
+  height advance.
+- `rpc` — std-only HTTP JSON-RPC client (no async runtime, no HTTP deps).
+- `node_provider` — the production provider: `getblocktemplate` → jobs,
+  `submitblock` → chain. Verified live 2026-10-11 against the forked node
+  (regtest, EmberHash): two pool-mined shares became blocks 5 and 6.
 - `server` — `spawn_server(provider, "127.0.0.1:0")`: per-connection
   threads, per-connection **vardiff** (20 s/share target, 8-share window,
   4×-clamped steps, conn-local jobs at `clean=false`), job broadcast on
