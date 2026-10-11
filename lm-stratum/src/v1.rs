@@ -1,4 +1,4 @@
-//! Stratum V1 message layer with the Lowmine job profile (`lowmine/1`).
+//! Stratum V1 message layer with the Lucky Lode job profile (`lowmine/1`).
 //!
 //! Framing is classic Stratum V1 (newline-delimited JSON-RPC over TCP:
 //! `mining.subscribe`, `mining.authorize`, `mining.notify`, `mining.submit`)

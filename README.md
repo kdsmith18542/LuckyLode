@@ -1,8 +1,11 @@
-# Lucky Lode (working title: Lowmine) — Plan Index
+# Lucky Lode — Plan Index
 
 **Name:** Lucky Lode — decided 2026-10-11; primary domain `luckylode.cc`
-(free at decision; register on sight). Repo strings still say "Lowmine"
-until the rebrand checklist (doc 04 §4.3) executes.
+(register on sight). **Docs renamed to Lucky Lode 2026-10-11.** Remaining
+legacy identifiers, kept deliberately: crate names `lm-*` and the wire
+profile string `lowmine/1` (rename deferred to rebrand execution), and the
+**frozen consensus strings** `LMv1` / `lowmine-pow/v1` — those never
+change; they are construction identifiers, not branding (doc 05).
 
 **One-liner:** a fair-launch, CPU/ARM-first mineable coin for the hardware
 people already own — phones, miniPCs, laptops old and new — with mining
@@ -99,7 +102,7 @@ pool client tracked as follow-up);
 overnight weights, device-class leagues, PPLNS ledger, jackpot + league
 payouts, leaderboard; docs 03, 06);
 [`lm-stratum/`](lm-stratum/) — reference pool wire layer (Stratum V1 framing
-+ Lowmine job profile, mock-chain template provider with real jackpot/money
++ Lucky Lode job profile, mock-chain template provider with real jackpot/money
 rules, threaded server + `pool_server` binary + client; testnet-in-a-box,
 Stratum V2 tracked).
 

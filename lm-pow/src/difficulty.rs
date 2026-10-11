@@ -1,5 +1,5 @@
 //! Difficulty: exact integer LWMA retarget + Bitcoin-compatible `nBits`
-//! (lowmine doc 05 §5.3 rev 1.1). No floats anywhere — byte-identical
+//! (Lucky Lode doc 05 §5.3 rev 1.1). No floats anywhere — byte-identical
 //! results on every architecture are a consensus requirement.
 
 use primitive_types::{U256, U512};
@@ -73,7 +73,7 @@ pub fn target_to_compact(target: U256) -> u32 {
 }
 
 /// Jackpot odds divisor: a block is a jackpot iff `out < floor(T / 100)`
-/// (lowmine doc 06 §6.1 — ~1% of blocks, the PoW hash is the ticket).
+/// (Lucky Lode doc 06 §6.1 — ~1% of blocks, the PoW hash is the ticket).
 pub const JACKPOT_ODDS: u64 = 100;
 
 /// Jackpot threshold for a block target: exact integer `floor(T / 100)`.

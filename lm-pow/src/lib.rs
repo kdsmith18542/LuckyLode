@@ -1,4 +1,4 @@
-//! `lm-pow`: reference implementation of **EmberHash v1**, the Lowmine
+//! `lm-pow`: reference implementation of **EmberHash v1**, the Lucky Lode
 //! proof-of-work (frozen spec: `../05-pow-algorithm.md` rev 1.0).
 //!
 //! Construction:

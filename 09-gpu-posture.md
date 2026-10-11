@@ -19,7 +19,7 @@ they're built for. Estimated steady state: ~25 H/s/W (phone big core),
 ~45 H/s/W (desktop thread), ~350 H/s/W (midrange GPU) — roughly a 10× edge
 over low-end hardware. The footprint that causes this is the same footprint
 that lets decade-old phones and 512 MB boards mine at all. That trade is the
-project's identity (Lowmine, not phonecoin, not GPU-coin): inclusion first,
+project's identity (Lucky Lode, not phonecoin, not GPU-coin): inclusion first,
 levers loaded.
 
 ## Tripwire (the only number that compels action)

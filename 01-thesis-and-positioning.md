@@ -44,7 +44,7 @@ should make them unwelcome or at least unadvantaged (see doc 03).
 
 ## Positioning statement (draft)
 
-> *Lowmine is the fair-launch coin mined on everyday hardware — phones,
+> *Lucky Lode is the fair-launch coin mined on everyday hardware — phones,
 > miniPCs, laptops — where small miners compete in their own leagues and
 > every block can be a lottery win. No premine, no ICO, no ASICs, no faking.*
 

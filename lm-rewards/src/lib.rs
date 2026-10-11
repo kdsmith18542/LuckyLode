@@ -1,4 +1,4 @@
-//! Reference implementation of the jackpot-bonus split (lowmine doc 06
+//! Reference implementation of the jackpot-bonus split (Lucky Lode doc 06
 //! §6.3): sub-linear (sqrt) weights, per-miner cap, largest-remainder dust.
 //!
 //! Rules (frozen alongside doc 06 rev 1.0):

@@ -1,4 +1,4 @@
-//! Jackpot reserve accounting (lowmine doc 06 §6.2, frozen rev 1.0).
+//! Jackpot reserve accounting (Lucky Lode doc 06 §6.2, frozen rev 1.0).
 //!
 //! Pure, reorg-friendly state transitions: [`apply_block`] takes the reserve
 //! balance before the block and returns the balance after, so a reorg simply

@@ -1,7 +1,7 @@
 # `lm-stratum` — reference pool wire layer
 
 Testnet-in-a-box: a threaded TCP pool server speaking Stratum V1 framing
-with the Lowmine job profile (`lowmine/1`), running on a mock chain with
+with the Lucky Lode job profile (`lowmine/1`), running on a mock chain with
 the *real* money rules. No async runtime — std threads only.
 
 - `v1` — protocol types, job registry (4-job window), pure share

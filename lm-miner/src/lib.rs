@@ -1,4 +1,4 @@
-//! Reference miner core for EmberHash v1 (lowmine docs 02 §2.3, 05 §5.6).
+//! Reference miner core for EmberHash v1 (Lucky Lode docs 02 §2.3, 05 §5.6).
 //!
 //! Portable-first Rust: one Argon2id instance per thread (`p = 1` scales
 //! across threads, as Chukwa did). Two entry points:

@@ -1,4 +1,4 @@
-//! Pool-side fun-layer accounting (lowmine docs 03, 06).
+//! Pool-side fun-layer accounting (Lucky Lode docs 03, 06).
 //!
 //! - [`streak`]: uptime-streak (+1%/day to +30%), comeback (+10% × 7 days),
 //!   overnight (+5%) share weights — doc 03 §3.4.

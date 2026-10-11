@@ -1,4 +1,4 @@
-//! Thermal/power-aware mining scheduler policy (lowmine doc 07).
+//! Thermal/power-aware mining scheduler policy (Lucky Lode doc 07).
 //!
 //! Pure decision logic with no platform calls: the host app samples sensors
 //! (temperature, battery, charging, clock) and feeds [`Sample`]s here; the

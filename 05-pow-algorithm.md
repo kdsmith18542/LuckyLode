@@ -171,6 +171,11 @@ Verus fork and every external implementation agree on `header_bytes`.
 Rev 1.0's construction is untouched: this addendum defines only *what goes
 into* `header_bytes` for fork blocks. New vectors below are real outputs.
 
+**Naming note (2026-10-11):** the project was renamed **Lucky Lode**. The
+construction strings `LMv1` and `lowmine-pow/v1` predate the rename and
+are **frozen consensus identifiers** — they do not follow branding and
+never change (the KAT vectors depend on them byte-for-byte).
+
 ```text
 header_bytes (fork blocks) :=
   nVersion              u32 LE

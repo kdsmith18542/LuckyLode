@@ -1,5 +1,5 @@
-//! Reference pool wire layer (lowmine): Stratum V1 framing with the
-//! Lowmine job profile, a mock-chain template provider, a threaded TCP pool
+//! Reference pool wire layer (Lucky Lode): Stratum V1 framing with the
+//! Lucky Lode job profile, a mock-chain template provider, a threaded TCP pool
 //! server, and a blocking client.
 //!
 //! - [`v1`]: protocol types, job registry, share evaluation, JSON-RPC shapes.

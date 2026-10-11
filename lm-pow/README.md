@@ -1,6 +1,6 @@
 # `lm-pow` — EmberHash v1 reference implementation
 
-Reference (normative) implementation of the Lowmine proof-of-work, frozen
+Reference (normative) implementation of the Lucky Lode proof-of-work, frozen
 in [`../05-pow-algorithm.md`](../05-pow-algorithm.md) rev 1.0.
 
 - Library API: `pow_hash(header, nonce, height) -> [u8; 32]`,
