@@ -166,7 +166,7 @@ AD paths exercised). Any implementation disagreeing on any byte is wrong.
 
 ## Addendum A — Fork header layout (P1, does not change rev 1.0)
 
-**Status:** fixes the fork-adapter interface (decision D2 in doc 10), so the
+**Status:** fixes the fork-adapter interface, so the
 Verus fork and every external implementation agree on `header_bytes`.
 Rev 1.0's construction is untouched: this addendum defines only *what goes
 into* `header_bytes` for fork blocks. New vectors below are real outputs.
@@ -191,8 +191,7 @@ height     := validation context (CheckProofOfWork parameter; never serialized)
 
 Validity rule (fork): PoW blocks require `CPOSNonce` bytes `[8..32] == 0`
 (the nonce is exactly the u64 miners grind); PoS blocks are exempt from the
-EmberHash target check and keep full `CPOSNonce` semantics (doc 10 keep
-list). Empty solution ⇒ Length 109 for a minimal PoW header.
+EmberHash target check and keep full `CPOSNonce` semantics. Empty solution ⇒ Length 109 for a minimal PoW header.
 
 Frozen vector `A1` (doc 05 §5.4 style — full inputs in
 `lm-pow/examples/fork_vector.rs`, asserted in `lm-pow/tests/fork_layout.rs`):
@@ -206,4 +205,4 @@ out  = e491f172e0d0adcb161fb264413292bfca631fff8c390218b6cabdac6f452131
 ```
 
 Any C++ `ember_hash` port disagreeing on any byte fails the KAT gate
-(doc 10 §10.5) before review.
+before review.

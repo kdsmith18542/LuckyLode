@@ -8,13 +8,13 @@ policy, wallet, or sidecar work.
 ## 11.1 Ground truth (what the fork already gives us)
 
 - 60 s blocks (doc 05), hybrid 50/50 PoW/PoS — **now decided to keep**
-  (doc 08 Q1, decided 2026-10-11).
+  (decided 2026-10-11).
 - Verus/Zcash transaction model inherited: transparent txs + optional
   Sapling shielded txs, 2 GB-style memory considerations — but tx sizes are
   Zcash-lineage (larger than Bitcoin/Litecoin; shielded far larger).
 - Fee policy in force (doc 04 §4.1): minimal anti-spam floor, no fee burns
   at launch.
-- VerusID, PBaaS inheritance potential — kept for later (doc 08 Q2).
+- VerusID, PBaaS inheritance potential — kept for later (deferred decision).
 
 ## 11.2 "Cheap" — policy, not a promise to Litecoin parity
 

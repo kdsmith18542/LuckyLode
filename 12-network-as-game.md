@@ -104,7 +104,7 @@ Bring doc 11 §11.6 together with §12.3:
   misbehave and the bond burns; behave and the fun-layer budget pays you.
   Nobody has shipped "the game's trust anchors are stake-bonded keepers"
   as a first-class role. That is the unique thing — and it exists *because*
-  of the hybrid consensus decision (doc 08 Q1, 2026-10-11), not despite it.
+  of the hybrid consensus decision (2026-10-11), not despite it.
 
 ## 12.6 Legal & platform posture (honest, non-negotiable gates)
 
