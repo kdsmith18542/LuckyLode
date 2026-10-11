@@ -15,6 +15,8 @@
 //! thread-count control, Android JNI) are tracked follow-ups — this crate is
 //! the solo/benchmark foundation the testnet bake-off builds on.
 
+pub mod argon2_prep;
+
 use lm_pow::{meets_target, pow_hash};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;

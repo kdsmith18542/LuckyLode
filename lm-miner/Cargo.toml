@@ -6,5 +6,6 @@ description = "Reference CPU/ARM miner core for EmberHash v1 (lowmine docs 02, 0
 license = "GPL-3.0-only"
 
 [dependencies]
+blake2 = "0.10"
 lm-pow = { path = "../lm-pow" }
 lm-stratum = { path = "../lm-stratum" }
