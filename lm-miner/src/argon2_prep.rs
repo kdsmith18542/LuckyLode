@@ -42,9 +42,9 @@ pub fn blake2b_long(inputs: &[&[u8]], out_len: usize) -> Vec<u8> {
 
     if out_len <= 64 {
         let mut h = Blake2bVar::new(out_len).expect("valid len");
-        h.update(len_bytes);
-        for input in inputs {
-            h.update(input);
+        Update::update(&mut h, &len_bytes);
+        for &input in inputs {
+            Update::update(&mut h, input);
         }
         let mut out = vec![0u8; out_len];
         h.finalize_variable(&mut out).expect("valid len");
@@ -52,9 +52,9 @@ pub fn blake2b_long(inputs: &[&[u8]], out_len: usize) -> Vec<u8> {
     }
 
     let mut h = Blake2b512::new();
-    h.update(len_bytes);
-    for input in inputs {
-        h.update(input);
+    Digest::update(&mut h, len_bytes);
+    for &input in inputs {
+        Digest::update(&mut h, input);
     }
     let mut last = h.finalize().to_vec();
 
@@ -66,7 +66,7 @@ pub fn blake2b_long(inputs: &[&[u8]], out_len: usize) -> Vec<u8> {
     }
     let remaining = out_len - out.len();
     let mut hv = Blake2bVar::new(remaining).expect("<=64");
-    hv.update(&last);
+    Update::update(&mut hv, &last);
     let mut tail = vec![0u8; remaining];
     hv.finalize_variable(&mut tail).expect("<=64");
     out.extend_from_slice(&tail);
@@ -77,19 +77,19 @@ pub fn blake2b_long(inputs: &[&[u8]], out_len: usize) -> Vec<u8> {
 /// order from the reference `initial_hash`.
 pub fn h0(seed: &[u8], salt: &[u8], ad: &[u8]) -> [u8; 64] {
     let mut d = Blake2b512::new();
-    d.update(P_COST.to_le_bytes());
-    d.update(TAG_LEN.to_le_bytes());
-    d.update(M_COST.to_le_bytes());
-    d.update(T_COST.to_le_bytes());
-    d.update(VERSION.to_le_bytes());
-    d.update(ALGORITHM_ID.to_le_bytes());
-    d.update((seed.len() as u32).to_le_bytes());
-    d.update(seed);
-    d.update((salt.len() as u32).to_le_bytes());
-    d.update(salt);
-    d.update(0u32.to_le_bytes()); // no secret
-    d.update((ad.len() as u32).to_le_bytes());
-    d.update(ad);
+    Digest::update(&mut d, P_COST.to_le_bytes());
+    Digest::update(&mut d, TAG_LEN.to_le_bytes());
+    Digest::update(&mut d, M_COST.to_le_bytes());
+    Digest::update(&mut d, T_COST.to_le_bytes());
+    Digest::update(&mut d, VERSION.to_le_bytes());
+    Digest::update(&mut d, ALGORITHM_ID.to_le_bytes());
+    Digest::update(&mut d, (seed.len() as u32).to_le_bytes());
+    Digest::update(&mut d, seed);
+    Digest::update(&mut d, (salt.len() as u32).to_le_bytes());
+    Digest::update(&mut d, salt);
+    Digest::update(&mut d, 0u32.to_le_bytes()); // no secret
+    Digest::update(&mut d, (ad.len() as u32).to_le_bytes());
+    Digest::update(&mut d, ad);
     let mut out = [0u8; 64];
     out.copy_from_slice(&d.finalize());
     out
@@ -261,6 +261,9 @@ pub fn fill(initial: &[[u64; BLOCK_WORDS]; 2]) -> [u64; BLOCK_WORDS] {
                 0
             };
 
+            // The mirror tracks cur/prev explicitly (same shape as the
+            // kernel); clippy's iterator suggestion would obscure that.
+            #[allow(clippy::explicit_counter_loop)]
             let mut cur_index = slice * SEGMENT_LENGTH + first_block;
             let mut prev_index = if slice == 0 && first_block == 0 {
                 cur_index + LANE_LENGTH - 1
@@ -268,6 +271,7 @@ pub fn fill(initial: &[[u64; BLOCK_WORDS]; 2]) -> [u64; BLOCK_WORDS] {
                 cur_index - 1
             };
 
+            #[allow(clippy::explicit_counter_loop)]
             for block in first_block..SEGMENT_LENGTH {
                 let rand = if data_independent {
                     let address_index = block % 128;
@@ -380,8 +384,8 @@ mod tests {
         // 32-byte path must equal BLAKE2bVar (not truncated BLAKE2b-512).
         let a = blake2b_long(&[b"abc"], 32);
         let mut h = Blake2bVar::new(32).unwrap();
-        h.update(32u32.to_le_bytes());
-        h.update(b"abc");
+        Update::update(&mut h, &32u32.to_le_bytes());
+        Update::update(&mut h, b"abc");
         let mut b = vec![0u8; 32];
         h.finalize_variable(&mut b).unwrap();
         assert_eq!(a, b);
