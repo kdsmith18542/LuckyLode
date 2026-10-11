@@ -13,7 +13,7 @@
 //! `--job-timeout`, 2 = usage error. No third-party argument parser by design
 //! (portable, offline-buildable, auditable) — flags are `--name value`.
 
-use lm_miner::{bench, cpu_label, search};
+use lm_miner::{bench, cpu_label, opencl, search};
 use lm_pow::difficulty::compact_to_target;
 use lm_stratum::client::PoolClient;
 use std::net::SocketAddr;
@@ -24,10 +24,12 @@ const USAGE: &str = "usage:
   lm-miner bench [--threads N] [--hashes N] [--height H] [--header HEX] [--json]
   lm-miner mine --header HEX --height H --target (HEX64 | nbits:XXXXXXXX | max) [--threads N] [--start N] [--count N]
   lm-miner pool --pool HOST:PORT --worker NAME [--agent STR] [--threads N] [--start N] [--count N] [--max-shares N] [--job-timeout SECS]
+  lm-miner gpu-test [--platform N] [--device N]
 
 bench defaults: threads=auto, hashes=3/thread, height=1, 80-byte 0x00..0x4F header.
 mine defaults: threads=auto, start=0, count=1000000.
 pool defaults: agent=lm-miner/0.1, threads=auto, start=0, count=1000000/job, max-shares=unlimited, job-timeout=30s.
+gpu-test: runs the frozen KAT vectors through the GPU (needs OpenCL hardware).
 exit: 0 found/done/session-complete, 1 exhausted/idle, 2 usage.";
 
 fn default_threads() -> usize {
@@ -400,6 +402,60 @@ fn run_pool(o: &PoolOpts) -> ExitCode {
     }
 }
 
+fn run_gpu_test(args: &[String]) -> ExitCode {
+    let mut platform = 0usize;
+    let mut device = 0usize;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--platform" => {
+                i += 1;
+                platform = match args.get(i).and_then(|s| s.parse().ok()) {
+                    Some(n) => n,
+                    None => {
+                        eprintln!("error: --platform needs a value");
+                        return ExitCode::from(2);
+                    }
+                };
+            }
+            "--device" => {
+                i += 1;
+                device = match args.get(i).and_then(|s| s.parse().ok()) {
+                    Some(n) => n,
+                    None => {
+                        eprintln!("error: --device needs a value");
+                        return ExitCode::from(2);
+                    }
+                };
+            }
+            other => {
+                eprintln!("error: gpu-test: unknown flag '{other}'");
+                return ExitCode::from(2);
+            }
+        }
+        i += 1;
+    }
+    match opencl::GpuDevice::open(platform, device) {
+        Ok(dev) => {
+            println!("gpu: {} (platform {platform}, device {device})", dev.name());
+            match opencl::gpu_kat_vectors(&dev) {
+                Ok(()) => {
+                    println!("gpu KAT: PASS (frozen vectors match lm-pow)");
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    eprintln!("gpu KAT: FAIL: {e}");
+                    ExitCode::from(1)
+                }
+            }
+        }
+        Err(e) => {
+            eprintln!("error: cannot open GPU: {e}");
+            ExitCode::from(1)
+        }
+    }
+}
+
 fn main() -> ExitCode {
     let argv: Vec<String> = std::env::args().skip(1).collect();
     if argv.iter().any(|a| a == "-h" || a == "--help") || argv.is_empty() {
@@ -431,6 +487,7 @@ fn main() -> ExitCode {
                 ExitCode::from(2)
             }
         },
+        "gpu-test" => run_gpu_test(&argv[1..]),
         other => {
             eprintln!("error: unknown command '{other}'\n{USAGE}");
             ExitCode::from(2)

@@ -16,6 +16,7 @@
 //! the solo/benchmark foundation the testnet bake-off builds on.
 
 pub mod argon2_prep;
+pub mod opencl;
 
 use lm_pow::{meets_target, pow_hash};
 use std::sync::atomic::{AtomicBool, Ordering};
