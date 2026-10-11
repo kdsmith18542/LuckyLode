@@ -33,3 +33,7 @@ secrets/
 # Logs & crash dumps
 *.log
 core.*
+
+# Internal planning — decision records, work plans, process history.
+# Never public: designs/specs live at the repo root; planning lives here.
+internal/
