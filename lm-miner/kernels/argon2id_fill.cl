@@ -55,12 +55,10 @@ inline void permute16(ulong *v)
     blamka_step(&v[3], &v[4], &v[9], &v[14]);
 }
 
-// Argon2 compression G: P(prev ^ ref) ^ (prev ^ ref).
-inline void compress(const ulong *prev, const ulong *ref, ulong *out)
+// P(q) ^ r, in place on q (private arrays only; the kernel is
+// OpenCL-1.2-safe, so every parameter carries an explicit address space).
+inline void permute_and_xor(ulong *q, const ulong *r)
 {
-    ulong q[BLOCK_WORDS];
-    for (int i = 0; i < BLOCK_WORDS; i++)
-        q[i] = prev[i] ^ ref[i];
     for (int row = 0; row < 8; row++)
         permute16(&q[row * 16]);
     for (int col = 0; col < 8; col++)
@@ -86,16 +84,38 @@ inline void compress(const ulong *prev, const ulong *ref, ulong *out)
         q[b + 112] = v[14]; q[b + 113] = v[15];
     }
     for (int i = 0; i < BLOCK_WORDS; i++)
-        out[i] = q[i] ^ prev[i] ^ ref[i];
+        q[i] ^= r[i];
 }
 
-// addr = G(zero, G(zero, input_with_incremented_counter))
+// Argon2 compression G: P(prev ^ ref) ^ (prev ^ ref), private buffers.
+inline void compress_pp(const ulong *prev, const ulong *ref, ulong *out)
+{
+    ulong r[BLOCK_WORDS];
+    for (int i = 0; i < BLOCK_WORDS; i++)
+        r[i] = prev[i] ^ ref[i];
+    for (int i = 0; i < BLOCK_WORDS; i++)
+        out[i] = r[i];
+    permute_and_xor(out, r);
+}
+
+// Same, reading the two source blocks from global memory (fill path).
+inline void compress_gp(__global const ulong *prev, __global const ulong *ref, ulong *out)
+{
+    ulong r[BLOCK_WORDS];
+    for (int i = 0; i < BLOCK_WORDS; i++)
+        r[i] = prev[i] ^ ref[i];
+    for (int i = 0; i < BLOCK_WORDS; i++)
+        out[i] = r[i];
+    permute_and_xor(out, r);
+}
+
+// addr = G(zero, G(zero, input_with_incremented_counter))  (private path)
 inline void next_address_block(ulong *input_block, ulong *address_block, ulong *zero)
 {
     input_block[6] += 1;
     ulong first[BLOCK_WORDS];
-    compress(zero, input_block, first);
-    compress(zero, first, address_block);
+    compress_pp(zero, input_block, first);
+    compress_pp(zero, first, address_block);
 }
 
 __kernel void argon2id_fill(__global const ulong *init2,
@@ -104,10 +124,11 @@ __kernel void argon2id_fill(__global const ulong *init2,
 {
     const size_t instance = get_global_id(0);
     __global ulong *B = mem + instance * (size_t)LANE_LENGTH * BLOCK_WORDS;
+    __global const ulong *init = init2 + instance * (size_t)2 * BLOCK_WORDS;
 
     // Initial two blocks (from the CPU's blake2b_long).
     for (int i = 0; i < 2 * BLOCK_WORDS; i++)
-        B[i] = init2[i];
+        B[i] = init[i];
 
     ulong zero[BLOCK_WORDS];
     for (int i = 0; i < BLOCK_WORDS; i++)
@@ -187,9 +208,9 @@ __kernel void argon2id_fill(__global const ulong *init2,
                 int ref_index = (start_position + relative_position) % LANE_LENGTH;
 
                 ulong result[BLOCK_WORDS];
-                compress(&B[(size_t)prev_index * BLOCK_WORDS],
-                         &B[(size_t)ref_index * BLOCK_WORDS],
-                         result);
+                compress_gp(&B[(size_t)prev_index * BLOCK_WORDS],
+                            &B[(size_t)ref_index * BLOCK_WORDS],
+                            result);
                 if (pass == 0)
                 {
                     for (int i = 0; i < BLOCK_WORDS; i++)
