@@ -35,6 +35,33 @@ levers loaded.
 - **On breach:** the L1 lever below ships in the next scheduled upgrade.
   No new debate, no spec reopen — this document *is* the pre-authorization.
 
+## Low-end GPU support (added 2026-10-11): supported miners, not just tolerated
+competitors
+
+CPUs first was the launch posture; the supported set now explicitly
+includes **low-end GPUs: Pascal-class discrete cards, AMD GCN/RDNA
+low-end, and Intel/AMD iGPUs**. Rationale: "whatever hardware you already
+own" includes a 2016 GTX 1060 and every laptop iGPU — and EmberHash's
+1 MiB footprint (vs 4 GB+ DAGs) is precisely what makes that class
+*includable* instead of gated out. This changes nothing about the
+tripwire above: it guards the efficiency *ratio*, and leagues still
+separate phones from farms by observed hashrate.
+
+- **One codebase: OpenCL.** A single OpenCL Argon2id kernel covers NVIDIA
+  Pascal (OpenCL 1.2+), AMD low-end, and both iGPU vendors — no CUDA
+  lock-in, no per-vendor miners. iGPUs share the package thermal budget
+  with the CPU, so the lm-sched thermal policy (doc 07) applies doubly.
+- **Split design: GPU does Argon2id (~95% of per-hash cost), CPU keeps the
+  two BLAKE3 hashes.** Minimal new code for most of the gain; the submit
+  path (Stratum) is unchanged.
+- **Honest numbers posture:** expect efficiency (H/J) wins over raw-rate
+  miracles on iGPUs (shared memory bandwidth caps them); measure per
+  device, publish in the matrix, no promises before numbers.
+- **Spike plan (P2/P3, not started):** (1) OpenCL Argon2id kernel,
+  correctness-gated against the frozen KATs; (2) per-device bench rows;
+  (3) `lm-miner --device opencl` integration; (4) thermal interplay tests
+  (iGPU + dGPU + CPU under one scheduler).
+
 ## Response ladder (in order, each step only if the last proved insufficient)
 
 - **L1 — `m_cost` 1→4 MiB.** Pre-committed first pull. No eligible device
