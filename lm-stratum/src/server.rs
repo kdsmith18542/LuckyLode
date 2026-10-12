@@ -49,16 +49,7 @@ pub struct Stats {
 struct JobState {
     job: Job,
     version: u64,
-    /// When this job was issued; jobs rotate on a timer even without a
-    /// height change (real-pool behavior: fresh curtime, fresh template).
-    /// Height-only rotation starved miners between blocks (live-caught:
-    /// a claim-mode test miner waited 300s for a job that never came
-    /// because no block landed, so no new job was ever issued).
-    rotated: std::time::Instant,
 }
-
-/// Job freshness window: rotate every N seconds regardless of height.
-pub const JOB_ROTATE_SECS: u64 = 30;
 
 struct Shared<P> {
     provider: Mutex<P>,
@@ -79,8 +70,13 @@ fn now_secs() -> u64 {
 fn poll_template<P: TemplateProvider>(shared: &Shared<P>) -> Job {
     let tpl = shared.provider.lock().expect("provider").current();
     let mut bc = shared.broadcast.lock().expect("broadcast");
-    let stale = bc.rotated.elapsed() >= std::time::Duration::from_secs(JOB_ROTATE_SECS);
-    if tpl.height != bc.job.height || stale {
+    // A new job exists only when the TEMPLATE BYTES change (height or
+    // header). Timer-based rotation duplicated jobs whenever the node's
+    // template cadence was slower than the timer: two "different" jobs
+    // shared one header, so the miner re-found the same nonce for each
+    // and the pool counted duplicate work as separate shares
+    // (live-caught: nonce 20796 on jobs 1f/20/21 in a row).
+    if tpl.height != bc.job.height || tpl.header != bc.job.header {
         let id = shared.job_counter.fetch_add(1, Ordering::SeqCst);
         bc.job = Job {
             id: format!("{id:08x}"),
@@ -90,7 +86,6 @@ fn poll_template<P: TemplateProvider>(shared: &Shared<P>) -> Job {
             net_target: tpl.net_target,
         };
         bc.version += 1;
-        bc.rotated = std::time::Instant::now();
     }
     bc.job.clone()
 }
@@ -356,7 +351,7 @@ pub fn spawn_server<P: TemplateProvider + 'static>(
         ledger: Mutex::new(Ledger::new()),
         blocks: Mutex::new(Vec::new()),
         stats: Mutex::new(Stats::default()),
-        broadcast: Mutex::new(JobState { job, version: 1, rotated: std::time::Instant::now() }),
+        broadcast: Mutex::new(JobState { job, version: 1 }),
         job_counter: AtomicU64::new(1),
         shutdown: AtomicBool::new(false),
     });
