@@ -16,3 +16,28 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Bench smoke (compile only, timing is device-matrix work)
         run: cargo bench -p lm-pow -- --test
+
+  # Doc 05 §5.7 determinism gate: EmberHash's vectors must agree
+  # byte-for-byte across architectures (endianness discipline §5.1). The
+  # KAT suite pins seed/mem/out for fixed (header, nonce, height), so a
+  # big-endian slip or a word-size assumption fails here on aarch64 even
+  # when x86_64 is green. Hosted ARM runners are free for public repos;
+  # this is a CPU-first coin, so ARM is a first-class mining target, not
+  # an exotic port.
+  test-arm:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      # lm-miner links the system libOpenCL directly (no wrapper crates, by
+      # design — offline builds keep working). The x86 image ships it; do not
+      # assume the ARM one does. ocl-icd-opencl-dev is headers + loader only:
+      # no GPU is needed to build, and no test opens a device.
+      - name: Install OpenCL ICD loader (link-time only, no GPU)
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ocl-icd-opencl-dev
+      - name: Test workspace on aarch64 (KAT vectors must match x86_64)
+        run: cargo test --workspace --locked
+      - name: Clippy on aarch64
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Bench smoke (compile only)
+        run: cargo bench -p lm-pow -- --test
