@@ -95,12 +95,17 @@ impl PolicyRuntime {
                     self.paused = true;
                     self.pause_started = self.clock;
                     self.backoff_secs = BACKOFF_MIN_SECS;
+                    eprintln!(
+                        "thermal: pausing at {temp_c}C (cap {cap}C, backoff {}s)",
+                        self.backoff_secs
+                    );
                 }
                 if self.paused {
                     let dwell_ok = self.clock - self.pause_started >= MIN_DWELL;
                     if dwell_ok && temp_c < cap - HYSTERESIS_C {
                         self.paused = false;
                         self.backoff_secs = BACKOFF_MIN_SECS;
+                        eprintln!("thermal: resuming at {temp_c}C");
                     } else {
                         sleep += Duration::from_secs(self.backoff_secs);
                         if self.backoff_secs < BACKOFF_MAX_SECS {
