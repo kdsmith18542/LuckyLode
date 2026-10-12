@@ -18,3 +18,4 @@ pub mod server;
 pub mod tx;
 pub mod v1;
 pub mod vardiff;
+pub mod workerstats;

@@ -121,6 +121,25 @@ impl PoolClient {
         Ok(None)
     }
 
+    /// Non-blocking job check for a grinding miner: drain buffered
+    /// notifies, else peek the socket with a 1 ms read timeout (std
+    /// rejects a zero timeout). A missing job just means "keep the
+    /// current one".
+    pub fn poll_job(&mut self) -> std::io::Result<Option<Job>> {
+        if let Some(job) = self.pending.pop() {
+            return Ok(Some(job));
+        }
+        self.reader.get_ref().set_read_timeout(Some(Duration::from_millis(1)))?;
+        let r = self.read_message();
+        self.reader.get_ref().set_read_timeout(Some(Duration::from_secs(5)))?;
+        match r? {
+            Some(m) if m.method.as_deref() == Some("mining.notify") => {
+                Ok(m.params.as_ref().and_then(job_from_params))
+            }
+            _ => Ok(None),
+        }
+    }
+
     /// Submit a nonce; returns (accepted, error tuple if rejected).
     pub fn submit(
         &mut self,

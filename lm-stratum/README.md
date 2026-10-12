@@ -28,9 +28,36 @@ public-pool V1: empty extranonce, no `set_difficulty` (targets ride in
 notify), no per-share overnight flag yet.
 
 ```sh
-cargo test -p lm-stratum   # 16 unit + 3 e2e (real TCP on localhost)
+cargo test -p lm-stratum   # unit + e2e (real TCP on localhost)
 ```
 
-Tracked follow-ups: Stratum V2 framing (provider seam and money rules
-carry over), `lm-miner pool` subcommand speaking `client`, vardiff,
-attestation-gated league entry.
+## Mainnet limits (reference pool, pre-launch)
+
+This is the reference implementation; run it on testnet knowing:
+
+- **No persistence.** Shares, balances, worker registry, dedupe, and
+  block records are in-memory only. A restart loses them (the ledger's
+  own retention bounds memory, not durability). Do not treat balances
+  as real until an account store lands.
+- **Payouts are v1.** `--payout-threshold/--payout-interval` drive a
+  `sendtoaddress` loop from the node wallet (dry-run unless
+  `--payout-exec`); worker names double as payout addresses. Not yet
+  tracked: coinbase maturity/confirmations (payouts execute on accept —
+  sends fail safe with "insufficient funds" while coinbases mature, so
+  run a mature chain or lower expectations), persistence across
+  restarts, fee splits beyond the per-block skim.
+- **No auth, no TLS.** Stratum and the `--http` dashboard are plaintext
+  and identify workers by name hash; bind to localhost or a private
+  network.
+- **Claim modes change block liveness.** `--claim-jackpots` /
+  `--claim-pot` serve claim templates and locally withhold non-drawing
+  finds (1/100 and 1/1000 draws). That is correct for hunting a claim,
+  but it throttles block submission — don't run a public pool that way.
+- **Work-identity dedupe is windowed** (2^16 identities). A replay older
+  than the window can pass; accepted as the reference trade-off.
+- **Stratum V1 framing only** (V2 planned; the provider seam and money
+  rules carry over). No `set_difficulty` — targets ride in `mining.notify`.
+
+Tracked follow-ups: persistence + payout processor + auth
+(`internal/17`), Stratum V2 framing, `lm-miner pool` subcommand speaking
+`client`, attestation-gated league entry.

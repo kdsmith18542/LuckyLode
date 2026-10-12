@@ -154,6 +154,28 @@ fn share_replay_across_connections_is_rejected() {
 }
 
 #[test]
+fn blocks_credit_payout_balances() {
+    let server = spawn_server(MockProvider::instant(BASE), "127.0.0.1:0").expect("bind");
+    let mut c = PoolClient::connect(server.addr()).expect("connect");
+    assert!(c.subscribe("payout-e2e").expect("sub"));
+    assert!(c.authorize("dave").expect("auth"));
+    let job = c.read_job(Duration::from_secs(5)).expect("io").expect("job");
+    let (n, _) = grind_share(&job.header, job.height, &job.pool_target);
+    let (ok, err) = c.submit("dave", &job.id, n).expect("submit");
+    assert!(ok, "share rejected: {err:?}");
+    // The instant chain made the share a block: payout accounting must
+    // total exactly the block value (net value + claimed split).
+    let b = server.blocks();
+    assert_eq!(b.len(), 1);
+    let bals = server.balances();
+    assert_eq!(bals.len(), 1);
+    assert_eq!(bals[0].0, worker_id("dave"));
+    assert_eq!(bals.iter().map(|(_, v)| v).sum::<u64>(), b[0].value + b[0].bonus);
+
+    server.stop();
+}
+
+#[test]
 fn protocol_edges_are_typed() {
     let server = spawn_server(MockProvider::instant(BASE), "127.0.0.1:0").expect("bind");
     let mut c = PoolClient::connect(server.addr()).expect("connect");

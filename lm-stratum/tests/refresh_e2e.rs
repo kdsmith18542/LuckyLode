@@ -64,6 +64,7 @@ impl TemplateProvider for GatedProvider {
             bonus: 0,
             league_overflow: 0,
             reserve: 0,
+            coinbase: 0,
         }
     }
 }
@@ -150,6 +151,7 @@ fn background_refresh_publishes_new_templates() {
                 bonus: 0,
                 league_overflow: 0,
                 reserve: 0,
+                coinbase: 0,
             }
         }
     }

@@ -6,10 +6,13 @@
 //! - [`ledger`]: PPLNS share log, effective-share aggregation, jackpot
 //!   payouts (via `lm-rewards` sqrt/cap/dust), league-pool splits,
 //!   seasonal leaderboard.
+//! - [`payout`]: per-miner value accounting (owed/paid/fee), threshold
+//!   selection, integer-exact coin formatting for `sendtoaddress`.
 //!
 //! Nothing here is consensus: all of it runs pool-side and replays
 //! deterministically from the share log plus an explicit timestamp.
 
 pub mod league;
 pub mod ledger;
+pub mod payout;
 pub mod streak;

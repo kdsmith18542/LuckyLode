@@ -125,6 +125,14 @@ extern "C" {
         param_value: *mut c_void,
         param_value_size_ret: *mut usize,
     ) -> i32;
+    fn clGetKernelWorkGroupInfo(
+        kernel: *mut c_void,
+        device: *mut c_void,
+        param_name: u32,
+        param_value_size: usize,
+        param_value: *mut c_void,
+        param_value_size_ret: *mut usize,
+    ) -> i32;
 }
 
 const CL_SUCCESS: i32 = 0;
@@ -315,22 +323,59 @@ impl GpuDevice {
         &self.name
     }
 
+    /// Kernel build facts that predict occupancy: the max work-group size
+    /// the compiler allows (register/private-memory limited) and how much
+    /// private memory each work-item spills. Diagnostic only.
+    pub fn kernel_limits(&self) -> (usize, usize) {
+        let mut wg = 0usize;
+        let ok1 = unsafe {
+            clGetKernelWorkGroupInfo(
+                self.kernel,
+                self.device,
+                0x11B0, // CL_KERNEL_WORK_GROUP_SIZE
+                std::mem::size_of::<usize>(),
+                &mut wg as *mut usize as *mut c_void,
+                ptr::null_mut(),
+            )
+        } == CL_SUCCESS;
+        let mut pm = 0usize;
+        let ok2 = unsafe {
+            clGetKernelWorkGroupInfo(
+                self.kernel,
+                self.device,
+                0x11B8, // CL_KERNEL_PRIVATE_MEM_SIZE
+                std::mem::size_of::<usize>(),
+                &mut pm as *mut usize as *mut c_void,
+                ptr::null_mut(),
+            )
+        } == CL_SUCCESS;
+        (if ok1 { wg } else { 0 }, if ok2 { pm } else { 0 })
+    }
+
     /// Run the fill for a batch of instances. `inits[i]` = the two initial
     /// 128-word blocks for instance i (from `argon2_prep::initial_blocks`).
     /// Returns the 128-word final block per instance. Batch sizing is the
     /// caller's job (VRAM/1 MiB per instance; keep launches under the iGPU
     /// watchdog, doc 15 §15.2).
+    ///
+    /// v2 pads the batch to a multiple of 4 instances (one workgroup = 32
+    /// items = 4 instances; every workgroup is fully populated so barrier
+    /// participation is uniform) and gives each instance a 3-block global
+    /// scratch array (input | mid | address).
     pub fn fill_batch(&self, inits: &[[[u64; 128]; 2]]) -> Result<Vec<[u64; 128]>, String> {
         let n = inits.len();
         if n == 0 {
             return Err("empty batch".to_string());
         }
+        const LOCAL: usize = 32; // 4 instances x 8 items
+        let n_pad = n.div_ceil(4) * 4;
         let words_per_instance = 1024usize * 128;
-        let mut init_flat = Vec::with_capacity(n * 2 * 128);
+        let mut init_flat = Vec::with_capacity(n_pad * 2 * 128);
         for pair in inits {
             init_flat.extend_from_slice(&pair[0]);
             init_flat.extend_from_slice(&pair[1]);
         }
+        init_flat.resize(n_pad * 2 * 128, 0);
         let mut err = 0i32;
         let init_buf = unsafe {
             clCreateBuffer(
@@ -346,7 +391,7 @@ impl GpuDevice {
             clCreateBuffer(
                 self.context,
                 CL_MEM_READ_WRITE,
-                n * words_per_instance * 8,
+                n_pad * words_per_instance * 8,
                 ptr::null_mut(),
                 &mut err,
             )
@@ -359,7 +404,7 @@ impl GpuDevice {
             clCreateBuffer(
                 self.context,
                 CL_MEM_WRITE_ONLY,
-                n * 128 * 8,
+                n_pad * 128 * 8,
                 ptr::null_mut(),
                 &mut err,
             )
@@ -370,6 +415,24 @@ impl GpuDevice {
                 clReleaseMemObject(mem_buf);
             }
             return Err(format!("clCreateBuffer(out) failed ({err})"));
+        }
+        // Per-instance scratch: input | mid | address (3 x 128 words).
+        let scratch_buf = unsafe {
+            clCreateBuffer(
+                self.context,
+                CL_MEM_READ_WRITE,
+                n_pad * 384 * 8,
+                ptr::null_mut(),
+                &mut err,
+            )
+        };
+        if err != CL_SUCCESS {
+            unsafe {
+                clReleaseMemObject(init_buf);
+                clReleaseMemObject(mem_buf);
+                clReleaseMemObject(out_buf);
+            }
+            return Err(format!("clCreateBuffer(scratch) failed ({err})"));
         }
         let result = (|| {
             ck(
@@ -388,14 +451,15 @@ impl GpuDevice {
                 },
                 "clEnqueueWriteBuffer(init)",
             )?;
-            for (i, buf) in [init_buf, mem_buf, out_buf].iter().enumerate() {
+            for (i, buf) in [init_buf, mem_buf, out_buf, scratch_buf].iter().enumerate() {
                 let mut b = *buf;
                 ck(
                     unsafe { clSetKernelArg(self.kernel, i as u32, 8, &mut b as *mut _ as *const c_void) },
                     "clSetKernelArg",
                 )?;
             }
-            let global = n;
+            let global = n_pad * 8; // 8 items per instance
+            let local = LOCAL;
             ck(
                 unsafe {
                     clEnqueueNDRangeKernel(
@@ -404,7 +468,7 @@ impl GpuDevice {
                         1,
                         ptr::null(),
                         &global as *const usize,
-                        ptr::null(),
+                        &local as *const usize,
                         0,
                         ptr::null(),
                         ptr::null_mut(),
@@ -413,7 +477,7 @@ impl GpuDevice {
                 "clEnqueueNDRangeKernel",
             )?;
             ck(unsafe { clFinish(self.queue) }, "clFinish")?;
-            let mut out_flat = vec![0u64; n * 128];
+            let mut out_flat = vec![0u64; n_pad * 128];
             ck(
                 unsafe {
                     clEnqueueReadBuffer(
@@ -431,7 +495,7 @@ impl GpuDevice {
                 "clEnqueueReadBuffer(out)",
             )?;
             let mut out = Vec::with_capacity(n);
-            for chunk in out_flat.chunks_exact(128) {
+            for chunk in out_flat.chunks_exact(128).take(n) {
                 let mut block = [0u64; 128];
                 block.copy_from_slice(chunk);
                 out.push(block);
@@ -442,6 +506,7 @@ impl GpuDevice {
             clReleaseMemObject(init_buf);
             clReleaseMemObject(mem_buf);
             clReleaseMemObject(out_buf);
+            clReleaseMemObject(scratch_buf);
         }
         result
     }

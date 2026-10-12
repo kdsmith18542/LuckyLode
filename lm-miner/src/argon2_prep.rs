@@ -29,7 +29,8 @@ pub const VERSION: u32 = 0x13;
 pub const ALGORITHM_ID: u32 = 2; // Argon2id
 pub const TAG_LEN: u32 = 32;
 
-const BLOCK_WORDS: usize = 128; // 1 KiB blocks as u64 words
+/// 1 KiB Argon2 blocks as 128 u64 words (one lane's memory cell).
+pub const BLOCK_WORDS: usize = 128;
 const LANE_LENGTH: usize = M_COST as usize; // p=1: one lane, 1024 blocks
 const SEGMENT_LENGTH: usize = LANE_LENGTH / 4; // 256
 const PASSES: usize = T_COST as usize;
@@ -321,12 +322,10 @@ pub fn fill(initial: &[[u64; BLOCK_WORDS]; 2]) -> [u64; BLOCK_WORDS] {
     mem[LANE_LENGTH - 1]
 }
 
-/// Full Argon2id mem output for the EmberHash parameters: `blake2b_long`
-/// of the last block, 32 bytes.
-pub fn mem(seed: &[u8], salt: &[u8], ad: &[u8]) -> [u8; 32] {
-    let h0 = h0(seed, salt, ad);
-    let initial = initial_blocks(&h0);
-    let last = fill(&initial);
+/// H' over the fill's last block: the 32-byte Argon2id `mem` output.
+/// Split out so the GPU path (which fills on the card and reads the last
+/// block back) finalizes identically to [`mem`].
+pub fn mem_from_last(last: &[u64; BLOCK_WORDS]) -> [u8; 32] {
     let mut last_bytes = [0u8; BLOCK_WORDS * 8];
     for (i, w) in last.iter().enumerate() {
         last_bytes[i * 8..i * 8 + 8].copy_from_slice(&w.to_le_bytes());
@@ -335,6 +334,15 @@ pub fn mem(seed: &[u8], salt: &[u8], ad: &[u8]) -> [u8; 32] {
     let mut out = [0u8; 32];
     out.copy_from_slice(&tag);
     out
+}
+
+/// Full Argon2id mem output for the EmberHash parameters: `blake2b_long`
+/// of the last block, 32 bytes.
+pub fn mem(seed: &[u8], salt: &[u8], ad: &[u8]) -> [u8; 32] {
+    let h0 = h0(seed, salt, ad);
+    let initial = initial_blocks(&h0);
+    let last = fill(&initial);
+    mem_from_last(&last)
 }
 
 /// EmberHash salt for a height: `"LMv1" || height_le64` (frozen, doc 05).
@@ -370,6 +378,17 @@ mod tests {
             // And the full out stage matches too (mem feeds BLAKE3).
             assert_eq!(f.mem, mine);
         }
+    }
+
+    #[test]
+    fn mem_from_last_matches_lm_pow_frozen_mem() {
+        // The GPU path reads back only the fill's last block; this pins the
+        // H' finalize helper to lm-pow's mem for the frozen nonce 0 case.
+        let header: Vec<u8> = (0u8..80).collect();
+        let f = lm_pow::pow_full(&header, 0, 1);
+        let h0v = h0(&f.seed, &ember_salt(1), b"lowmine-pow/v1");
+        let last = fill(&initial_blocks(&h0v));
+        assert_eq!(mem_from_last(&last), f.mem);
     }
 
     #[test]

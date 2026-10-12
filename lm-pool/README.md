@@ -12,9 +12,14 @@ payouts + leaderboards that replay deterministically from the log.
 - `ledger` — PPLNS share log, effective-share aggregation
   (`work × overnight × comeback`, then `× streak`), jackpot payouts via
   `lm-rewards` sqrt/cap/dust, linear league-pool splits, seasonal board.
+  **Bounded history** (review finding G): raw shares are retained for 32
+  days (the longest supported query window); older history is rolled up
+  into per-miner UTC active-day lists plus a per-miner comeback state, so
+  streaks and comeback weights survive pruning at O(1) memory per miner.
+  Query windows longer than the retention see the retained tail only.
 
 ```sh
-cargo test -p lm-pool   # 14 unit + 4 season-simulation tests
+cargo test -p lm-pool   # unit + season-simulation tests
 ```
 
 `tests/season.rs` runs a 30-day story (phone loyalist, weekend warrior,

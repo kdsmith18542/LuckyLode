@@ -58,12 +58,30 @@ fn argon2_ctx() -> &'static Argon2<'static> {
     })
 }
 
-/// Full three-stage evaluation.
-pub fn pow_full(header: &[u8], nonce: u64, height: u64) -> FullHash {
+/// Seed stage alone: `BLAKE3(header || nonce_le64)`. Exposed for
+/// alternative Argon2id backends (the OpenCL fill path, doc 15) that
+/// reproduce [`pow_full`]'s stages on different hardware.
+#[must_use]
+pub fn seed(header: &[u8], nonce: u64) -> [u8; OUT_LEN] {
     let mut pre = Vec::with_capacity(header.len() + 8);
     pre.extend_from_slice(header);
     pre.extend_from_slice(&nonce.to_le_bytes());
-    let seed = blake3::hash(&pre);
+    *blake3::hash(&pre).as_bytes()
+}
+
+/// Digest stage alone: `BLAKE3(mem || seed)`. Exposed for the same
+/// reason as [`seed`].
+#[must_use]
+pub fn final_digest(seed: &[u8; OUT_LEN], mem: &[u8; OUT_LEN]) -> [u8; OUT_LEN] {
+    let mut post = Vec::with_capacity(OUT_LEN * 2);
+    post.extend_from_slice(mem);
+    post.extend_from_slice(seed);
+    *blake3::hash(&post).as_bytes()
+}
+
+/// Full three-stage evaluation.
+pub fn pow_full(header: &[u8], nonce: u64, height: u64) -> FullHash {
+    let seed = seed(header, nonce);
 
     let mut salt = Vec::with_capacity(SALT_PREFIX.len() + 8);
     salt.extend_from_slice(SALT_PREFIX);
@@ -71,19 +89,10 @@ pub fn pow_full(header: &[u8], nonce: u64, height: u64) -> FullHash {
 
     let mut mem = [0u8; OUT_LEN];
     argon2_ctx()
-        .hash_password_into(seed.as_bytes(), &salt, &mut mem)
+        .hash_password_into(&seed, &salt, &mut mem)
         .expect("fixed params; inputs always valid");
 
-    let mut post = Vec::with_capacity(OUT_LEN * 2);
-    post.extend_from_slice(&mem);
-    post.extend_from_slice(seed.as_bytes());
-    let out = blake3::hash(&post);
-
-    FullHash {
-        seed: *seed.as_bytes(),
-        mem,
-        out: *out.as_bytes(),
-    }
+    FullHash { seed, mem, out: final_digest(&seed, &mem) }
 }
 
 /// Final digest only (the hot path for miners and verifiers).
@@ -144,6 +153,15 @@ mod tests {
             pow_hash(&header, 0, 1),
             "same nonce at different heights must differ"
         );
+    }
+
+    #[test]
+    fn exposed_stages_compose_to_pow_full() {
+        let header: Vec<u8> = (0u8..80).collect();
+        let f = pow_full(&header, 7, 3);
+        assert_eq!(seed(&header, 7), f.seed);
+        assert_eq!(final_digest(&f.seed, &f.mem), f.out);
+        assert_eq!(pow_hash(&header, 7, 3), f.out);
     }
 
     #[test]

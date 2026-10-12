@@ -16,13 +16,17 @@
 //! low 8 bytes of CPOSNonce, upper 192 bits zero) and spliced in only when
 //! assembling the full block for `submitblock`.
 //!
-//! Jackpot accounting fields are zero here: the node-side jackpot
-//! consensus (doc 10 §10.8, two-template mining) is not wired yet; the
-//! mock provider remains the money-rules testbed until it is.
+//! Jackpot + Lucky Pot accounting: the node advertises `jackpotbonus`,
+//! `potcredited` and `potdrought` on `getblocktemplate`; with the claim
+//! flags the pool splices the claimed amounts into the coinbase and only
+//! submits a claim-template find when the digest actually wins the
+//! matching draw (doc 10 §10.8, internal/16). Without the flags the
+//! node's template passes through untouched — normal-mode mining.
 
 use crate::provider::{BlockOutcome, JobTemplate, TemplateProvider};
 use crate::rpc::RpcClient;
-use lm_pow::pow_hash;
+use lm_pow::{is_jackpot, pow_hash};
+use primitive_types::U256;
 use sha2::{Digest, Sha256};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -30,25 +34,42 @@ use std::time::{Duration, Instant};
 /// How often the provider re-polls the node for a fresh template.
 pub const REFRESH_INTERVAL: Duration = Duration::from_secs(2);
 
+/// One retained template: merkle -> tx set + its claims (both 0 for
+/// normal templates). Submissions are gated against the CLAIMED amounts,
+/// not the current template (comparing against the current one would
+/// skip the gate almost every time — same lesson as the original bonus
+/// ring).
+#[derive(Debug, Clone)]
+pub struct RecentTemplate {
+    merkle: [u8; 32],
+    txs: Vec<Vec<u8>>,
+    /// Jackpot bonus claimed by this template's coinbase (0 = none).
+    pub bonus: u64,
+    /// Pot splash claimed by this template's coinbase (0 = none).
+    pub pot: u64,
+    /// Normal net value of the template's coinbase (the pool's receipt).
+    pub coinbase: u64,
+}
+
 #[derive(Debug, Clone)]
 struct TemplateState {
     template: JobTemplate,
     /// All transactions, coinbase first, in template order.
     txs: Vec<Vec<u8>>,
-    /// Recent (merkle -> tx set, bonus) ring. The header's merkle field
+    /// Recent (merkle -> tx set, claims) ring. The header's merkle field
     /// commits to the tx set, so a submission must be assembled with the
     /// tx set THAT MATCHED THE JOB'S HEADER — not the latest template
     /// (drill-caught: a 2s refresh between grind and submit swapped the
     /// coinbase and made the submitted merkle disagree with its own
-    /// header). The bonus flag rides along so the J1 gate survives
-    /// refreshes (comparing against the CURRENT template would skip the
-    /// gate almost every time).
-    recent: std::collections::VecDeque<([u8; 32], Vec<Vec<u8>>, bool)>,
+    /// header).
+    recent: std::collections::VecDeque<RecentTemplate>,
     /// Bonus claimed by this template's coinbase (0 = normal template).
-    /// J1: a bonus coinbase is only submittable when the found digest is a
-    /// jackpot (the node's ceiling enforces it; the gate saves a doomed
-    /// submit and keeps the pool honest about its own work).
     bonus: u64,
+    /// Pot claimed by this template's coinbase (0 = normal template).
+    pot_claim: u64,
+    /// Normal net value of the current template's coinbase (parsed from the
+    /// node's own template bytes — what an accepted block pays the pool).
+    coinbase: u64,
     fetched_at: Instant,
 }
 
@@ -65,31 +86,37 @@ pub struct NodeProvider {
     state: Mutex<TemplateState>,
     accepted: Mutex<u64>,
     rejected: Mutex<u64>,
-    /// J1: serve bonus templates (coinbase claims min(5R, reserve)) and
-    /// only submit their finds when the digest is a jackpot.
+    /// Serve jackpot-bonus templates (coinbase claims min(5R, reserve))
+    /// and only submit their finds when the digest is a jackpot.
     claim_jackpots: bool,
+    /// Serve pot templates (coinbase claims the tier-A floor of the
+    /// credited pot) and only submit their finds when the digest is a
+    /// pot event (`digest < T/1000`).
+    claim_pot: bool,
 }
 
 impl NodeProvider {
     /// Connect and fetch the first template; fails fast if the node is
     /// unreachable or returns something unmappable.
     pub fn connect(addr: &str, user: &str, pass: &str) -> Result<Self, String> {
-        Self::connect_with_claims(addr, user, pass, false)
+        Self::connect_with_claims(addr, user, pass, false, false)
     }
 
-    /// As [`connect`], optionally serving J1 bonus templates.
+    /// As [`connect`], optionally serving claim templates.
     pub fn connect_with_claims(
         addr: &str,
         user: &str,
         pass: &str,
         claim_jackpots: bool,
+        claim_pot: bool,
     ) -> Result<Self, String> {
         let rpc = RpcClient::new(addr, user, pass);
         let gbt = rpc.call("getblocktemplate", serde_json::json!([{"capabilities": []}]))?;
-        let (tpl, txs, bonus) = build_template(&gbt, claim_jackpots)?;
+        let (tpl, txs, bonus, pot, coinbase) =
+            build_template(&gbt, claim_jackpots, claim_pot)?;
         let mut recent = std::collections::VecDeque::new();
         if let Some(m) = header_merkle(&tpl.header) {
-            recent.push_front((m, txs.clone(), bonus > 0));
+            recent.push_front(RecentTemplate { merkle: m, txs: txs.clone(), bonus, pot, coinbase });
         }
         Ok(Self {
             rpc,
@@ -98,11 +125,14 @@ impl NodeProvider {
                 txs,
                 recent,
                 bonus,
+                pot_claim: pot,
+                coinbase,
                 fetched_at: Instant::now(),
             }),
             accepted: Mutex::new(0),
             rejected: Mutex::new(0),
             claim_jackpots,
+            claim_pot,
         })
     }
 
@@ -125,16 +155,23 @@ impl NodeProvider {
                 return;
             }
         }
-        let claim = self.claim_jackpots;
+        let claim_jackpots = self.claim_jackpots;
+        let claim_pot = self.claim_pot;
         match self
             .rpc
             .call("getblocktemplate", serde_json::json!([{"capabilities": []}]))
-            .and_then(|gbt| build_template(&gbt, claim))
+            .and_then(|gbt| build_template(&gbt, claim_jackpots, claim_pot))
         {
-            Ok((tpl, txs, bonus)) => {
+            Ok((tpl, txs, bonus, pot, coinbase)) => {
                 let mut st = self.state.lock().expect("state");
                 if let Some(m) = header_merkle(&tpl.header) {
-                    st.recent.push_front((m, txs.clone(), bonus > 0));
+                    st.recent.push_front(RecentTemplate {
+                        merkle: m,
+                        txs: txs.clone(),
+                        bonus,
+                        pot,
+                        coinbase,
+                    });
                     // 256 refreshes (~8.5 min at 2s) covers the whole job
                     // lifetime (server registry: 16 jobs x 30s), so a slow
                     // find can still be assembled with its own tx set.
@@ -145,6 +182,8 @@ impl NodeProvider {
                 st.template = tpl;
                 st.txs = txs;
                 st.bonus = bonus;
+                st.pot_claim = pot;
+                st.coinbase = coinbase;
                 st.fetched_at = Instant::now();
             }
             Err(_) => {
@@ -165,35 +204,6 @@ impl TemplateProvider for NodeProvider {
 
     fn submit_block(&mut self, header: &[u8], height: u64, nonce: u64) -> BlockOutcome {
         let out = pow_hash(header, nonce, height);
-        // J1 gate: a bonus-coinbase block is only valid when the digest is
-        // a jackpot (doc 06 §6.2 ceiling). Refuse locally instead of
-        // submitting a block the node must reject.
-        if self.claim_jackpots {
-            let is_bonus_template = header_merkle(header).is_some_and(|m| {
-                let st = self.state.lock().expect("state");
-                (header_merkle(&st.template.header) == Some(m) && st.bonus > 0)
-                    || st.recent.iter().any(|(rm, _, rb)| *rm == m && *rb)
-            });
-            if is_bonus_template {
-                let net_target = {
-                    let st = self.state.lock().expect("state");
-                    st.template.net_target
-                };
-                // Must be the NET target: the node's ceiling checks
-                // nBits/100, and vardiff can move the pool target away from it.
-                if !lm_pow::is_jackpot(&out, primitive_types::U256::from_big_endian(&net_target)) {
-                    *self.rejected.lock().expect("rejected") += 1;
-                    return BlockOutcome {
-                        accepted: false,
-                        out,
-                        jackpot: false,
-                        bonus: 0,
-                        league_overflow: 0,
-                        reserve: 0,
-                    };
-                }
-            }
-        }
         let merkle = match header_merkle(header) {
             Some(m) => m,
             None => {
@@ -205,23 +215,46 @@ impl TemplateProvider for NodeProvider {
                     bonus: 0,
                     league_overflow: 0,
                     reserve: 0,
+                    coinbase: 0,
                 };
             }
         };
-        let txs = {
+        // Locate the template this header belongs to (current or ring) —
+        // assembly AND gating both need ITS claims, not the latest
+        // template's. Its normal coinbase value rides along for payout
+        // accounting.
+        let (txs, bonus, pot, coinbase) = {
             let st = self.state.lock().expect("state");
             if header_merkle(&st.template.header) == Some(merkle) {
-                Some(st.txs.clone())
+                (st.txs.clone(), st.bonus, st.pot_claim, st.coinbase)
             } else {
-                st.recent
-                    .iter()
-                    .find(|(m, _, _)| *m == merkle)
-                    .map(|(_, t, _)| t.clone())
+                match st.recent.iter().find(|r| r.merkle == merkle) {
+                    Some(r) => (r.txs.clone(), r.bonus, r.pot, r.coinbase),
+                    None => {
+                        // Unknown template (older than the ring): refuse
+                        // rather than assemble a block whose merkle cannot
+                        // match its header.
+                        drop(st);
+                        *self.rejected.lock().expect("rejected") += 1;
+                        return BlockOutcome {
+                            accepted: false,
+                            out,
+                            jackpot: false,
+                            bonus: 0,
+                            league_overflow: 0,
+                            reserve: 0,
+                            coinbase: 0,
+                        };
+                    }
+                }
             }
         };
-        let Some(txs) = txs else {
-            // Unknown template (older than the ring): refuse rather than
-            // assemble a block whose merkle cannot match its header.
+        // Local draw gate: a claim-template find is only submittable when
+        // the digest actually won the draw its coinbase claims (jackpot
+        // `digest < T/100`, pot `digest < T/1000`). Normal templates have
+        // no claims and always pass.
+        let net_target = self.state.lock().expect("state").template.net_target;
+        if !claim_gate(&out, &net_target, bonus, pot) {
             *self.rejected.lock().expect("rejected") += 1;
             return BlockOutcome {
                 accepted: false,
@@ -230,8 +263,9 @@ impl TemplateProvider for NodeProvider {
                 bonus: 0,
                 league_overflow: 0,
                 reserve: 0,
+                coinbase: 0,
             };
-        };
+        }
         let block_hex = assemble_block(header, nonce, &txs);
         let result = self
             .rpc
@@ -252,8 +286,28 @@ impl TemplateProvider for NodeProvider {
             bonus: 0,
             league_overflow: 0,
             reserve: 0,
+            coinbase: if accepted { coinbase } else { 0 },
         }
     }
+}
+
+/// Pre-submit gate for claim templates. `bonus`/`pot` are the amounts the
+/// candidate coinbase claims: a jackpot claim needs `digest < T/100`, a
+/// pot claim needs `digest < T/1000` (big-endian strict compares). Both
+/// draw thresholds come from the NETWORK target — vardiff can move the
+/// pool target away from it. Normal templates (0/0) always pass.
+#[must_use]
+pub fn claim_gate(out: &[u8; 32], net_target: &[u8; 32], bonus: u64, pot: u64) -> bool {
+    if bonus > 0 && !is_jackpot(out, U256::from_big_endian(net_target)) {
+        return false;
+    }
+    if pot > 0 {
+        let threshold = U256::from_big_endian(net_target) / U256::from(1000u64);
+        if U256::from_big_endian(out) >= threshold {
+            return false;
+        }
+    }
+    true
 }
 
 /// Parse a `getblocktemplate` result into (JobTemplate, all tx bytes with the coinbase first).
@@ -319,28 +373,53 @@ pub fn parse_gbt(gbt: &serde_json::Value) -> Result<(JobTemplate, Vec<Vec<u8>>),
     ))
 }
 
-/// GBT -> (template, txs, claimed bonus). With `claim` and a nonzero
-/// advisory `jackpotbonus`, the coinbase gains an output of that amount
-/// (same script as its last output) and the header merkle is recomputed —
-/// the J1 bonus template. Without it, the node's template passes through
-/// untouched (bonus = 0).
+/// Built template + its claims: (template, txs, claimed bonus, claimed
+/// pot, normal coinbase value). Alias keeps the signature readable (and
+/// clippy quiet).
+pub type BuiltTemplate = (JobTemplate, Vec<Vec<u8>>, u64, u64, u64);
+
+/// GBT -> [`BuiltTemplate`].
+///
+/// With `claim_jackpots` and a nonzero advisory `jackpotbonus`, the
+/// coinbase gains an output of that amount (same script as its last
+/// output). With `claim_pot` and a nonzero advisory `potcredited`, it
+/// gains the tier-A floor of the credited pot (`floor(credited/10)`) —
+/// the claim any pot event covers, so a floor-claim template is
+/// submittable on every tier. The header merkle is recomputed after the
+/// splices. Without claims (or with zero amounts) the node's template
+/// passes through untouched. The normal coinbase value is parsed from
+/// the node's own template bytes (before splicing) — what an accepted
+/// block pays the pool.
 pub fn build_template(
     gbt: &serde_json::Value,
-    claim: bool,
-) -> Result<(JobTemplate, Vec<Vec<u8>>, u64), String> {
+    claim_jackpots: bool,
+    claim_pot: bool,
+) -> Result<BuiltTemplate, String> {
     let (mut tpl, mut txs) = parse_gbt(gbt)?;
     let bonus = gbt.get("jackpotbonus").and_then(|v| v.as_u64()).unwrap_or(0);
-    if !claim || bonus == 0 || txs.is_empty() {
-        return Ok((tpl, txs, 0));
+    let pot_credited = gbt.get("potcredited").and_then(|v| v.as_u64()).unwrap_or(0);
+    // Net normal value from the node's own bytes, before splicing.
+    let coinbase = crate::tx::coinbase_outputs_total(&txs[0]).map_err(|e| {
+        format!("coinbase total for payout accounting: {e:?}")
+    })?;
+    let claimed_bonus = if claim_jackpots { bonus } else { 0 };
+    let claimed_pot = if claim_pot { pot_credited / 10 } else { 0 };
+    if (claimed_bonus == 0 && claimed_pot == 0) || txs.is_empty() {
+        return Ok((tpl, txs, 0, 0, coinbase));
     }
     let layout = crate::tx::parse_coinbase_layout(&txs[0])
-        .map_err(|e| format!("coinbase parse for bonus splice: {e:?}"))?;
-    let bonus_cb = crate::tx::append_output(&txs[0], bonus as i64, &layout.last_script)
-        .map_err(|e| format!("bonus splice: {e:?}"))?;
-    let new_root = merkle_root(&[txid(&bonus_cb)])?;
+        .map_err(|e| format!("coinbase parse for claim splice: {e:?}"))?;
+    if claimed_bonus > 0 {
+        txs[0] = crate::tx::append_output(&txs[0], claimed_bonus as i64, &layout.last_script)
+            .map_err(|e| format!("bonus splice: {e:?}"))?;
+    }
+    if claimed_pot > 0 {
+        txs[0] = crate::tx::append_output(&txs[0], claimed_pot as i64, &layout.last_script)
+            .map_err(|e| format!("pot splice: {e:?}"))?;
+    }
+    let new_root = merkle_root(&[txid(&txs[0])])?;
     tpl.header[MERKLE_RANGE].copy_from_slice(&new_root);
-    txs[0] = bonus_cb;
-    Ok((tpl, txs, bonus))
+    Ok((tpl, txs, claimed_bonus, claimed_pot, coinbase))
 }
 
 /// Double-SHA256 txid in internal (little-endian) byte order — the exact
@@ -649,14 +728,17 @@ mod tests {
         let mut gbt: serde_json::Value = serde_json::from_str(GBT_FIXTURE).expect("json");
         gbt["jackpotbonus"] = serde_json::json!(1_142_856u64);
         // claim=false: passthrough, bonus 0, template identical to parse_gbt
-        let (t0, tx0, b0) = build_template(&gbt, false).expect("passthrough");
+        let (t0, tx0, b0, p0, c0) = build_template(&gbt, false, false).expect("passthrough");
         let (t1, tx1) = parse_gbt(&gbt).expect("parse");
-        assert_eq!(b0, 0);
+        assert_eq!((b0, p0), (0, 0));
         assert_eq!(t0.header, t1.header);
         assert_eq!(tx0, tx1);
+        // Normal coinbase value from the fixture's single vout.
+        assert_eq!(c0, 0x01_22a4c3);
         // claim=true: coinbase gains a vout, merkle patched to the new txid
-        let (t2, tx2, b2) = build_template(&gbt, true).expect("bonus template");
-        assert_eq!(b2, 1_142_856);
+        let (t2, tx2, b2, p2, c2) = build_template(&gbt, true, false).expect("bonus template");
+        assert_eq!((b2, p2), (1_142_856, 0));
+        assert_eq!(c2, 0x01_22a4c3); // claims never move the normal value
         assert_eq!(tx2.len(), 1);
         let l = crate::tx::parse_coinbase_layout(&tx2[0]).expect("layout");
         assert_eq!(l.vout_count, 2);
@@ -666,8 +748,78 @@ mod tests {
         assert_ne!(&t2.header[MERKLE_RANGE], &t1.header[MERKLE_RANGE]);
         // claim=true with zero bonus: passthrough
         gbt["jackpotbonus"] = serde_json::json!(0);
-        let (_, _, b3) = build_template(&gbt, true).expect("zero bonus");
-        assert_eq!(b3, 0);
+        let (_, _, b3, p3, c3) = build_template(&gbt, true, false).expect("zero bonus");
+        assert_eq!((b3, p3), (0, 0));
+        assert_eq!(c3, 0x01_22a4c3);
+    }
+
+    #[test]
+    fn pot_template_splices_floor_tier() {
+        let mut gbt: serde_json::Value = serde_json::from_str(GBT_FIXTURE).expect("json");
+        gbt["potcredited"] = serde_json::json!(2_500_000u64);
+        // claim_jackpots=false, claim_pot=true: one extra vout of the
+        // tier-A floor (credited/10), merkle patched.
+        let (t0, tx0, b0, p0, c0) = build_template(&gbt, false, true).expect("pot template");
+        assert_eq!((b0, p0), (0, 250_000));
+        assert_eq!(c0, 0x01_22a4c3);
+        let l = crate::tx::parse_coinbase_layout(&tx0[0]).expect("layout");
+        assert_eq!(l.vout_count, 2);
+        assert_eq!(l.last_value, 250_000);
+        let root = merkle_root(&[txid(&tx0[0])]).expect("root");
+        assert_eq!(&t0.header[MERKLE_RANGE], &root[..]);
+        // potcredited 0: passthrough.
+        gbt["potcredited"] = serde_json::json!(0);
+        let (_, _, b1, p1, c1) = build_template(&gbt, false, true).expect("zero pot");
+        assert_eq!((b1, p1), (0, 0));
+        assert_eq!(c1, 0x01_22a4c3);
+        // potcredited dust (<10): floor claim is 0, passthrough.
+        gbt["potcredited"] = serde_json::json!(9u64);
+        let (_, _, _, p2, c2) = build_template(&gbt, false, true).expect("dust pot");
+        assert_eq!(p2, 0);
+        assert_eq!(c2, 0x01_22a4c3);
+    }
+
+    #[test]
+    fn both_claims_splice_two_outputs() {
+        let mut gbt: serde_json::Value = serde_json::from_str(GBT_FIXTURE).expect("json");
+        gbt["jackpotbonus"] = serde_json::json!(1_142_856u64);
+        gbt["potcredited"] = serde_json::json!(2_500_000u64);
+        let (t, tx, b, p, c) = build_template(&gbt, true, true).expect("both");
+        assert_eq!((b, p), (1_142_856, 250_000));
+        assert_eq!(c, 0x01_22a4c3);
+        let l = crate::tx::parse_coinbase_layout(&tx[0]).expect("layout");
+        assert_eq!(l.vout_count, 3);
+        assert_eq!(l.last_value, 250_000);
+        let root = merkle_root(&[txid(&tx[0])]).expect("root");
+        assert_eq!(&t.header[MERKLE_RANGE], &root[..]);
+    }
+
+    #[test]
+    fn claim_gate_matches_the_node_draws() {
+        fn be32(v: u64) -> [u8; 32] {
+            let mut a = [0u8; 32];
+            a[24..].copy_from_slice(&v.to_be_bytes());
+            a
+        }
+        // out = 1000; targets chosen so T/100 and T/1000 sit on either
+        // side of it (strict compares both ways).
+        let out = be32(1000);
+        let neither = be32(100_000); // T/100 = 1000 (no), T/1000 = 100 (no)
+        let jackpot_only = be32(101_000); // T/100 = 1010 (yes), T/1000 = 101 (no)
+        let both = be32(2_000_000); // T/100 = 20000 (yes), T/1000 = 2000 (yes)
+        // Normal template: gates open regardless of draws.
+        assert!(claim_gate(&out, &neither, 0, 0));
+        // Jackpot claim: only jackpot-drawing targets pass.
+        assert!(claim_gate(&out, &jackpot_only, 1, 0));
+        assert!(claim_gate(&out, &both, 1, 0));
+        assert!(!claim_gate(&out, &neither, 1, 0));
+        // Pot claim: only pot-drawing targets pass.
+        assert!(claim_gate(&out, &both, 0, 1));
+        assert!(!claim_gate(&out, &jackpot_only, 0, 1));
+        assert!(!claim_gate(&out, &neither, 0, 1));
+        // Both claims: need both draws.
+        assert!(claim_gate(&out, &both, 1, 1));
+        assert!(!claim_gate(&out, &jackpot_only, 1, 1));
     }
 
     #[test]
