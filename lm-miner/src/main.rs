@@ -13,7 +13,8 @@
 //! `--job-timeout`, 2 = usage error. No third-party argument parser by design
 //! (portable, offline-buildable, auditable) — flags are `--name value`.
 
-use lm_miner::{bench, cpu_label, opencl, search};
+use lm_miner::thermal::MiningPolicy;
+use lm_miner::{bench, cpu_label, opencl, search_with_policy};
 use lm_pow::difficulty::compact_to_target;
 use lm_stratum::client::PoolClient;
 use std::net::SocketAddr;
@@ -22,14 +23,15 @@ use std::time::Duration;
 
 const USAGE: &str = "usage:
   lm-miner bench [--threads N] [--hashes N] [--height H] [--header HEX] [--json]
-  lm-miner mine --header HEX --height H --target (HEX64 | nbits:XXXXXXXX | max) [--threads N] [--start N] [--count N]
-  lm-miner pool --pool HOST:PORT --worker NAME [--agent STR] [--threads N] [--start N] [--count N] [--max-shares N] [--job-timeout SECS]
+  lm-miner mine --header HEX --height H --target (HEX64 | nbits:XXXXXXXX | max) [--threads N] [--start N] [--count N] [--max-temp C] [--duty N]
+  lm-miner pool --pool HOST:PORT --worker NAME [--agent STR] [--threads N] [--start N] [--count N] [--max-shares N] [--job-timeout SECS] [--max-temp C] [--duty N]
   lm-miner gpu-test [--platform N] [--device N]
 
 bench defaults: threads=auto, hashes=3/thread, height=1, 80-byte 0x00..0x4F header.
 mine defaults: threads=auto, start=0, count=1000000.
 pool defaults: agent=lm-miner/0.1, threads=auto, start=0, count=1000000/job, max-shares=unlimited, job-timeout=30s.
 gpu-test: runs the frozen KAT vectors through the GPU (needs OpenCL hardware).
+safety defaults: --max-temp 75 (pause above; 0 disables), --duty 100 (hash percent).
 exit: 0 found/done/session-complete, 1 exhausted/idle, 2 usage.";
 
 fn default_threads() -> usize {
@@ -104,6 +106,8 @@ struct MineOpts {
     threads: usize,
     start: u64,
     count: u64,
+    max_temp: i64,
+    duty: i64,
 }
 
 fn parse_bench(args: &[String]) -> Result<BenchOpts, String> {
@@ -157,9 +161,19 @@ fn parse_mine(args: &[String]) -> Result<MineOpts, String> {
     let mut threads = default_threads();
     let mut start = 0u64;
     let mut count = 1_000_000u64;
+    let mut max_temp = lm_miner::thermal::DEFAULT_MAX_TEMP_C;
+    let mut duty = 100i64;
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
+            "--max-temp" => {
+                i += 1;
+                max_temp = args.get(i).ok_or("--max-temp needs a value")?.parse().map_err(|_| "--max-temp expects an integer")?;
+            }
+            "--duty" => {
+                i += 1;
+                duty = args.get(i).ok_or("--duty needs a value")?.parse().map_err(|_| "--duty expects an integer")?;
+            }
             "--header" => {
                 i += 1;
                 header = Some(parse_hex(args.get(i).ok_or("--header needs a value")?, "header")?);
@@ -199,6 +213,8 @@ fn parse_mine(args: &[String]) -> Result<MineOpts, String> {
         threads,
         start,
         count,
+        max_temp,
+        duty,
     })
 }
 
@@ -227,7 +243,14 @@ fn run_bench(o: &BenchOpts) {
 }
 
 fn run_mine(o: &MineOpts) -> ExitCode {
-    match search(&o.header, o.height, &o.target, o.start, o.count, o.threads) {
+    let policy = match MiningPolicy::new(o.max_temp, o.duty) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return ExitCode::from(2);
+        }
+    };
+    match search_with_policy(&o.header, o.height, &o.target, o.start, o.count, o.threads, &policy) {
         Some(s) => {
             println!("found nonce={} out={}", s.nonce, hex_of(&s.out));
             ExitCode::SUCCESS
@@ -252,6 +275,8 @@ struct PoolOpts {
     count: u64,
     max_shares: u64, // u64::MAX = unlimited
     job_timeout_secs: u64,
+    max_temp: i64,
+    duty: i64,
 }
 
 fn parse_pool(args: &[String]) -> Result<PoolOpts, String> {
@@ -263,9 +288,19 @@ fn parse_pool(args: &[String]) -> Result<PoolOpts, String> {
     let mut count = 1_000_000u64;
     let mut max_shares = u64::MAX;
     let mut job_timeout_secs = 30u64;
+    let mut max_temp = lm_miner::thermal::DEFAULT_MAX_TEMP_C;
+    let mut duty = 100i64;
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
+            "--max-temp" => {
+                i += 1;
+                max_temp = args.get(i).ok_or("--max-temp needs a value")?.parse().map_err(|_| "--max-temp expects an integer")?;
+            }
+            "--duty" => {
+                i += 1;
+                duty = args.get(i).ok_or("--duty needs a value")?.parse().map_err(|_| "--duty expects an integer")?;
+            }
             "--pool" => {
                 i += 1;
                 pool = Some(args.get(i).ok_or("--pool needs a value")?.to_string());
@@ -315,10 +350,17 @@ fn parse_pool(args: &[String]) -> Result<PoolOpts, String> {
     if count == 0 {
         return Err("--count must be >= 1".to_string());
     }
-    Ok(PoolOpts { pool, worker, agent, threads, start, count, max_shares, job_timeout_secs })
+    Ok(PoolOpts { pool, worker, agent, threads, start, count, max_shares, job_timeout_secs, max_temp, duty })
 }
 
 fn run_pool(o: &PoolOpts) -> ExitCode {
+    let policy = match MiningPolicy::new(o.max_temp, o.duty) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return ExitCode::from(2);
+        }
+    };
     let addr: SocketAddr = match o.pool.parse() {
         Ok(a) => a,
         Err(_) => {
@@ -379,7 +421,7 @@ fn run_pool(o: &PoolOpts) -> ExitCode {
             continue; // already ground this template
         }
         last_job = job.id.clone();
-        match search(&job.header, job.height, &job.pool_target, o.start, o.count, o.threads) {
+        match search_with_policy(&job.header, job.height, &job.pool_target, o.start, o.count, o.threads, &policy) {
             Some(sol) => match client.submit(&o.worker, &job.id, sol.nonce) {
                 Ok((true, _)) => {
                     submitted += 1;

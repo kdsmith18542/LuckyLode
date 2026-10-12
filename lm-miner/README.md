@@ -25,6 +25,15 @@ cargo run -p lm-miner -- pool --pool 127.0.0.1:3333 --worker rig1 \
 Exit codes: 0 = bench done / solution found, 1 = budget exhausted,
 2 = usage error.
 
+**Safety defaults (every mine/pool run):** `--max-temp 75` pauses hashing
+while the CPU package is at/above the cap (2°C hysteresis, 30s minimum
+dwell, 5→60s escalating backoff; 0 disables; unreadable sensors = no-op),
+and `--duty 100` sets the percent of each chunk spent hashing. The
+standalone miner must never be able to cook hardware — a 6-thread test
+run without these hit 90°C, which is why they exist. Verified live:
+guard at 60°C (69°C actual) cut CPU burn from 10.4s to 1.8s over a 30s
+window.
+
 Tests: `cargo test -p lm-miner` — lib unit (empty work, bench counts,
 JSON shape), `tests/search.rs` (single-thread solve pinned at KAT V1
 nonce 0, strict-less boundary, multi-thread validity, stride
