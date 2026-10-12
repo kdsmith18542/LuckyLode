@@ -41,6 +41,11 @@ struct TemplateState {
     /// a 2s refresh between grind and submit swapped the coinbase and made
     /// the submitted merkle disagree with its own header).
     recent: std::collections::VecDeque<([u8; 32], Vec<Vec<u8>>)>,
+    /// Bonus claimed by this template's coinbase (0 = normal template).
+    /// J1: a bonus coinbase is only submittable when the found digest is a
+    /// jackpot (the node's ceiling enforces it; the gate saves a doomed
+    /// submit and keeps the pool honest about its own work).
+    bonus: u64,
     fetched_at: Instant,
 }
 
@@ -57,24 +62,44 @@ pub struct NodeProvider {
     state: Mutex<TemplateState>,
     accepted: Mutex<u64>,
     rejected: Mutex<u64>,
+    /// J1: serve bonus templates (coinbase claims min(5R, reserve)) and
+    /// only submit their finds when the digest is a jackpot.
+    claim_jackpots: bool,
 }
 
 impl NodeProvider {
     /// Connect and fetch the first template; fails fast if the node is
     /// unreachable or returns something unmappable.
     pub fn connect(addr: &str, user: &str, pass: &str) -> Result<Self, String> {
+        Self::connect_with_claims(addr, user, pass, false)
+    }
+
+    /// As [`connect`], optionally serving J1 bonus templates.
+    pub fn connect_with_claims(
+        addr: &str,
+        user: &str,
+        pass: &str,
+        claim_jackpots: bool,
+    ) -> Result<Self, String> {
         let rpc = RpcClient::new(addr, user, pass);
         let gbt = rpc.call("getblocktemplate", serde_json::json!([{"capabilities": []}]))?;
-        let (tpl, txs) = parse_gbt(&gbt)?;
+        let (tpl, txs, bonus) = build_template(&gbt, claim_jackpots)?;
         let mut recent = std::collections::VecDeque::new();
         if let Some(m) = header_merkle(&tpl.header) {
             recent.push_front((m, txs.clone()));
         }
         Ok(Self {
             rpc,
-            state: Mutex::new(TemplateState { template: tpl, txs, recent, fetched_at: Instant::now() }),
+            state: Mutex::new(TemplateState {
+                template: tpl,
+                txs,
+                recent,
+                bonus,
+                fetched_at: Instant::now(),
+            }),
             accepted: Mutex::new(0),
             rejected: Mutex::new(0),
+            claim_jackpots,
         })
     }
 
@@ -97,12 +122,13 @@ impl NodeProvider {
                 return;
             }
         }
+        let claim = self.claim_jackpots;
         match self
             .rpc
             .call("getblocktemplate", serde_json::json!([{"capabilities": []}]))
-            .and_then(|gbt| parse_gbt(&gbt))
+            .and_then(|gbt| build_template(&gbt, claim))
         {
-            Ok((tpl, txs)) => {
+            Ok((tpl, txs, bonus)) => {
                 let mut st = self.state.lock().expect("state");
                 if let Some(m) = header_merkle(&tpl.header) {
                     st.recent.push_front((m, txs.clone()));
@@ -112,6 +138,7 @@ impl NodeProvider {
                 }
                 st.template = tpl;
                 st.txs = txs;
+                st.bonus = bonus;
                 st.fetched_at = Instant::now();
             }
             Err(_) => {
@@ -132,6 +159,32 @@ impl TemplateProvider for NodeProvider {
 
     fn submit_block(&mut self, header: &[u8], height: u64, nonce: u64) -> BlockOutcome {
         let out = pow_hash(header, nonce, height);
+        // J1 gate: a bonus-coinbase block is only valid when the digest is
+        // a jackpot (doc 06 §6.2 ceiling). Refuse locally instead of
+        // submitting a block the node must reject.
+        if self.claim_jackpots {
+            let is_bonus_template = {
+                let st = self.state.lock().expect("state");
+                st.bonus > 0 && header_merkle(&st.template.header) == header_merkle(header)
+            };
+            if is_bonus_template {
+                let target = {
+                    let st = self.state.lock().expect("state");
+                    st.template.pool_target
+                };
+                if !lm_pow::is_jackpot(&out, primitive_types::U256::from_big_endian(&target)) {
+                    *self.rejected.lock().expect("rejected") += 1;
+                    return BlockOutcome {
+                        accepted: false,
+                        out,
+                        jackpot: false,
+                        bonus: 0,
+                        league_overflow: 0,
+                        reserve: 0,
+                    };
+                }
+            }
+        }
         let merkle = match header_merkle(header) {
             Some(m) => m,
             None => {
@@ -255,6 +308,30 @@ pub fn parse_gbt(gbt: &serde_json::Value) -> Result<(JobTemplate, Vec<Vec<u8>>),
         JobTemplate { header, height, pool_target: target, net_target: target },
         txs,
     ))
+}
+
+/// GBT -> (template, txs, claimed bonus). With `claim` and a nonzero
+/// advisory `jackpotbonus`, the coinbase gains an output of that amount
+/// (same script as its last output) and the header merkle is recomputed —
+/// the J1 bonus template. Without it, the node's template passes through
+/// untouched (bonus = 0).
+pub fn build_template(
+    gbt: &serde_json::Value,
+    claim: bool,
+) -> Result<(JobTemplate, Vec<Vec<u8>>, u64), String> {
+    let (mut tpl, mut txs) = parse_gbt(gbt)?;
+    let bonus = gbt.get("jackpotbonus").and_then(|v| v.as_u64()).unwrap_or(0);
+    if !claim || bonus == 0 || txs.is_empty() {
+        return Ok((tpl, txs, 0));
+    }
+    let layout = crate::tx::parse_coinbase_layout(&txs[0])
+        .map_err(|e| format!("coinbase parse for bonus splice: {e:?}"))?;
+    let bonus_cb = crate::tx::append_output(&txs[0], bonus as i64, &layout.last_script)
+        .map_err(|e| format!("bonus splice: {e:?}"))?;
+    let new_root = merkle_root(&[txid(&bonus_cb)])?;
+    tpl.header[MERKLE_RANGE].copy_from_slice(&new_root);
+    txs[0] = bonus_cb;
+    Ok((tpl, txs, bonus))
 }
 
 /// Double-SHA256 txid in internal (little-endian) byte order — the exact
@@ -559,6 +636,33 @@ mod tests {
     }
 
     #[test]
+
+    #[test]
+    fn bonus_template_splices_and_patches_merkle() {
+        let mut gbt: serde_json::Value = serde_json::from_str(GBT_FIXTURE).expect("json");
+        gbt["jackpotbonus"] = serde_json::json!(1_142_856u64);
+        // claim=false: passthrough, bonus 0, template identical to parse_gbt
+        let (t0, tx0, b0) = build_template(&gbt, false).expect("passthrough");
+        let (t1, tx1) = parse_gbt(&gbt).expect("parse");
+        assert_eq!(b0, 0);
+        assert_eq!(t0.header, t1.header);
+        assert_eq!(tx0, tx1);
+        // claim=true: coinbase gains a vout, merkle patched to the new txid
+        let (t2, tx2, b2) = build_template(&gbt, true).expect("bonus template");
+        assert_eq!(b2, 1_142_856);
+        assert_eq!(tx2.len(), 1);
+        let l = crate::tx::parse_coinbase_layout(&tx2[0]).expect("layout");
+        assert_eq!(l.vout_count, 2);
+        assert_eq!(l.last_value, 1_142_856);
+        let root = merkle_root(&[txid(&tx2[0])]).expect("root");
+        assert_eq!(&t2.header[MERKLE_RANGE], &root[..]);
+        assert_ne!(&t2.header[MERKLE_RANGE], &t1.header[MERKLE_RANGE]);
+        // claim=true with zero bonus: passthrough
+        gbt["jackpotbonus"] = serde_json::json!(0);
+        let (_, _, b3) = build_template(&gbt, true).expect("zero bonus");
+        assert_eq!(b3, 0);
+    }
+
     fn compactsize_encodes_all_ranges() {
         assert_eq!(compactsize(1), vec![0x01]);
         assert_eq!(compactsize(252), vec![0xfc]);
