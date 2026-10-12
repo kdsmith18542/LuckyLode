@@ -73,6 +73,10 @@ impl PolicyRuntime {
     /// sensor is unavailable (guard becomes a no-op); `chunk_elapsed` is
     /// pure hashing time since the last decision.
     pub fn decide(&mut self, temp_c: i32, chunk_elapsed: Duration) -> Duration {
+        // Wall-clock semantics: the caller sleeps for the returned duration,
+        // so the clock must advance by work AND sleep — otherwise the dwell
+        // check (30s) advances at work-speed only and a paused miner takes
+        // ~an hour of escalating sleeps to resume (live-caught bug).
         self.clock += chunk_elapsed;
         let mut sleep = Duration::ZERO;
 
@@ -107,6 +111,7 @@ impl PolicyRuntime {
                 }
             }
         }
+        self.clock += sleep;
         sleep
     }
 
@@ -193,29 +198,14 @@ mod tests {
         // at cap: trip, 5s backoff
         assert_eq!(ms(rt.decide(75, Duration::from_secs(1))), 5000);
         assert!(rt.is_paused());
-        // still hot: backoff escalates 10, 20
+        // still hot: backoff escalates 10, 20 (sleeps count toward the dwell)
         assert_eq!(ms(rt.decide(80, Duration::from_secs(1))), 10_000);
         assert_eq!(ms(rt.decide(80, Duration::from_secs(1))), 20_000);
-        // cool enough, but dwell (30s) not yet reached: stays paused
-        assert_eq!(ms(rt.decide(70, Duration::from_secs(1))), 40_000);
-        // keep feeding cool chunks; must stay paused until the dwell
-        // elapses, then resume exactly once
-        let mut guard = 0;
-        while rt.is_paused() {
-            let d = rt.decide(70, Duration::from_secs(5));
-            if !rt.is_paused() {
-                assert_eq!(d, Duration::ZERO, "resume chunk sleeps nothing");
-                break;
-            }
-            assert!(d > Duration::ZERO, "stays paused until dwell");
-            guard += 1;
-            assert!(guard < 50, "dwell never satisfied");
-        }
+        // by now 5+10+20 = 35s of sleep have passed since the trip (>30s
+        // dwell); a cool chunk resumes immediately
+        assert_eq!(rt.decide(70, Duration::from_secs(1)), Duration::ZERO);
         assert!(!rt.is_paused());
-        // now below cap-2 after the dwell: resume, backoff reset
-        assert_eq!(rt.decide(72, Duration::from_secs(1)), Duration::ZERO);
-        assert!(!rt.is_paused());
-        // hysteresis: 73 (within cap-2 band) must NOT re-trip
+        // hysteresis: 73 (the cap-2 band) must NOT re-trip
         assert_eq!(rt.decide(73, Duration::from_secs(1)), Duration::ZERO);
         // 75 trips again with the reset backoff
         assert_eq!(ms(rt.decide(75, Duration::from_secs(1))), 5000);
@@ -230,6 +220,25 @@ mod tests {
         assert!(rt.decide(73, Duration::from_secs(60)) > Duration::ZERO);
         // 72 resumes (dwell now satisfied)
         assert_eq!(rt.decide(72, Duration::from_secs(1)), Duration::ZERO);
+    }
+
+    #[test]
+    fn dwell_advances_with_sleep_time_not_work_time() {
+        // Live-caught: with ~0.45s work chunks, a paused miner must resume
+        // within a bounded number of decisions (sleeps advance the clock),
+        // not after ~67 escalating decisions.
+        let mut rt = MiningPolicy::new(75, 100).unwrap().runtime();
+        rt.decide(80, Duration::from_millis(450)); // trip
+        assert!(rt.is_paused());
+        let mut decisions = 0;
+        while rt.is_paused() {
+            let d = rt.decide(70, Duration::from_millis(450));
+            decisions += 1;
+            assert!(decisions < 10, "dwell should be satisfied in <10 decisions, took {decisions}");
+            assert!(d >= Duration::ZERO);
+        }
+        // 5s + 10 + 20 + 40(partial) -> resumes by the 5th decision at most
+        assert!(decisions <= 6, "took {decisions} decisions");
     }
 
     #[test]
