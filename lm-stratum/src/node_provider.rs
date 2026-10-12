@@ -168,11 +168,13 @@ impl TemplateProvider for NodeProvider {
                 st.bonus > 0 && header_merkle(&st.template.header) == header_merkle(header)
             };
             if is_bonus_template {
-                let target = {
+                let net_target = {
                     let st = self.state.lock().expect("state");
-                    st.template.pool_target
+                    st.template.net_target
                 };
-                if !lm_pow::is_jackpot(&out, primitive_types::U256::from_big_endian(&target)) {
+                // Must be the NET target: the node's ceiling checks
+                // nBits/100, and vardiff can move the pool target away from it.
+                if !lm_pow::is_jackpot(&out, primitive_types::U256::from_big_endian(&net_target)) {
                     *self.rejected.lock().expect("rejected") += 1;
                     return BlockOutcome {
                         accepted: false,
