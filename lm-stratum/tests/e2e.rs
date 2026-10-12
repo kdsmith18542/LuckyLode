@@ -99,6 +99,61 @@ fn full_loop_share_block_jackpot_and_money() {
 }
 
 #[test]
+fn share_replay_across_connections_is_rejected() {
+    // Tight network target: shares are never blocks, so the template (and
+    // therefore the shared job id and header) is stable across both
+    // connections — the replay rides the identical work identity.
+    let server = spawn_server(
+        MockProvider::new([0xffu8; 32], [0x00u8; 32], BASE, 0),
+        "127.0.0.1:0",
+    )
+    .expect("bind");
+    let mut a = PoolClient::connect(server.addr()).expect("connect a");
+    let mut b = PoolClient::connect(server.addr()).expect("connect b");
+    assert!(a.subscribe("replay").expect("sub a"));
+    assert!(b.subscribe("replay").expect("sub b"));
+    assert!(a.authorize("alice").expect("auth a"));
+    assert!(b.authorize("bob").expect("auth b"));
+    let alice = worker_id("alice");
+
+    let job_a = a.read_job(Duration::from_secs(5)).expect("io").expect("job a");
+    // Max pool target accepts any nonce; the zero net target rejects every
+    // share, so nothing is a block and the template never rotates.
+    let n = 0u64;
+
+    // alice's submit on connection A is accepted and credited once.
+    let (ok, err) = a.submit("alice", &job_a.id, n).expect("submit");
+    assert!(ok, "first share rejected: {err:?}");
+    assert_eq!(server.stats().shares, 1);
+
+    // bob replays the same job id + nonce on a FRESH connection (his job
+    // registry started empty, so the per-connection check alone would
+    // pass it): the pool-wide work-identity dedupe rejects it.
+    let (ok, err) = b.submit("bob", &job_a.id, n).expect("replay");
+    assert!(!ok);
+    assert_eq!(err.map(|(code, _)| code), Some(21));
+    assert_eq!(server.stats().shares, 1, "replay must not credit twice");
+    assert_eq!(server.stats().rejects, 1);
+
+    // The ledger saw exactly alice's one share — bob's replay paid nobody.
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let agg = server.aggregate(30 * 86_400, now);
+    assert_eq!(agg.len(), 1);
+    assert_eq!(agg[0].miner, alice);
+    assert_eq!(agg[0].raw_work, 1);
+
+    // A different nonce still validates on the replaying connection.
+    let (ok, _) = b.submit("bob", &job_a.id, 1).expect("fresh share");
+    assert!(ok);
+    assert_eq!(server.stats().shares, 2);
+
+    server.stop();
+}
+
+#[test]
 fn protocol_edges_are_typed() {
     let server = spawn_server(MockProvider::instant(BASE), "127.0.0.1:0").expect("bind");
     let mut c = PoolClient::connect(server.addr()).expect("connect");

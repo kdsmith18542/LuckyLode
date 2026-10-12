@@ -16,15 +16,30 @@ pub struct PoolClient {
     /// Notifies that arrived while waiting for a response (id-matched reads
     /// must not swallow them — Stratum multiplexes jobs over responses).
     pending: Vec<Job>,
+    /// Per-RPC response deadline. 10 s is right for a healthy pool; slow
+    /// or heavily loaded boxes (a reference-pool testbed that also mines)
+    /// need more, hence [`PoolClient::connect_patient`].
+    rpc_deadline: Duration,
 }
 
 impl PoolClient {
     pub fn connect(addr: SocketAddr) -> std::io::Result<Self> {
+        Self::connect_patient(addr, Duration::from_secs(10))
+    }
+
+    /// Connect with a custom per-RPC deadline.
+    pub fn connect_patient(addr: SocketAddr, rpc_deadline: Duration) -> std::io::Result<Self> {
         let stream = TcpStream::connect_timeout(&addr, Duration::from_secs(5))?;
         stream.set_read_timeout(Some(Duration::from_secs(5)))?;
         stream.set_write_timeout(Some(Duration::from_secs(5)))?;
         let reader = BufReader::new(stream.try_clone()?);
-        Ok(Self { reader, writer: stream, next_id: 1, pending: Vec::new() })
+        Ok(Self {
+            reader,
+            writer: stream,
+            next_id: 1,
+            pending: Vec::new(),
+            rpc_deadline,
+        })
     }
 
     fn rpc(&mut self, method: &str, params: serde_json::Value) -> std::io::Result<Message> {
@@ -33,7 +48,7 @@ impl PoolClient {
         let line = serde_json::json!({"id": id, "method": method, "params": params}).to_string();
         writeln!(self.writer, "{line}")?;
         let want = serde_json::Value::from(id);
-        let deadline = Instant::now() + Duration::from_secs(10);
+        let deadline = Instant::now() + self.rpc_deadline;
         while Instant::now() < deadline {
             match self.read_message()? {
                 Some(m) if m.id == Some(want.clone()) => return Ok(m),

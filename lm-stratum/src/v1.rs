@@ -25,7 +25,7 @@
 
 use lm_pow::{meets_target, pow_hash};
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 /// A mining job: everything a worker needs to grind.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -64,13 +64,14 @@ impl Verdict {
     }
 }
 
-/// Recent-job registry with duplicate tracking. Only jobs in the window
-/// validate; anything older is stale, anything never issued is unknown.
+/// Recent-job registry. Only jobs in the window validate; anything older
+/// is stale, anything never issued is unknown. Nonce dedupe lives in the
+/// pool-wide [`Dedupe`] (passed to [`JobRegistry::evaluate`]) so a
+/// replayed share is rejected on a fresh connection as well.
 #[derive(Debug, Default)]
 pub struct JobRegistry {
     jobs: HashMap<String, Job>,
     order: Vec<String>,
-    seen: HashSet<(String, u64)>,
     window: usize,
     /// Height of the newest issued job. A job is STALE only when a newer
     /// job at a DIFFERENT height exists (superseded by a block). Timer
@@ -85,30 +86,38 @@ impl JobRegistry {
         Self {
             jobs: HashMap::new(),
             order: Vec::new(),
-            seen: HashSet::new(),
             window: window.max(1),
             latest_height: 0,
         }
     }
 
-    /// Issue a job (evicts the oldest beyond the window, with its nonces).
+    /// Issue a job (evicts the oldest beyond the window).
     pub fn issue(&mut self, job: Job) {
         if !self.jobs.contains_key(&job.id) {
             self.order.push(job.id.clone());
         }
-        self.latest_height = self.latest_height.max(job.height);
+        // Track the CURRENT tip height (assign, not max): after a reorg to
+        // a lower height, newly issued jobs on the active chain must not be
+        // rejected as stale (a max() would keep the abandoned height and
+        // mark every post-reorg job stale).
+        self.latest_height = job.height;
         self.jobs.insert(job.id.clone(), job);
         while self.order.len() > self.window {
             let old = self.order.remove(0);
             self.jobs.remove(&old);
-            self.seen.retain(|(j, _)| j != &old);
         }
     }
 
-    /// Pure evaluation of a submit: job lookup → dupe check → PoW check.
-    /// Marks `(job, nonce)` seen on every *evaluable* submit so replays are
-    /// duplicates even when the first attempt was low-difficulty.
-    pub fn evaluate(&mut self, job_id: &str, nonce_hex: &str) -> (Verdict, Option<JobSubmit>) {
+    /// Pure evaluation of a submit: job lookup → cross-connection dupe
+    /// check → PoW check. Marks the work identity seen on every
+    /// *evaluable* submit (even stale or low-difficulty ones) so replays
+    /// are duplicates even when the first attempt was rejected.
+    pub fn evaluate(
+        &mut self,
+        job_id: &str,
+        nonce_hex: &str,
+        dedupe: &mut Dedupe,
+    ) -> (Verdict, Option<JobSubmit>) {
         let job = match self.jobs.get(job_id) {
             Some(j) => j.clone(),
             None => return (Verdict::UnknownJob, None),
@@ -120,7 +129,7 @@ impl JobRegistry {
             Some(n) => n,
             None => return (Verdict::BadNonce, None),
         };
-        if !self.seen.insert((job_id.to_string(), nonce)) {
+        if !dedupe.insert(&job.header, nonce) {
             return (Verdict::Duplicate, None);
         }
         if is_stale {
@@ -141,6 +150,79 @@ pub struct JobSubmit {
     pub job: Job,
     pub nonce: u64,
     pub out: [u8; 32],
+}
+
+/// Default work-identity memory: 2^16 recent submissions.
+const DEFAULT_WORK_WINDOW: usize = 1 << 16;
+
+/// Work identity for dedupe: FNV-1a-64 over the header bytes then the
+/// nonce. The same header+nonce is the same hash output no matter which
+/// job id, connection, or vardiff target it rode on (a vardiff retarget
+/// keeps the header and mints a fresh job id — live-caught: nonce 20796
+/// credited on jobs 1f/20/21 in a row). A 64-bit collision can only
+/// reject one legitimate share, never mint money.
+fn work_identity(header: &[u8], nonce: u64) -> u64 {
+    let mut h: u64 = 0xcbf29ce484222325;
+    for b in header {
+        h ^= *b as u64;
+        h = h.wrapping_mul(0x100000001b3);
+    }
+    for b in nonce.to_le_bytes() {
+        h ^= b as u64;
+        h = h.wrapping_mul(0x100000001b3);
+    }
+    h
+}
+
+/// Pool-wide set of recently seen work identities, shared by every
+/// connection. FIFO-evicting at the window cap: memory is bounded on a
+/// long run, and an evicted identity replaying older than the window is
+/// the documented reference-pool trade-off (finding F) — far better than
+/// the per-connection sets it replaces, which evicted a share's nonce
+/// the moment its job left a 16-slot window and could not see replays
+/// across connections at all.
+#[derive(Debug)]
+pub struct Dedupe {
+    seen: HashSet<u64>,
+    order: VecDeque<u64>,
+    cap: usize,
+}
+
+impl Dedupe {
+    pub fn new(cap: usize) -> Self {
+        Self { seen: HashSet::new(), order: VecDeque::new(), cap: cap.max(1) }
+    }
+
+    /// Record a submission; `false` when this identity is already present
+    /// (a replay). Insertion is unconditional (also for stale jobs) so a
+    /// replayed share stays a duplicate even if its first attempt was
+    /// rejected.
+    pub fn insert(&mut self, header: &[u8], nonce: u64) -> bool {
+        let id = work_identity(header, nonce);
+        if !self.seen.insert(id) {
+            return false;
+        }
+        self.order.push_back(id);
+        while self.order.len() > self.cap {
+            let evicted = self.order.pop_front().expect("order tracks seen");
+            self.seen.remove(&evicted);
+        }
+        true
+    }
+
+    pub fn len(&self) -> usize {
+        self.seen.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.seen.is_empty()
+    }
+}
+
+impl Default for Dedupe {
+    fn default() -> Self {
+        Self::new(DEFAULT_WORK_WINDOW)
+    }
 }
 
 /// Parse the submit nonce: exactly 16 hex chars, u64 big-endian.
@@ -299,49 +381,111 @@ mod tests {
     #[test]
     fn accept_then_duplicate_then_stale() {
         let mut reg = JobRegistry::new(4);
+        let mut dedupe = Dedupe::new(16);
         reg.issue(job("a"));
         reg.issue(job("b")); // same height: rotation, NOT staleness
-        let (v, s) = reg.evaluate("b", &render_nonce(0));
+        let (v, s) = reg.evaluate("b", &render_nonce(0), &mut dedupe);
         assert_eq!(v, Verdict::Accept { block: true }); // max targets: share + block
         assert!(s.is_some());
-        let (v, _) = reg.evaluate("b", &render_nonce(0));
+        let (v, _) = reg.evaluate("b", &render_nonce(0), &mut dedupe);
         assert_eq!(v, Verdict::Duplicate);
         // same-height rotation keeps the older job submittable (slow finds)
-        let (v, s) = reg.evaluate("a", &render_nonce(1));
+        let (v, s) = reg.evaluate("a", &render_nonce(1), &mut dedupe);
         assert_eq!(v, Verdict::Accept { block: true });
         assert!(s.is_some());
         // a NEW BLOCK (height+1) makes the old height stale
         let mut h2 = job("c");
         h2.height = 2;
         reg.issue(h2);
-        let (v, _) = reg.evaluate("a", &render_nonce(2));
+        let (v, _) = reg.evaluate("a", &render_nonce(2), &mut dedupe);
         assert_eq!(v, Verdict::Stale);
-        let (v, _) = reg.evaluate("zzz", &render_nonce(0));
+        // reorg to a LOWER height: the new job at that height is valid and
+        // the abandoned-chain job is stale
+        let mut h1b = job("d");
+        h1b.height = 1;
+        reg.issue(h1b);
+        let (v, s) = reg.evaluate("d", &render_nonce(3), &mut dedupe);
+        assert_eq!(v, Verdict::Accept { block: true });
+        assert!(s.is_some());
+        // the abandoned-chain job (height 2, now ABOVE the new tip) is not
+        // marked stale: it may still be a valid tip+1 candidate, and the
+        // node is the authority if it is not. Rejecting valid post-reorg
+        // work is the worse failure.
+        let (v, _) = reg.evaluate("c", &render_nonce(4), &mut dedupe);
+        assert_eq!(v, Verdict::Accept { block: true });
+        let (v, _) = reg.evaluate("zzz", &render_nonce(0), &mut dedupe);
         assert_eq!(v, Verdict::UnknownJob);
-        let (v, _) = reg.evaluate("b", "short");
+        let (v, _) = reg.evaluate("b", "short", &mut dedupe);
         assert_eq!(v, Verdict::BadNonce);
     }
 
     #[test]
     fn low_difficulty_rejects_without_block() {
         let mut reg = JobRegistry::new(4);
+        let mut dedupe = Dedupe::new(16);
         let mut j = job("a");
         j.pool_target = [0x00u8; 32]; // nothing validates
         j.net_target = [0x00u8; 32];
         reg.issue(j);
-        let (v, s) = reg.evaluate("a", &render_nonce(0));
+        let (v, s) = reg.evaluate("a", &render_nonce(0), &mut dedupe);
         assert_eq!(v, Verdict::LowDifficulty);
         assert!(s.is_none());
+        // even a rejected share is marked seen: a replay is a duplicate
+        let (v, _) = reg.evaluate("a", &render_nonce(0), &mut dedupe);
+        assert_eq!(v, Verdict::Duplicate);
     }
 
     #[test]
     fn registry_window_evicts_old_jobs() {
         let mut reg = JobRegistry::new(2);
+        let mut dedupe = Dedupe::new(16);
         reg.issue(job("a"));
         reg.issue(job("b"));
         reg.issue(job("c"));
-        let (v, _) = reg.evaluate("a", &render_nonce(9));
+        let (v, _) = reg.evaluate("a", &render_nonce(9), &mut dedupe);
         assert_eq!(v, Verdict::UnknownJob); // evicted, not merely stale
+    }
+
+    #[test]
+    fn work_dedupe_keys_on_header_not_job_id() {
+        // Same header + nonce under two DIFFERENT job ids (a vardiff
+        // retarget keeps the header) is one work identity — the live-caught
+        // "nonce 20796 on jobs 1f/20/21 in a row" double-count.
+        let mut d = Dedupe::new(16);
+        assert!(d.insert(&[1, 2, 3], 7));
+        assert!(!d.insert(&[1, 2, 3], 7));
+        assert!(d.insert(&[1, 2, 3], 8)); // different nonce
+        assert!(d.insert(&[1, 2, 9], 7)); // different header
+    }
+
+    #[test]
+    fn work_dedupe_evicts_fifo_at_cap() {
+        let mut d = Dedupe::new(2);
+        assert!(d.insert(&[1], 0));
+        assert!(d.insert(&[1], 1));
+        assert!(!d.insert(&[1], 0)); // still remembered
+        assert!(d.insert(&[1], 2)); // evicts the oldest (nonce 0)
+        assert!(d.insert(&[1], 0)); // evicted identity replays (cap trade)
+        assert_eq!(d.len(), 2);
+    }
+
+    #[test]
+    fn duplicate_across_connections_shares_one_dedupe() {
+        // Two connections = two JobRegistry instances with independent job
+        // windows; the replay check is the shared Dedupe they both see.
+        let mut dedupe = Dedupe::new(16);
+        let mut reg_a = JobRegistry::new(4);
+        let mut reg_b = JobRegistry::new(4);
+        let j = job("a");
+        reg_a.issue(j.clone());
+        reg_b.issue(j);
+        let (va, _) = reg_a.evaluate("a", &render_nonce(5), &mut dedupe);
+        assert_eq!(va, Verdict::Accept { block: true });
+        let (vb, _) = reg_b.evaluate("a", &render_nonce(5), &mut dedupe);
+        assert_eq!(vb, Verdict::Duplicate);
+        // a different nonce on the fresh connection still validates
+        let (vc, _) = reg_b.evaluate("a", &render_nonce(6), &mut dedupe);
+        assert_eq!(vc, Verdict::Accept { block: true });
     }
 
     #[test]
