@@ -15,5 +15,6 @@ pub mod node_provider;
 pub mod provider;
 pub mod rpc;
 pub mod server;
+pub mod tx;
 pub mod v1;
 pub mod vardiff;

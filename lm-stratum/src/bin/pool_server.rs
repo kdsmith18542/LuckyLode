@@ -4,6 +4,7 @@
 //! pool-server [--bind HOST:PORT] [--reward R] [--fees F]
 //!             [--pool-target (HEX64|max)] [--net-target (HEX64|max)]
 //! pool-server --node-rpc HOST:PORT [--rpc-user U] [--rpc-pass P] [--bind HOST:PORT]
+//!             [--claim-jackpots]
 //! ```
 //!
 //! Mock mode (default) serves an instant-block mock chain (`max`/`max`,
@@ -57,6 +58,7 @@ fn main() -> std::process::ExitCode {
     let mut node_rpc: Option<String> = None;
     let mut rpc_user = "u".to_string();
     let mut rpc_pass = "p".to_string();
+    let mut claim_jackpots = false;
     let mut i = 0;
     while i < args.len() {
         let next = |flag: &str| -> Result<String, String> {
@@ -109,6 +111,7 @@ fn main() -> std::process::ExitCode {
                     std::process::exit(2);
                 })
             }
+            "--claim-jackpots" => claim_jackpots = true,
             "--rpc-pass" => {
                 rpc_pass = next("rpc-pass").unwrap_or_else(|e| {
                     eprintln!("error: {e}");
@@ -140,7 +143,7 @@ fn main() -> std::process::ExitCode {
         }
     };
     if let Some(node) = node_rpc {
-        let provider = match NodeProvider::connect(&node, &rpc_user, &rpc_pass) {
+        let provider = match NodeProvider::connect_with_claims(&node, &rpc_user, &rpc_pass, claim_jackpots) {
             Ok(p) => p,
             Err(e) => {
                 eprintln!("error: cannot reach node RPC {node}: {e}");
@@ -155,9 +158,10 @@ fn main() -> std::process::ExitCode {
             }
         };
         println!(
-            "pool on {} (node provider {}); Ctrl-C to stop",
+            "pool on {} (node provider {}{}); Ctrl-C to stop",
             server.addr(),
-            node
+            node,
+            if claim_jackpots { ", claiming jackpots" } else { "" }
         );
     } else {
         let server =
