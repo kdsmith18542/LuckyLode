@@ -15,7 +15,8 @@
 
 use crate::provider::TemplateProvider;
 use crate::v1::{
-    error_response, notify, response, worker_id, work_for_share, Job, JobRegistry, Message, Verdict,
+    error_response, notify, response, worker_id, work_for_share, Dedupe, Job, JobRegistry, Message,
+    Verdict,
 };
 use crate::vardiff::{target_for_work, Vardiff};
 use lm_pool::ledger::{Ledger, MinerAgg, ShareRec, PPLNS_WINDOW_SECS as LEDGER_PPLNS};
@@ -28,6 +29,12 @@ use std::sync::{
 use std::thread::JoinHandle;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+/// Background template refresh cadence. Matches the connection read-tick
+/// granularity so new jobs reach miners as promptly as before; the
+/// provider's own due-check (NodeProvider::REFRESH_INTERVAL) still gates
+/// actual node polls.
+const REFRESH_TICK_MS: u64 = 100;
+
 /// One found block, as the pool paid it.
 #[derive(Debug, Clone)]
 pub struct BlockRecord {
@@ -37,7 +44,6 @@ pub struct BlockRecord {
     pub league_overflow: u64,
     pub payouts: Vec<(u64, u64)>,
 }
-
 /// Pool counters.
 #[derive(Debug, Clone, Default)]
 pub struct Stats {
@@ -57,6 +63,11 @@ struct Shared<P> {
     blocks: Mutex<Vec<BlockRecord>>,
     stats: Mutex<Stats>,
     broadcast: Mutex<JobState>,
+    /// Pool-wide work-identity dedupe: one share can be replayed on a
+    /// fresh connection (empty per-connection job window) and each
+    /// connection's registry must reject it, so the memory lives here and
+    /// is locked around each evaluate — not inside the registries.
+    dedupe: Mutex<Dedupe>,
     job_counter: AtomicU64,
     shutdown: AtomicBool,
 }
@@ -65,29 +76,42 @@ fn now_secs() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
 }
 
-/// Poll the template; on height change issue a new job and bump the version.
-/// Returns the current job (after a possible rotation).
-fn poll_template<P: TemplateProvider>(shared: &Shared<P>) -> Job {
-    let tpl = shared.provider.lock().expect("provider").current();
-    let mut bc = shared.broadcast.lock().expect("broadcast");
-    // A new job exists only when the TEMPLATE BYTES change (height or
-    // header). Timer-based rotation duplicated jobs whenever the node's
-    // template cadence was slower than the timer: two "different" jobs
-    // shared one header, so the miner re-found the same nonce for each
-    // and the pool counted duplicate work as separate shares
-    // (live-caught: nonce 20796 on jobs 1f/20/21 in a row).
-    if tpl.height != bc.job.height || tpl.header != bc.job.header {
-        let id = shared.job_counter.fetch_add(1, Ordering::SeqCst);
-        bc.job = Job {
-            id: format!("{id:08x}"),
-            header: tpl.header,
-            height: tpl.height,
-            pool_target: tpl.pool_target,
-            net_target: tpl.net_target,
-        };
-        bc.version += 1;
+/// Read the current broadcast job + version. Hot path for connection
+/// threads: never touches the provider (finding D — they used to poll it
+/// inline on every tick, serializing all miners behind one node RPC).
+fn broadcast_job<P>(shared: &Shared<P>) -> (Job, u64) {
+    let bc = shared.broadcast.lock().expect("broadcast");
+    (bc.job.clone(), bc.version)
+}
+
+/// Background refresh loop: poll the provider and publish new jobs. The
+/// ONLY thread that calls `provider.current()` after startup — a slow
+/// node RPC stalls this thread, not the miners. Submits still take the
+/// provider lock (serialized by design: last-write-wins would
+/// double-submit a block), but nothing waits on a refresh anymore.
+fn refresh_loop<P: TemplateProvider + 'static>(shared: Arc<Shared<P>>) {
+    while !shared.shutdown.load(Ordering::Relaxed) {
+        let tpl = shared.provider.lock().expect("provider").current();
+        let mut bc = shared.broadcast.lock().expect("broadcast");
+        // A new job exists only when the TEMPLATE BYTES change (height or
+        // header). Timer-based rotation duplicated jobs whenever the node's
+        // template cadence was slower than the timer: two "different" jobs
+        // shared one header, so the miner re-found the same nonce for each
+        // and the pool counted duplicate work as separate shares
+        // (live-caught: nonce 20796 on jobs 1f/20/21 in a row).
+        if tpl.height != bc.job.height || tpl.header != bc.job.header {
+            let id = shared.job_counter.fetch_add(1, Ordering::SeqCst);
+            bc.job = Job {
+                id: format!("{id:08x}"),
+                header: tpl.header,
+                height: tpl.height,
+                pool_target: tpl.pool_target,
+                net_target: tpl.net_target,
+            };
+            bc.version += 1;
+        }
+        std::thread::sleep(Duration::from_millis(REFRESH_TICK_MS));
     }
-    bc.job.clone()
 }
 
 fn handle_conn<P: TemplateProvider + 'static>(stream: TcpStream, shared: Arc<Shared<P>>) {
@@ -112,16 +136,15 @@ fn handle_conn<P: TemplateProvider + 'static>(stream: TcpStream, shared: Arc<Sha
     let mut line = String::new();
 
     // Seed the registry so the first job is evaluable even before broadcast.
-    let first = poll_template(&shared);
-    registry.issue(first.clone());
+    let (first, _) = broadcast_job(&shared);
+    registry.issue(first);
 
     loop {
         if shared.shutdown.load(Ordering::Relaxed) {
             break;
         }
         // Broadcast check first: fresh jobs must reach miners promptly.
-        let cur = poll_template(&shared);
-        let cur_version = shared.broadcast.lock().expect("broadcast").version;
+        let (cur, cur_version) = broadcast_job(&shared);
         if authorized.is_some() && cur_version != seen_version {
             seen_version = cur_version;
             _vd_target = Some((cur.pool_target, cur.height));
@@ -203,7 +226,10 @@ fn handle_conn<P: TemplateProvider + 'static>(stream: TcpStream, shared: Arc<Sha
                 };
                 // Worker field is informational; the authorized identity pays.
                 let _ = worker_name;
-                let (verdict, submit) = registry.evaluate(&job_id, &nonce_hex);
+                let (verdict, submit) = {
+                    let mut dedupe = shared.dedupe.lock().expect("dedupe");
+                    registry.evaluate(&job_id, &nonce_hex, &mut dedupe)
+                };
                 let (accept, err) = verdict.response();
                 match (accept, submit) {
                     (true, Some(s)) => {
@@ -279,6 +305,7 @@ pub struct RunningServer<P: TemplateProvider + 'static> {
     addr: SocketAddr,
     shared: Arc<Shared<P>>,
     accept: Option<JoinHandle<()>>,
+    refresh: Option<JoinHandle<()>>,
 }
 
 impl<P: TemplateProvider + 'static> RunningServer<P> {
@@ -307,10 +334,13 @@ impl<P: TemplateProvider + 'static> RunningServer<P> {
     }
 
     /// Signal shutdown and wait for the accept loop (connection threads exit
-    /// on their next 100 ms tick).
+    /// on their next 100 ms tick) and the refresh loop.
     pub fn stop(mut self) {
         self.shared.shutdown.store(true, Ordering::SeqCst);
         if let Some(h) = self.accept.take() {
+            let _ = h.join();
+        }
+        if let Some(h) = self.refresh.take() {
             let _ = h.join();
         }
     }
@@ -352,6 +382,7 @@ pub fn spawn_server<P: TemplateProvider + 'static>(
         blocks: Mutex::new(Vec::new()),
         stats: Mutex::new(Stats::default()),
         broadcast: Mutex::new(JobState { job, version: 1 }),
+        dedupe: Mutex::new(Dedupe::default()),
         job_counter: AtomicU64::new(1),
         shutdown: AtomicBool::new(false),
     });
@@ -366,9 +397,21 @@ pub fn spawn_server<P: TemplateProvider + 'static>(
                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                     std::thread::sleep(Duration::from_millis(20));
                 }
-                Err(_) => break,
+                Err(e) => {
+                    // A transient accept error (EMFILE, ECONNABORTED, ...)
+                    // must not deafen the pool: the kernel completes
+                    // handshakes into the listen backlog without the
+                    // application, so exiting this loop would turn every
+                    // later connect into a silent hang — the client
+                    // connects, then times out with no server thread ever
+                    // spawned. Log it and keep serving instead.
+                    eprintln!("pool: accept error (continuing): {e}");
+                    std::thread::sleep(Duration::from_millis(20));
+                }
             }
         }
     });
-    Ok(RunningServer { addr: local, shared, accept: Some(accept) })
+    let refresh_shared = shared.clone();
+    let refresh = std::thread::spawn(move || refresh_loop(refresh_shared));
+    Ok(RunningServer { addr: local, shared, accept: Some(accept), refresh: Some(refresh) })
 }

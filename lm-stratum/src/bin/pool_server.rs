@@ -111,7 +111,11 @@ fn main() -> std::process::ExitCode {
                     std::process::exit(2);
                 })
             }
-            "--claim-jackpots" => claim_jackpots = true,
+            "--claim-jackpots" => {
+                claim_jackpots = true;
+                i += 1; // valueless flag: do not skip the next argument
+                continue;
+            }
             "--rpc-pass" => {
                 rpc_pass = next("rpc-pass").unwrap_or_else(|e| {
                     eprintln!("error: {e}");
