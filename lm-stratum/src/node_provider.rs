@@ -636,8 +636,6 @@ mod tests {
     }
 
     #[test]
-
-    #[test]
     fn bonus_template_splices_and_patches_merkle() {
         let mut gbt: serde_json::Value = serde_json::from_str(GBT_FIXTURE).expect("json");
         gbt["jackpotbonus"] = serde_json::json!(1_142_856u64);
@@ -663,6 +661,7 @@ mod tests {
         assert_eq!(b3, 0);
     }
 
+    #[test]
     fn compactsize_encodes_all_ranges() {
         assert_eq!(compactsize(1), vec![0x01]);
         assert_eq!(compactsize(252), vec![0xfc]);
