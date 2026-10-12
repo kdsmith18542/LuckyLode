@@ -17,6 +17,7 @@
 
 pub mod argon2_prep;
 pub mod opencl;
+pub mod thermal;
 
 use lm_pow::{meets_target, pow_hash};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -51,6 +52,31 @@ pub fn search(
     count: u64,
     threads: usize,
 ) -> Option<Solution> {
+    search_with_policy(
+        header,
+        height,
+        target,
+        start,
+        count,
+        threads,
+        &thermal::MiningPolicy::unguarded(),
+    )
+}
+
+/// As [`search`], with a thermal/duty [`thermal::MiningPolicy`]. The
+/// policy is consulted every 256 hashes per thread (~0.4 s at reference
+/// speed): duty pacing sleeps proportionally, the thermal guard pauses
+/// with hysteresis/dwell/backoff while the package is too hot. An
+/// unreadable sensor makes the guard a no-op, never a stall.
+pub fn search_with_policy(
+    header: &[u8],
+    height: u64,
+    target: &[u8; 32],
+    start: u64,
+    count: u64,
+    threads: usize,
+    policy: &thermal::MiningPolicy,
+) -> Option<Solution> {
     if threads == 0 || count == 0 {
         return None;
     }
@@ -70,6 +96,9 @@ pub fn search(
                     return;
                 }
                 let mut since_check = 0u32;
+                let mut since_pace = 0u32;
+                let mut policy_rt = policy.runtime();
+                let mut chunk = Instant::now();
                 loop {
                     let out = pow_hash(header, n, height);
                     if meets_target(&out, target) {
@@ -85,6 +114,15 @@ pub fn search(
                         if stop.load(Ordering::Relaxed) {
                             return;
                         }
+                    }
+                    since_pace += 1;
+                    if since_pace >= 256 {
+                        since_pace = 0;
+                        let d = policy_rt.decide(thermal::read_temp_c(), chunk.elapsed());
+                        if !d.is_zero() {
+                            std::thread::sleep(d);
+                        }
+                        chunk = Instant::now();
                     }
                     n = match n.checked_add(step) {
                         Some(v) if v < end => v,
