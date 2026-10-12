@@ -35,7 +35,20 @@ struct TemplateState {
     template: JobTemplate,
     /// All transactions, coinbase first, in template order.
     txs: Vec<Vec<u8>>,
+    /// Recent (merkle -> tx set) ring. The header's merkle field commits to
+    /// the tx set, so a submission must be assembled with the tx set THAT
+    /// MATCHED THE JOB'S HEADER — not the latest template (drill-caught:
+    /// a 2s refresh between grind and submit swapped the coinbase and made
+    /// the submitted merkle disagree with its own header).
+    recent: std::collections::VecDeque<([u8; 32], Vec<Vec<u8>>)>,
     fetched_at: Instant,
+}
+
+/// Merkle field offset in the Addendum A header layout.
+const MERKLE_RANGE: std::ops::Range<usize> = 36..68;
+
+fn header_merkle(header: &[u8]) -> Option<[u8; 32]> {
+    header.get(MERKLE_RANGE).and_then(|m| m.try_into().ok())
 }
 
 /// Provider backed by a running node's JSON-RPC.
@@ -53,9 +66,13 @@ impl NodeProvider {
         let rpc = RpcClient::new(addr, user, pass);
         let gbt = rpc.call("getblocktemplate", serde_json::json!([{"capabilities": []}]))?;
         let (tpl, txs) = parse_gbt(&gbt)?;
+        let mut recent = std::collections::VecDeque::new();
+        if let Some(m) = header_merkle(&tpl.header) {
+            recent.push_front((m, txs.clone()));
+        }
         Ok(Self {
             rpc,
-            state: Mutex::new(TemplateState { template: tpl, txs, fetched_at: Instant::now() }),
+            state: Mutex::new(TemplateState { template: tpl, txs, recent, fetched_at: Instant::now() }),
             accepted: Mutex::new(0),
             rejected: Mutex::new(0),
         })
@@ -87,6 +104,12 @@ impl NodeProvider {
         {
             Ok((tpl, txs)) => {
                 let mut st = self.state.lock().expect("state");
+                if let Some(m) = header_merkle(&tpl.header) {
+                    st.recent.push_front((m, txs.clone()));
+                    while st.recent.len() > 8 {
+                        st.recent.pop_back();
+                    }
+                }
                 st.template = tpl;
                 st.txs = txs;
                 st.fetched_at = Instant::now();
@@ -109,10 +132,45 @@ impl TemplateProvider for NodeProvider {
 
     fn submit_block(&mut self, header: &[u8], height: u64, nonce: u64) -> BlockOutcome {
         let out = pow_hash(header, nonce, height);
-        let block_hex = {
-            let st = self.state.lock().expect("state");
-            assemble_block(header, nonce, &st.txs)
+        let merkle = match header_merkle(header) {
+            Some(m) => m,
+            None => {
+                *self.rejected.lock().expect("rejected") += 1;
+                return BlockOutcome {
+                    accepted: false,
+                    out,
+                    jackpot: false,
+                    bonus: 0,
+                    league_overflow: 0,
+                    reserve: 0,
+                };
+            }
         };
+        let txs = {
+            let st = self.state.lock().expect("state");
+            if header_merkle(&st.template.header) == Some(merkle) {
+                Some(st.txs.clone())
+            } else {
+                st.recent
+                    .iter()
+                    .find(|(m, _)| *m == merkle)
+                    .map(|(_, t)| t.clone())
+            }
+        };
+        let Some(txs) = txs else {
+            // Unknown template (older than the ring): refuse rather than
+            // assemble a block whose merkle cannot match its header.
+            *self.rejected.lock().expect("rejected") += 1;
+            return BlockOutcome {
+                accepted: false,
+                out,
+                jackpot: false,
+                bonus: 0,
+                league_overflow: 0,
+                reserve: 0,
+            };
+        };
+        let block_hex = assemble_block(header, nonce, &txs);
         let result = self
             .rpc
             .call("submitblock", serde_json::json!([hex_of(&block_hex)]));
