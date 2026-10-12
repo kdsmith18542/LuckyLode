@@ -35,12 +35,15 @@ struct TemplateState {
     template: JobTemplate,
     /// All transactions, coinbase first, in template order.
     txs: Vec<Vec<u8>>,
-    /// Recent (merkle -> tx set) ring. The header's merkle field commits to
-    /// the tx set, so a submission must be assembled with the tx set THAT
-    /// MATCHED THE JOB'S HEADER — not the latest template (drill-caught:
-    /// a 2s refresh between grind and submit swapped the coinbase and made
-    /// the submitted merkle disagree with its own header).
-    recent: std::collections::VecDeque<([u8; 32], Vec<Vec<u8>>)>,
+    /// Recent (merkle -> tx set, bonus) ring. The header's merkle field
+    /// commits to the tx set, so a submission must be assembled with the
+    /// tx set THAT MATCHED THE JOB'S HEADER — not the latest template
+    /// (drill-caught: a 2s refresh between grind and submit swapped the
+    /// coinbase and made the submitted merkle disagree with its own
+    /// header). The bonus flag rides along so the J1 gate survives
+    /// refreshes (comparing against the CURRENT template would skip the
+    /// gate almost every time).
+    recent: std::collections::VecDeque<([u8; 32], Vec<Vec<u8>>, bool)>,
     /// Bonus claimed by this template's coinbase (0 = normal template).
     /// J1: a bonus coinbase is only submittable when the found digest is a
     /// jackpot (the node's ceiling enforces it; the gate saves a doomed
@@ -86,7 +89,7 @@ impl NodeProvider {
         let (tpl, txs, bonus) = build_template(&gbt, claim_jackpots)?;
         let mut recent = std::collections::VecDeque::new();
         if let Some(m) = header_merkle(&tpl.header) {
-            recent.push_front((m, txs.clone()));
+            recent.push_front((m, txs.clone(), bonus > 0));
         }
         Ok(Self {
             rpc,
@@ -131,7 +134,7 @@ impl NodeProvider {
             Ok((tpl, txs, bonus)) => {
                 let mut st = self.state.lock().expect("state");
                 if let Some(m) = header_merkle(&tpl.header) {
-                    st.recent.push_front((m, txs.clone()));
+                    st.recent.push_front((m, txs.clone(), bonus > 0));
                     while st.recent.len() > 8 {
                         st.recent.pop_back();
                     }
@@ -163,10 +166,11 @@ impl TemplateProvider for NodeProvider {
         // a jackpot (doc 06 §6.2 ceiling). Refuse locally instead of
         // submitting a block the node must reject.
         if self.claim_jackpots {
-            let is_bonus_template = {
+            let is_bonus_template = header_merkle(header).is_some_and(|m| {
                 let st = self.state.lock().expect("state");
-                st.bonus > 0 && header_merkle(&st.template.header) == header_merkle(header)
-            };
+                (header_merkle(&st.template.header) == Some(m) && st.bonus > 0)
+                    || st.recent.iter().any(|(rm, _, rb)| *rm == m && *rb)
+            });
             if is_bonus_template {
                 let net_target = {
                     let st = self.state.lock().expect("state");
@@ -208,8 +212,8 @@ impl TemplateProvider for NodeProvider {
             } else {
                 st.recent
                     .iter()
-                    .find(|(m, _)| *m == merkle)
-                    .map(|(_, t)| t.clone())
+                    .find(|(m, _, _)| *m == merkle)
+                    .map(|(_, t, _)| t.clone())
             }
         };
         let Some(txs) = txs else {
