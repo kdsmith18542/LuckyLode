@@ -63,7 +63,18 @@ impl RpcClient {
         let (head, payload) = text
             .split_once("\r\n\r\n")
             .ok_or_else(|| "malformed HTTP response (no header/body split)".to_string())?;
-        if !head.starts_with("HTTP/1.1 200") && !head.starts_with("HTTP/1.0 200") {
+        let ok_status = head.starts_with("HTTP/1.1 200") || head.starts_with("HTTP/1.0 200");
+        // verusd-family nodes carry the JSON-RPC envelope on some
+        // non-2xx statuses too (e.g. an over-balance `sendtoaddress`
+        // returns HTTP 500 with the -6 error body) — surface it.
+        if !ok_status {
+            if let Ok(msg) = serde_json::from_str::<serde_json::Value>(payload) {
+                if let Some(err) = msg.get("error") {
+                    if !err.is_null() {
+                        return Err(format!("rpc error: {err}"));
+                    }
+                }
+            }
             let status = head.lines().next().unwrap_or("(no status)");
             return Err(format!("rpc http status: {status}"));
         }

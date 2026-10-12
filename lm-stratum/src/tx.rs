@@ -127,6 +127,28 @@ pub fn parse_coinbase_layout(tx: &[u8]) -> Result<CoinbaseLayout, TxError> {
     })
 }
 
+/// Sum of all output values (u64, saturating). The pool uses it to learn
+/// the block's net value from the node's own template bytes — what the
+/// pool's receipt will be — without trusting any advisory field.
+pub fn coinbase_outputs_total(tx: &[u8]) -> Result<u64, TxError> {
+    let layout = parse_coinbase_layout(tx)?;
+    let mut p = layout.vout_count_at;
+    let _ = read_compact(tx, &mut p)?;
+    let mut total = 0u64;
+    for _ in 0..layout.vout_count {
+        let v = tx.get(p..p + 8).ok_or(TxError::Truncated)?;
+        let value = u64::from_le_bytes(v.try_into().expect("8"));
+        total = total.saturating_add(value);
+        p += 8;
+        let script_len = read_compact(tx, &mut p)? as usize;
+        p = p.checked_add(script_len).ok_or(TxError::Truncated)?;
+        if p > tx.len() {
+            return Err(TxError::Truncated);
+        }
+    }
+    Ok(total)
+}
+
 /// Append one output (`value`, same script as the last output) and fix the
 /// count. Only valid for counts < 0xfd (same CompactSize width); the
 /// coinbase never approaches that, and we refuse rather than mis-encode.
@@ -168,6 +190,21 @@ mod tests {
         assert_eq!(l.vouts_end + 4, cb.len(), "locktime ends the tx");
         assert_eq!(l.last_value, 0x01_22a4c3);
         assert_eq!(l.last_script.len(), 35); // P2PK: PUSH33 || pubkey || CHECKSIG
+    }
+
+    #[test]
+    fn outputs_total_sums_all_vouts() {
+        let cb = hexd(CB_HEX);
+        // Single vout: total == last value (0x01_22a4c3).
+        assert_eq!(coinbase_outputs_total(&cb).expect("sum"), 0x01_22a4c3);
+        // Two vouts: fixture value + spliced bonus, exactly.
+        let l = parse_coinbase_layout(&cb).expect("parse");
+        let with_bonus =
+            append_output(&cb, 1_142_856, &l.last_script).expect("append");
+        assert_eq!(
+            coinbase_outputs_total(&with_bonus).expect("sum2"),
+            0x01_22a4c3 + 1_142_856
+        );
     }
 
     #[test]

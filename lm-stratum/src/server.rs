@@ -19,7 +19,9 @@ use crate::v1::{
     Verdict,
 };
 use crate::vardiff::{target_for_work, Vardiff};
+use crate::workerstats::{WorkerSnapshot, WorkerStats};
 use lm_pool::ledger::{Ledger, MinerAgg, ShareRec, PPLNS_WINDOW_SECS as LEDGER_PPLNS};
+use lm_pool::payout::PayoutLedger;
 use std::io::{BufRead, BufReader, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::sync::{
@@ -40,6 +42,8 @@ const REFRESH_TICK_MS: u64 = 100;
 pub struct BlockRecord {
     pub height: u64,
     pub finder: u64,
+    /// Net block value the pool received (normal coinbase, no claims).
+    pub value: u64,
     pub bonus: u64,
     pub league_overflow: u64,
     pub payouts: Vec<(u64, u64)>,
@@ -68,6 +72,14 @@ struct Shared<P> {
     /// connection's registry must reject it, so the memory lives here and
     /// is locked around each evaluate — not inside the registries.
     dedupe: Mutex<Dedupe>,
+    /// Per-worker dashboard stats (accepted/rejected, rolling hashrate,
+    /// liveness) — internal/17 §17.1.
+    workers: Mutex<WorkerStats>,
+    /// Per-miner value accounting (internal/17 §17.4): what each miner
+    /// earned from blocks (pro-rata) and splits, minus what paid out.
+    balances: Mutex<PayoutLedger>,
+    /// Pool fee in per-myriad, applied when blocks credit balances.
+    pool_fee: Mutex<u16>,
     job_counter: AtomicU64,
     shutdown: AtomicBool,
 }
@@ -92,23 +104,30 @@ fn broadcast_job<P>(shared: &Shared<P>) -> (Job, u64) {
 fn refresh_loop<P: TemplateProvider + 'static>(shared: Arc<Shared<P>>) {
     while !shared.shutdown.load(Ordering::Relaxed) {
         let tpl = shared.provider.lock().expect("provider").current();
-        let mut bc = shared.broadcast.lock().expect("broadcast");
-        // A new job exists only when the TEMPLATE BYTES change (height or
-        // header). Timer-based rotation duplicated jobs whenever the node's
-        // template cadence was slower than the timer: two "different" jobs
-        // shared one header, so the miner re-found the same nonce for each
-        // and the pool counted duplicate work as separate shares
-        // (live-caught: nonce 20796 on jobs 1f/20/21 in a row).
-        if tpl.height != bc.job.height || tpl.header != bc.job.header {
-            let id = shared.job_counter.fetch_add(1, Ordering::SeqCst);
-            bc.job = Job {
-                id: format!("{id:08x}"),
-                header: tpl.header,
-                height: tpl.height,
-                pool_target: tpl.pool_target,
-                net_target: tpl.net_target,
-            };
-            bc.version += 1;
+        {
+            // The broadcast guard must drop BEFORE the tick sleep: holding
+            // it across the sleep starves every connection thread (release
+            // caught it — a fast provider re-locks within nanoseconds, so
+            // a waiting handler can lose the race for minutes; the e2e
+            // suite timed out at 10 s per RPC).
+            let mut bc = shared.broadcast.lock().expect("broadcast");
+            // A new job exists only when the TEMPLATE BYTES change (height
+            // or header). Timer-based rotation duplicated jobs whenever the
+            // node's template cadence was slower than the timer: two
+            // "different" jobs shared one header, so the miner re-found the
+            // same nonce for each and the pool counted duplicate work as
+            // separate shares (live-caught: nonce 20796 on jobs 1f/20/21).
+            if tpl.height != bc.job.height || tpl.header != bc.job.header {
+                let id = shared.job_counter.fetch_add(1, Ordering::SeqCst);
+                bc.job = Job {
+                    id: format!("{id:08x}"),
+                    header: tpl.header,
+                    height: tpl.height,
+                    pool_target: tpl.pool_target,
+                    net_target: tpl.net_target,
+                };
+                bc.version += 1;
+            }
         }
         std::thread::sleep(Duration::from_millis(REFRESH_TICK_MS));
     }
@@ -127,6 +146,9 @@ fn handle_conn<P: TemplateProvider + 'static>(stream: TcpStream, shared: Arc<Sha
     // (p=1/65536 has a long tail) must still be submittable.
     let mut registry = JobRegistry::new(16);
     let mut authorized: Option<(String, u64)> = None;
+    // Agent string from subscribe (params[0]); labels the worker's device
+    // on the dashboard.
+    let mut agent = String::new();
     // Per-connection vardiff: template rotations reset the override target;
     // retargets derive conn-local jobs (same height, fresh id, clean=false).
     let mut vardiff = Vardiff::new();
@@ -180,6 +202,15 @@ fn handle_conn<P: TemplateProvider + 'static>(stream: TcpStream, shared: Arc<Sha
         let method = msg.method.as_deref().unwrap_or("");
         match method {
             "mining.subscribe" => {
+                if let Some(a) = msg
+                    .params
+                    .as_ref()
+                    .and_then(|p| p.as_array())
+                    .and_then(|a| a.first())
+                    .and_then(|v| v.as_str())
+                {
+                    agent = a.to_string();
+                }
                 let _ = writeln!(
                     writer,
                     "{}",
@@ -196,6 +227,11 @@ fn handle_conn<P: TemplateProvider + 'static>(stream: TcpStream, shared: Arc<Sha
                     .unwrap_or("anonymous")
                     .to_string();
                 let mid = worker_id(&worker);
+                shared
+                    .workers
+                    .lock()
+                    .expect("workers")
+                    .authorized(mid, &worker, &agent, now_secs());
                 authorized = Some((worker, mid));
                 _vd_target = Some((cur.pool_target, cur.height));
                 // Immediately push the current job (clean start).
@@ -242,6 +278,11 @@ fn handle_conn<P: TemplateProvider + 'static>(stream: TcpStream, shared: Arc<Sha
                             overnight: false,
                         });
                         shared.stats.lock().expect("stats").shares += 1;
+                        shared
+                            .workers
+                            .lock()
+                            .expect("workers")
+                            .accepted(miner_id, work, now);
                         // Vardiff: adapt this connection's pool target, same template.
                         if let Some(new_work) = vardiff.record(now, work) {
                             let new_target = target_for_work(new_work);
@@ -267,9 +308,23 @@ fn handle_conn<P: TemplateProvider + 'static>(stream: TcpStream, shared: Arc<Sha
                                 let mut ledger = shared.ledger.lock().expect("ledger");
                                 ledger.credit_league(outcome.league_overflow);
                                 let payouts = ledger.jackpot_payout(outcome.bonus, LEDGER_PPLNS, now);
+                                // Per-miner value accounting (internal/17 §17.4):
+                                // the normal block value by PPLNS weight plus
+                                // the block's own split payouts.
+                                let weights: Vec<(u64, u64)> = ledger
+                                    .aggregate(LEDGER_PPLNS, now)
+                                    .iter()
+                                    .map(|a| (a.miner, a.eff_work))
+                                    .collect();
+                                let mut balances = shared.balances.lock().expect("balances");
+                                let fee = *shared.pool_fee.lock().expect("pool fee");
+                                balances.credit_block(outcome.coinbase, &weights, fee);
+                                balances.credit_split(&payouts);
+                                drop(balances);
                                 shared.blocks.lock().expect("blocks").push(BlockRecord {
                                     height: s.job.height,
                                     finder: miner_id,
+                                    value: outcome.coinbase,
                                     bonus: outcome.bonus,
                                     league_overflow: outcome.league_overflow,
                                     payouts,
@@ -281,6 +336,11 @@ fn handle_conn<P: TemplateProvider + 'static>(stream: TcpStream, shared: Arc<Sha
                     }
                     _ => {
                         shared.stats.lock().expect("stats").rejects += 1;
+                        shared
+                            .workers
+                            .lock()
+                            .expect("workers")
+                            .rejected(miner_id, now_secs());
                         let (code, text) = err.unwrap_or(( -32600, "invalid submit".to_string()));
                         let _ = writeln!(writer, "{}", error_response(&id, code, &text));
                     }
@@ -333,6 +393,33 @@ impl<P: TemplateProvider + 'static> RunningServer<P> {
         self.shared.ledger.lock().expect("ledger").league_balance()
     }
 
+    /// Per-worker snapshots for the dashboard/API (internal/17 §17.1).
+    pub fn workers(&self, now: u64) -> Vec<WorkerSnapshot> {
+        self.shared.workers.lock().expect("workers").snapshot(now)
+    }
+
+    /// All miner balances (owed) for the dashboard/API, miner-ascending.
+    /// Payout selection itself lives in the payout path.
+    pub fn balances(&self) -> Vec<(u64, u64)> {
+        self.shared
+            .balances
+            .lock()
+            .expect("balances")
+            .select_due(1)
+            .into_iter()
+            .collect()
+    }
+
+    /// Debit after a successful on-chain send.
+    pub fn record_paid(&self, miner: u64, amount: u64) {
+        self.shared.balances.lock().expect("balances").record_paid(miner, amount);
+    }
+
+    /// Pool fee in per-myriad for block credits (0 = none).
+    pub fn set_pool_fee(&self, fee_permyriad: u16) {
+        *self.shared.pool_fee.lock().expect("pool fee") = fee_permyriad;
+    }
+
     /// Signal shutdown and wait for the accept loop (connection threads exit
     /// on their next 100 ms tick) and the refresh loop.
     pub fn stop(mut self) {
@@ -383,6 +470,9 @@ pub fn spawn_server<P: TemplateProvider + 'static>(
         stats: Mutex::new(Stats::default()),
         broadcast: Mutex::new(JobState { job, version: 1 }),
         dedupe: Mutex::new(Dedupe::default()),
+        workers: Mutex::new(WorkerStats::default()),
+        balances: Mutex::new(PayoutLedger::default()),
+        pool_fee: Mutex::new(0),
         job_counter: AtomicU64::new(1),
         shutdown: AtomicBool::new(false),
     });

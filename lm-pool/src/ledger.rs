@@ -24,14 +24,23 @@
 //! never cut a 7-day boost mid-flight.
 
 use crate::league::{classify, DeviceClass};
-use crate::streak::{active_days, current_streak, streak_bonus_per_mille, Comeback, DAY_SECS, OVERNIGHT_PERMILLE};
+use crate::streak::{
+    current_streak, day_index, streak_bonus_per_mille, Comeback, DAY_SECS, OVERNIGHT_PERMILLE,
+};
 use lm_rewards::{split_jackpot, Share};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 
 /// Recommended PPLNS window (doc 06 §6.3): trailing ~3 days of shares.
 pub const PPLNS_WINDOW_SECS: u64 = 3 * DAY_SECS;
 /// Trailing window for hashrate (hence league) estimation.
 pub const CLASS_WINDOW_SECS: u64 = DAY_SECS;
+/// Raw-share retention (review finding G): covers the longest supported
+/// query window (30-day season views) with slack. Older history is rolled
+/// up into per-miner day lists and comeback state (kept forever, O(1) per
+/// miner), so streaks/comeback survive pruning while the raw share log
+/// stays bounded at any share rate. Queries must not use windows longer
+/// than this; the reference pool's real windows are 1–3 days.
+pub const SHARE_RETENTION_SECS: u64 = 32 * DAY_SECS;
 
 /// One verified share as the pool recorded it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -70,10 +79,30 @@ pub struct BoardEntry {
 
 /// The pool's share log plus its league prize-pool balance (fed by
 /// `lm-rewards` reserve overflow, doc 06 §6.2).
+///
+/// Bounded by construction (review finding G): raw shares live for
+/// [`SHARE_RETENTION_SECS`]; per-miner UTC active days and comeback state
+/// are kept for the full history (O(1) each per miner), so streaks and
+/// comeback weights survive pruning. The comeback weight of each raw
+/// share is resolved once at submit, which is what lets old records go
+/// without changing what queries compute.
 #[derive(Debug, Clone, Default)]
 pub struct Ledger {
-    shares: Vec<ShareRec>,
+    shares: VecDeque<StoredShare>,
+    /// Per-miner UTC active days (sorted, unique) — the compacted rollup.
+    days: HashMap<u64, Vec<u64>>,
+    /// Per-miner latest share timestamp (streak reset check).
+    last_seen: HashMap<u64, u64>,
+    /// Per-miner comeback state machine, advanced at submit time.
+    comeback: HashMap<u64, Comeback>,
     league_pool: u64,
+}
+
+/// One retained share plus its submit-time comeback weight (per-mille).
+#[derive(Debug, Clone, Copy)]
+struct StoredShare {
+    rec: ShareRec,
+    comeback_pm: u64,
 }
 
 impl Ledger {
@@ -81,9 +110,44 @@ impl Ledger {
         Self::default()
     }
 
-    /// Record one verified share.
+    /// Record one verified share. Resolves the comeback weight now (so
+    /// queries never need pre-retention records), rolls the share's day
+    /// into the miner's activity list, and prunes raw shares older than
+    /// [`SHARE_RETENTION_SECS`] relative to the newest submission.
     pub fn submit(&mut self, rec: ShareRec) {
-        self.shares.push(rec);
+        let cb = self.comeback.entry(rec.miner).or_default().weight_for(rec.ts);
+        let day = day_index(rec.ts);
+        let days = self.days.entry(rec.miner).or_default();
+        match days.last().copied() {
+            Some(last) if last == day => {}
+            Some(last) if last < day => days.push(day),
+            _ => {
+                if let Err(pos) = days.binary_search(&day) {
+                    days.insert(pos, day);
+                }
+            }
+        }
+        let seen = self.last_seen.entry(rec.miner).or_default();
+        if rec.ts > *seen {
+            *seen = rec.ts;
+        }
+        self.shares.push_back(StoredShare { rec, comeback_pm: cb });
+        // Append order ≈ time order, so the oldest records sit at the
+        // front; prune against the newest submission.
+        let cutoff = rec.ts.saturating_sub(SHARE_RETENTION_SECS);
+        while let Some(front) = self.shares.front() {
+            if front.rec.ts < cutoff {
+                self.shares.pop_front();
+            } else {
+                break;
+            }
+        }
+    }
+
+    /// Retained raw-share count (bounded; dashboard/diagnostics).
+    #[must_use]
+    pub fn raw_share_count(&self) -> usize {
+        self.shares.len()
     }
 
     /// League prize-pool balance (base units).
@@ -104,51 +168,55 @@ impl Ledger {
     /// Aggregate every miner with ≥1 in-window share. Result sorted by miner
     /// id ascending. Miners with zero effective work are included here (the
     /// jackpot split itself excludes them) so leaderboards stay complete.
+    /// `window_secs` must not exceed [`SHARE_RETENTION_SECS`] (longer
+    /// windows see the retained tail only).
     pub fn aggregate(&self, window_secs: u64, now_ts: u64) -> Vec<MinerAgg> {
-        let mut by_miner: HashMap<u64, Vec<ShareRec>> = HashMap::new();
-        for rec in &self.shares {
-            by_miner.entry(rec.miner).or_default().push(*rec);
+        struct Acc {
+            raw_work: u64,
+            eff_sum: u128,
+            window_days: Vec<u64>,
+            class_work: u64,
         }
-        let mut out = Vec::with_capacity(by_miner.len());
-        for (miner, mut recs) in by_miner {
-            recs.sort_by_key(|r| (r.ts, r.miner));
-            let all_ts: Vec<u64> = recs.iter().map(|r| r.ts).collect();
-            let days = active_days(&all_ts);
-            let last_ts = *all_ts.last().expect("non-empty");
-            let streak_days = current_streak(&days, last_ts, now_ts);
+        let mut acc: HashMap<u64, Acc> = HashMap::new();
+        for stored in &self.shares {
+            let r = &stored.rec;
+            if !Self::in_window(r.ts, now_ts, window_secs) {
+                continue;
+            }
+            let e = acc.entry(r.miner).or_insert_with(|| Acc {
+                raw_work: 0,
+                eff_sum: 0,
+                window_days: Vec::new(),
+                class_work: 0,
+            });
+            e.raw_work = e.raw_work.saturating_add(r.work);
+            e.window_days.push(day_index(r.ts));
+            if Self::in_window(r.ts, now_ts, CLASS_WINDOW_SECS) {
+                e.class_work = e.class_work.saturating_add(r.work);
+            }
+            let ov = if r.overnight { OVERNIGHT_PERMILLE } else { 0 };
+            e.eff_sum += r.work as u128 * (1000 + ov) as u128
+                * (1000 + stored.comeback_pm) as u128
+                / 1_000_000;
+        }
+        let empty: Vec<u64> = Vec::new();
+        let mut out = Vec::with_capacity(acc.len());
+        for (miner, e) in acc {
+            let all_days = self.days.get(&miner).unwrap_or(&empty);
+            let last_ts = self.last_seen.get(&miner).copied().unwrap_or(0);
+            let streak_days = current_streak(all_days, last_ts, now_ts);
             let streak_pm = streak_bonus_per_mille(streak_days);
 
-            // Comeback replays full history; only window shares earn.
-            let mut comeback = Comeback::new();
-            let mut eff_sum: u128 = 0;
-            let mut raw_work: u64 = 0;
-            let mut window_days: Vec<u64> = Vec::new();
-            let mut class_work: u64 = 0;
-            for r in &recs {
-                let cb = comeback.weight_for(r.ts);
-                if !Self::in_window(r.ts, now_ts, window_secs) {
-                    continue;
-                }
-                raw_work = raw_work.saturating_add(r.work);
-                window_days.push(r.ts / DAY_SECS);
-                if Self::in_window(r.ts, now_ts, CLASS_WINDOW_SECS) {
-                    class_work = class_work.saturating_add(r.work);
-                }
-                let ov = if r.overnight { OVERNIGHT_PERMILLE } else { 0 };
-                eff_sum += r.work as u128 * (1000 + ov) as u128 * (1000 + cb) as u128 / 1_000_000;
-            }
-            if raw_work == 0 && window_days.is_empty() {
-                continue; // no shares in this window at all
-            }
+            let mut window_days = e.window_days;
             window_days.sort_unstable();
             window_days.dedup();
-            let eff_work = (eff_sum * (1000 + streak_pm) as u128 / 1000).min(u64::MAX as u128) as u64;
+            let eff_work = (e.eff_sum * (1000 + streak_pm) as u128 / 1000).min(u64::MAX as u128) as u64;
             // Sustained trailing-24h rate; a silent day classifies as Phone
             // (harmless: class only gates prizes, and payouts ignore class).
-            let hps = class_work / CLASS_WINDOW_SECS.max(1);
+            let hps = e.class_work / CLASS_WINDOW_SECS.max(1);
             out.push(MinerAgg {
                 miner,
-                raw_work,
+                raw_work: e.raw_work,
                 eff_work,
                 days_active: window_days.len() as u32,
                 streak_days,
@@ -324,5 +392,67 @@ mod tests {
         let board = l.leaderboard(3 * D, 9 * D + 200);
         assert_eq!(board[0].miner, 9); // still ranked…
         assert_eq!(board[0].class, DeviceClass::Farm); // …but flagged
+    }
+
+    #[test]
+    fn retention_bounds_raw_shares_but_keeps_streaks() {
+        let mut l = Ledger::new();
+        for d in 1..=80u64 {
+            l.submit(rec(1, d, 100));
+        }
+        // Raw log holds only the retention tail (32 days + slack).
+        assert!(
+            l.raw_share_count() <= 34,
+            "raw log grew unboundedly: {}",
+            l.raw_share_count()
+        );
+        // The rollup still sees the whole 80-day run.
+        let agg = l.aggregate(3 * D, 80 * D + 200);
+        assert_eq!(agg[0].streak_days, 80);
+        assert_eq!(agg[0].streak_per_mille, 300); // capped at +30%
+        // 3-day window: days 78..=80. 3 × 100 × 1.30 = 390.
+        assert_eq!(agg[0].raw_work, 300);
+        assert_eq!(agg[0].eff_work, 390);
+        assert_eq!(agg[0].days_active, 3);
+    }
+
+    #[test]
+    fn comeback_weight_is_baked_at_submit() {
+        let mut l = Ledger::new();
+        l.submit(rec(1, 1, 1000)); // first share ever: no comeback
+        l.submit(rec(1, 20, 1000)); // return after 19 days idle: +10%
+        l.submit(rec(1, 21, 1000)); // inside the 7-day comeback window: +10%
+        let agg = l.aggregate(3 * D, 21 * D + 200);
+        // Days 20 and 21 in window: 1000 × 1.10 × 2 = 2200, streak 2 days
+        // (+2%) → 2244. The day-1 share is out of window (and prunable)
+        // and contributes nothing.
+        assert_eq!(agg[0].eff_work, 2244);
+        assert_eq!(agg[0].streak_days, 2);
+    }
+
+    #[test]
+    fn pruning_never_changes_in_retention_queries() {
+        // Two ledgers fed the same recent stream; one also saw ancient
+        // history that pruning drops. In-retention answers must match.
+        let mut bare = Ledger::new();
+        let mut with_ancient = Ledger::new();
+        for d in 1..=30u64 {
+            with_ancient.submit(rec(1, d, 77));
+            with_ancient.submit(rec(2, d, 33));
+        }
+        for d in 34..=40u64 {
+            bare.submit(rec(1, d, 77));
+            bare.submit(rec(2, d, 33));
+            with_ancient.submit(rec(1, d, 77));
+            with_ancient.submit(rec(2, d, 33));
+        }
+        let now = 40 * D + 200;
+        assert_eq!(bare.aggregate(3 * D, now), with_ancient.aggregate(3 * D, now));
+        assert_eq!(
+            bare.jackpot_payout(1_000_003, 3 * D, now),
+            with_ancient.jackpot_payout(1_000_003, 3 * D, now)
+        );
+        // …while the ancient ledger's raw log stayed bounded.
+        assert!(with_ancient.raw_share_count() <= 2 * 34);
     }
 }

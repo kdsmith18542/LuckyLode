@@ -16,10 +16,13 @@
 //! - Conservation: payouts always sum to exactly the bonus.
 //!
 //! Reserve accounting lives in [`reserve`] (per-block levy, bonus, cap,
-//! league-pool overflow — doc 06 §6.2); multi-class luck exploration lives
-//! in [`luck`] (doc 12 §12.10, not consensus-wired).
+//! league-pool overflow — doc 06 §6.2); the Lucky Pot (second stochastic
+//! sink: frequent small splashes beside rare full-drain jackpots) lives in
+//! [`pot`] (internal/16, promotes to doc 06 on sign-off); multi-class luck
+//! exploration lives in [`luck`] (doc 12 §12.10, not consensus-wired).
 
 pub mod luck;
+pub mod pot;
 pub mod reserve;
 
 /// Per-mille cap denominator base.

@@ -16,6 +16,7 @@
 //! the solo/benchmark foundation the testnet bake-off builds on.
 
 pub mod argon2_prep;
+pub mod gpu;
 pub mod opencl;
 pub mod thermal;
 

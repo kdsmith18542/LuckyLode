@@ -34,6 +34,9 @@ pub struct BlockOutcome {
     pub league_overflow: u64,
     /// Reserve balance after this block.
     pub reserve: u64,
+    /// Net block value the pool receives for an accepted block
+    /// (coinbase as the template built it; mock: base + fees).
+    pub coinbase: u64,
 }
 
 pub trait TemplateProvider: Send {
@@ -110,6 +113,7 @@ impl TemplateProvider for MockProvider {
                 bonus: 0,
                 league_overflow: 0,
                 reserve: self.reserve,
+                coinbase: 0,
             };
         }
         let jackpot = is_jackpot(&out, net);
@@ -124,6 +128,10 @@ impl TemplateProvider for MockProvider {
             bonus: p.bonus,
             league_overflow: p.to_league,
             reserve: p.reserve,
+            // Net normal (before the bonus) — the same number NodeProvider
+            // parses from the template coinbase, so payout accounting
+            // totals exactly the block value on both providers.
+            coinbase: p.miner.saturating_sub(p.bonus),
         }
     }
 }
