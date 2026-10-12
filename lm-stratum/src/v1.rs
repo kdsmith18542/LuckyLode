@@ -72,11 +72,23 @@ pub struct JobRegistry {
     order: Vec<String>,
     seen: HashSet<(String, u64)>,
     window: usize,
+    /// Height of the newest issued job. A job is STALE only when a newer
+    /// job at a DIFFERENT height exists (superseded by a block). Timer
+    /// rotation (same height, fresh template) must NOT invalidate jobs
+    /// still being ground — live-caught: 30s rotation + ~60s finds meant
+    /// every slow find was rejected as stale.
+    latest_height: u64,
 }
 
 impl JobRegistry {
     pub fn new(window: usize) -> Self {
-        Self { jobs: HashMap::new(), order: Vec::new(), seen: HashSet::new(), window: window.max(1) }
+        Self {
+            jobs: HashMap::new(),
+            order: Vec::new(),
+            seen: HashSet::new(),
+            window: window.max(1),
+            latest_height: 0,
+        }
     }
 
     /// Issue a job (evicts the oldest beyond the window, with its nonces).
@@ -84,6 +96,7 @@ impl JobRegistry {
         if !self.jobs.contains_key(&job.id) {
             self.order.push(job.id.clone());
         }
+        self.latest_height = self.latest_height.max(job.height);
         self.jobs.insert(job.id.clone(), job);
         while self.order.len() > self.window {
             let old = self.order.remove(0);
@@ -100,8 +113,9 @@ impl JobRegistry {
             Some(j) => j.clone(),
             None => return (Verdict::UnknownJob, None),
         };
-        // Stale = validly issued but superseded (not the newest).
-        let is_latest = self.order.last().is_some_and(|id| id == job_id);
+        // Stale = superseded by a block (a newer job at a different
+        // height); same-height rotations stay submittable.
+        let is_stale = job.height < self.latest_height;
         let nonce = match parse_nonce(nonce_hex) {
             Some(n) => n,
             None => return (Verdict::BadNonce, None),
@@ -109,7 +123,7 @@ impl JobRegistry {
         if !self.seen.insert((job_id.to_string(), nonce)) {
             return (Verdict::Duplicate, None);
         }
-        if !is_latest {
+        if is_stale {
             return (Verdict::Stale, None);
         }
         let out = pow_hash(&job.header, nonce, job.height);
@@ -286,13 +300,21 @@ mod tests {
     fn accept_then_duplicate_then_stale() {
         let mut reg = JobRegistry::new(4);
         reg.issue(job("a"));
-        reg.issue(job("b"));
+        reg.issue(job("b")); // same height: rotation, NOT staleness
         let (v, s) = reg.evaluate("b", &render_nonce(0));
         assert_eq!(v, Verdict::Accept { block: true }); // max targets: share + block
         assert!(s.is_some());
         let (v, _) = reg.evaluate("b", &render_nonce(0));
         assert_eq!(v, Verdict::Duplicate);
-        let (v, _) = reg.evaluate("a", &render_nonce(1)); // superseded, fresh nonce
+        // same-height rotation keeps the older job submittable (slow finds)
+        let (v, s) = reg.evaluate("a", &render_nonce(1));
+        assert_eq!(v, Verdict::Accept { block: true });
+        assert!(s.is_some());
+        // a NEW BLOCK (height+1) makes the old height stale
+        let mut h2 = job("c");
+        h2.height = 2;
+        reg.issue(h2);
+        let (v, _) = reg.evaluate("a", &render_nonce(2));
         assert_eq!(v, Verdict::Stale);
         let (v, _) = reg.evaluate("zzz", &render_nonce(0));
         assert_eq!(v, Verdict::UnknownJob);
