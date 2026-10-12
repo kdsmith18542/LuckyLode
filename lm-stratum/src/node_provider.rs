@@ -135,7 +135,10 @@ impl NodeProvider {
                 let mut st = self.state.lock().expect("state");
                 if let Some(m) = header_merkle(&tpl.header) {
                     st.recent.push_front((m, txs.clone(), bonus > 0));
-                    while st.recent.len() > 8 {
+                    // 256 refreshes (~8.5 min at 2s) covers the whole job
+                    // lifetime (server registry: 16 jobs x 30s), so a slow
+                    // find can still be assembled with its own tx set.
+                    while st.recent.len() > 256 {
                         st.recent.pop_back();
                     }
                 }

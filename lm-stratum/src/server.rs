@@ -104,7 +104,9 @@ fn handle_conn<P: TemplateProvider + 'static>(stream: TcpStream, shared: Arc<Sha
     };
     let mut reader = BufReader::new(reader_stream);
     let mut writer = stream;
-    let mut registry = JobRegistry::new(4);
+    // 16 jobs at 30s rotation = 8 minutes of job lifetime: a slow find
+    // (p=1/65536 has a long tail) must still be submittable.
+    let mut registry = JobRegistry::new(16);
     let mut authorized: Option<(String, u64)> = None;
     // Per-connection vardiff: template rotations reset the override target;
     // retargets derive conn-local jobs (same height, fresh id, clean=false).
