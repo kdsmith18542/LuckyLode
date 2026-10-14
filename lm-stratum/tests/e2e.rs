@@ -38,14 +38,17 @@ fn grind_jackpot(header: &[u8], height: u64, net: &[u8; 32]) -> u64 {
 
 #[test]
 fn full_loop_share_block_jackpot_and_money() {
-    let server = spawn_server(MockProvider::instant(BASE), "127.0.0.1:0").expect("bind");
+    let server = spawn_server(MockProvider::instant(BASE), "127.0.0.1:0", None, None, None).expect("bind");
     let mut c = PoolClient::connect(server.addr()).expect("connect");
     assert!(c.subscribe("lm-miner/0.1").expect("subscribe"));
     assert!(c.authorize("alice").expect("authorize"));
     let alice = worker_id("alice");
 
     // First job + first share (also the first block on the instant chain).
-    let job = c.read_job(Duration::from_secs(5)).expect("io").expect("job");
+    let job = c
+        .read_job(Duration::from_secs(5))
+        .expect("io")
+        .expect("job");
     assert_eq!(job.height, 1);
     let (n, _) = grind_share(&job.header, job.height, &job.pool_target);
     let (ok, err) = c.submit("alice", &job.id, n).expect("submit");
@@ -65,7 +68,10 @@ fn full_loop_share_block_jackpot_and_money() {
     assert_eq!(err.map(|(code, _)| code), Some(23));
 
     // Fresh job at the new height; grind a real jackpot nonce for it.
-    let job2 = c.read_job(Duration::from_secs(5)).expect("io").expect("job2");
+    let job2 = c
+        .read_job(Duration::from_secs(5))
+        .expect("io")
+        .expect("job2");
     assert_eq!(job2.height, 2);
     let jn = grind_jackpot(&job2.header, job2.height, &job2.net_target);
     let (ok, err) = c.submit("alice", &job2.id, jn).expect("jackpot submit");
@@ -83,7 +89,10 @@ fn full_loop_share_block_jackpot_and_money() {
     // reserve held, or league overflow — nothing created or destroyed.
     let bonus_total: u64 = blocks.iter().map(|b| b.bonus).sum();
     let levied = server.chain_blocks() * LEVY;
-    assert_eq!(levied, bonus_total + server.reserve() + server.league_balance());
+    assert_eq!(
+        levied,
+        bonus_total + server.reserve() + server.league_balance()
+    );
 
     // The ledger saw alice's work and ranks her.
     let now = std::time::SystemTime::now()
@@ -106,6 +115,9 @@ fn share_replay_across_connections_is_rejected() {
     let server = spawn_server(
         MockProvider::new([0xffu8; 32], [0x00u8; 32], BASE, 0),
         "127.0.0.1:0",
+        None,
+        None,
+        None
     )
     .expect("bind");
     let mut a = PoolClient::connect(server.addr()).expect("connect a");
@@ -116,7 +128,10 @@ fn share_replay_across_connections_is_rejected() {
     assert!(b.authorize("bob").expect("auth b"));
     let alice = worker_id("alice");
 
-    let job_a = a.read_job(Duration::from_secs(5)).expect("io").expect("job a");
+    let job_a = a
+        .read_job(Duration::from_secs(5))
+        .expect("io")
+        .expect("job a");
     // Max pool target accepts any nonce; the zero net target rejects every
     // share, so nothing is a block and the template never rotates.
     let n = 0u64;
@@ -155,11 +170,14 @@ fn share_replay_across_connections_is_rejected() {
 
 #[test]
 fn blocks_credit_payout_balances() {
-    let server = spawn_server(MockProvider::instant(BASE), "127.0.0.1:0").expect("bind");
+    let server = spawn_server(MockProvider::instant(BASE), "127.0.0.1:0", None, None, None).expect("bind");
     let mut c = PoolClient::connect(server.addr()).expect("connect");
     assert!(c.subscribe("payout-e2e").expect("sub"));
     assert!(c.authorize("dave").expect("auth"));
-    let job = c.read_job(Duration::from_secs(5)).expect("io").expect("job");
+    let job = c
+        .read_job(Duration::from_secs(5))
+        .expect("io")
+        .expect("job");
     let (n, _) = grind_share(&job.header, job.height, &job.pool_target);
     let (ok, err) = c.submit("dave", &job.id, n).expect("submit");
     assert!(ok, "share rejected: {err:?}");
@@ -170,14 +188,17 @@ fn blocks_credit_payout_balances() {
     let bals = server.balances();
     assert_eq!(bals.len(), 1);
     assert_eq!(bals[0].0, worker_id("dave"));
-    assert_eq!(bals.iter().map(|(_, v)| v).sum::<u64>(), b[0].value + b[0].bonus);
+    assert_eq!(
+        bals.iter().map(|(_, v)| v).sum::<u64>(),
+        b[0].value + b[0].bonus
+    );
 
     server.stop();
 }
 
 #[test]
 fn protocol_edges_are_typed() {
-    let server = spawn_server(MockProvider::instant(BASE), "127.0.0.1:0").expect("bind");
+    let server = spawn_server(MockProvider::instant(BASE), "127.0.0.1:0", None, None, None).expect("bind");
     let mut c = PoolClient::connect(server.addr()).expect("connect");
 
     // Garbage line → JSON-RPC parse error, connection survives.
@@ -187,7 +208,9 @@ fn protocol_edges_are_typed() {
     assert!(c.subscribe("probe").expect("subscribe after garbage"));
 
     // Unknown method → -32601.
-    let m = c.raw(r#"{"id":9,"method":"mining.nope","params":[]}"#).expect("raw");
+    let m = c
+        .raw(r#"{"id":9,"method":"mining.nope","params":[]}"#)
+        .expect("raw");
     assert_eq!(m.error.expect("e").as_array().expect("a")[0], -32601);
 
     // Submit before authorize → rejected, not recorded.
@@ -198,4 +221,33 @@ fn protocol_edges_are_typed() {
     assert_eq!(server.stats().shares, 0);
 
     server.stop();
+}
+
+#[test]
+fn per_worker_tokens_are_enforced() {
+    let mut tokens = std::collections::HashMap::new();
+    tokens.insert("alice".to_string(), "tok-alice".to_string());
+    let server = spawn_server(
+        MockProvider::instant(BASE),
+        "127.0.0.1:0",
+        None,
+        Some(tokens),
+        None,
+    )
+    .expect("bind");
+
+    // Correct token authorizes.
+    let mut c = PoolClient::connect(server.addr()).expect("connect");
+    assert!(c.subscribe("lm-miner/0.2").expect("subscribe"));
+    assert!(c.authorize_with("alice", "tok-alice").expect("authorize"));
+
+    // Wrong token is refused.
+    let mut c2 = PoolClient::connect(server.addr()).expect("connect");
+    assert!(c2.subscribe("lm-miner/0.2").expect("subscribe"));
+    assert!(!c2.authorize_with("alice", "wrong").expect("authorize"));
+
+    // Unknown worker is refused even with a valid token for someone else.
+    let mut c3 = PoolClient::connect(server.addr()).expect("connect");
+    assert!(c3.subscribe("lm-miner/0.2").expect("subscribe"));
+    assert!(!c3.authorize_with("mallory", "tok-alice").expect("authorize"));
 }

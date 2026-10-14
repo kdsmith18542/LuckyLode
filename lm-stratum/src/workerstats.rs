@@ -84,6 +84,29 @@ impl WorkerStats {
         }
     }
 
+    /// Persistable miner-id → worker-name map (payout destinations must
+    /// survive a pool restart before miners reconnect).
+    #[must_use]
+    pub fn names(&self) -> Vec<(u64, String)> {
+        let mut out: Vec<(u64, String)> = self
+            .workers
+            .iter()
+            .filter(|(_, w)| !w.name.is_empty())
+            .map(|(&id, w)| (id, w.name.clone()))
+            .collect();
+        out.sort_by_key(|(id, _)| *id);
+        out
+    }
+
+    /// Restore names from a persisted snapshot (offline until the miner
+    /// reconnects; rates and shares start fresh by design).
+    pub fn restore_names(&mut self, names: &[(u64, String)]) {
+        for (miner, name) in names {
+            let w = self.workers.entry(*miner).or_default();
+            w.name = name.clone();
+        }
+    }
+
     /// Record a rejected share (duplicate/stale/bad): keeps liveness.
     pub fn rejected(&mut self, miner: u64, now: u64) {
         let w = self.workers.entry(miner).or_default();

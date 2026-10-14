@@ -1,4 +1,4 @@
-# `lm-pow` — EmberHash v1 reference implementation
+# `lm-pow` — LuckyHash v1 reference implementation
 
 Reference (normative) implementation of the Lucky Lode proof-of-work, frozen
 in [`../05-pow-algorithm.md`](../05-pow-algorithm.md) rev 1.0.

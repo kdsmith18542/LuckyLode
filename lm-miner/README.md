@@ -1,4 +1,4 @@
-# `lm-miner` — reference EmberHash v1 miner (solo + benchmark)
+# `lm-miner` — reference LuckyHash v1 miner (solo + benchmark)
 
 Portable-first CPU/ARM miner core + binary. One Argon2id instance per
 thread (`p = 1` scales across threads). No third-party CLI or networking

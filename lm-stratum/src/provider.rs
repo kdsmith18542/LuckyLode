@@ -3,7 +3,7 @@
 //! [`TemplateProvider`] is the only interface the server needs from a chain:
 //! poll the current template, submit a found block. The forked node (P1)
 //! implements this over its RPC; until then [`MockProvider`] simulates a
-//! deterministic mock chain with the *real* money rules — real EmberHash
+//! deterministic mock chain with the *real* money rules — real LuckyHash
 //! verification, the real `T/100` jackpot trigger, and the real
 //! levy/bonus/cap reserve machine — so the full loop is testable today.
 
@@ -30,6 +30,8 @@ pub struct BlockOutcome {
     /// Jackpot bonus paid on top of the normal payout (0 if not a jackpot
     /// or the reserve was empty — the documented warm-up).
     pub bonus: u64,
+    /// Pot splash included in the coinbase (0 without a pot event).
+    pub pot: u64,
     /// Levy slice diverted to the league prize pool (cap overflow).
     pub league_overflow: u64,
     /// Reserve balance after this block.
@@ -65,7 +67,15 @@ pub struct MockProvider {
 
 impl MockProvider {
     pub fn new(pool_target: [u8; 32], net_target: [u8; 32], base_reward: u64, fees: u64) -> Self {
-        Self { height: 1, pool_target, net_target, base_reward, fees, reserve: 0, blocks: 0 }
+        Self {
+            height: 1,
+            pool_target,
+            net_target,
+            base_reward,
+            fees,
+            reserve: 0,
+            blocks: 0,
+        }
     }
 
     /// Instant-block harness: every share is a block (both targets max).
@@ -111,6 +121,7 @@ impl TemplateProvider for MockProvider {
                 out,
                 jackpot: false,
                 bonus: 0,
+                pot: 0,
                 league_overflow: 0,
                 reserve: self.reserve,
                 coinbase: 0,
@@ -126,6 +137,8 @@ impl TemplateProvider for MockProvider {
             out,
             jackpot,
             bonus: p.bonus,
+            // Mock chain has no pot (the node-side rules own it).
+            pot: 0,
             league_overflow: p.to_league,
             reserve: p.reserve,
             // Net normal (before the bonus) — the same number NodeProvider

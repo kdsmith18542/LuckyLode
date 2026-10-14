@@ -2,7 +2,7 @@
 name = "lm-pow"
 version = "0.1.0"
 edition = "2021"
-description = "Reference implementation of EmberHash v1 (lowmine PoW, doc 05)"
+description = "Reference implementation of LuckyHash v1 (Lucky Lode PoW, doc 05)"
 license = "GPL-3.0-only"
 # Vendored deps in the fork tree (BLAKE3, Argon2) retain their own licenses.
 

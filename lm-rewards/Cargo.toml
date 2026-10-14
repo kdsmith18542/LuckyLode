@@ -2,5 +2,5 @@
 name = "lm-rewards"
 version = "0.1.0"
 edition = "2021"
-description = "Reference jackpot-bonus split (lowmine doc 06): sqrt weights, cap, dust"
+description = "Reference jackpot-bonus split (doc 06): sqrt weights, cap, dust"
 license = "GPL-3.0-only"

@@ -2,5 +2,5 @@
 name = "lm-sched"
 version = "0.1.0"
 edition = "2021"
-description = "Thermal/power-aware mining scheduler policy (lowmine doc 07)"
+description = "Thermal/power-aware mining scheduler policy (doc 07)"
 license = "GPL-3.0-only"

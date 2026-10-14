@@ -18,7 +18,7 @@ pub const FEE_DENOM_PERMYRIAD: u64 = 10_000;
 /// Coins per whole coin (base units) for the `sendtoaddress` decimal form.
 pub const COIN_BASE: u64 = 100_000_000;
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct PayoutLedger {
     owed: HashMap<u64, u64>,
     paid: HashMap<u64, u64>,
@@ -81,6 +81,20 @@ impl PayoutLedger {
         }
     }
 
+    /// Move up to `amount` from the operator fee pot to a miner's owed
+    /// balance (the reference-pool dev-fee slice, docs/04 §4.2). Capped by
+    /// what's actually in the pot — a zero pool fee means zero dev accrual,
+    /// never a silent miner haircut. Returns the amount moved.
+    pub fn allocate_dev(&mut self, dev_id: u64, amount: u64) -> u64 {
+        let take = amount.min(self.fees);
+        if take > 0 {
+            self.fees -= take;
+            let e = self.owed.entry(dev_id).or_default();
+            *e = e.saturating_add(take);
+        }
+        take
+    }
+
     /// Currently owed to a miner.
     #[must_use]
     pub fn owed(&self, miner: u64) -> u64 {
@@ -97,6 +111,20 @@ impl PayoutLedger {
     #[must_use]
     pub fn fees(&self) -> u64 {
         self.fees
+    }
+
+    /// `(owed_total, paid_total, fees)` across every miner — the
+    /// reconciliation triple: block credits == owed_total + paid_total +
+    /// fees. The per-miner `paid` map and the capped `/api/stats`
+    /// history cannot reconstruct this (a fully-paid miner drops out of
+    /// the owed map), so expose the sums directly.
+    #[must_use]
+    pub fn totals(&self) -> (u64, u64, u64) {
+        (
+            self.owed.values().copied().sum(),
+            self.paid.values().copied().sum(),
+            self.fees,
+        )
     }
 
     /// Balances at/above `threshold`, miner id ascending (payout candidates).
@@ -131,15 +159,15 @@ pub fn format_coins(v: u64) -> String {
 }
 
 /// Transparent payout address shape: 34-char base58. The leading version
-/// byte is chain-specific ('R' on Verus mainnets, 'L' on Lucky Lode —
-/// distinct address version bytes are part of the rebrand checklist), so
-/// both are accepted. Shape check only — the node is the final arbiter at
+/// byte is chain-specific — 'R' (Verus mainnets), 'L' (Lucky Lode
+/// mainnet), 'm'/'n'/'2' (Lucky Lode testnet, Bitcoin-style 111/196) — so
+/// all are accepted. Shape check only — the node is the final arbiter at
 /// send time (it checks the network params and returns an error the
 /// payout loop treats as a failed send).
 #[must_use]
 pub fn valid_payout_address(s: &str) -> bool {
     s.len() == 34
-        && s.starts_with(['R', 'L'])
+        && s.starts_with(['R', 'L', 'm', 'n', '2'])
         && s.bytes().all(|b| {
             matches!(b, b'1'..=b'9' | b'A'..=b'H' | b'J'..=b'N' | b'P'..=b'Z' | b'a'..=b'k' | b'm'..=b'z')
         })
@@ -175,6 +203,41 @@ mod tests {
         assert_eq!(p.fees(), 600);
         p.credit_block(0, &[(1, 1)], 0);
         assert_eq!(p.owed(1), 9_900);
+    }
+
+    #[test]
+    fn ledger_survives_a_json_round_trip() {
+        // Pool restart persistence (--state-file): the exact ledger must
+        // come back byte-for-byte.
+        let mut p = PayoutLedger::default();
+        p.credit_block(7_000_000, &[(1, 3), (2, 1)], 500);
+        p.record_paid(1, 1_000_000);
+        let json = serde_json::to_string(&p).expect("serialize");
+        let back: PayoutLedger = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back.owed(1), p.owed(1));
+        assert_eq!(back.owed(2), p.owed(2));
+        assert_eq!(back.paid(1), p.paid(1));
+        assert_eq!(back.fees(), p.fees());
+        assert_eq!(back.totals(), p.totals());
+    }
+
+    #[test]
+    fn totals_reconcile_credits_owed_paid_and_fees() {
+        let mut p = PayoutLedger::default();
+        p.credit_block(1_000_000, &[(1, 1), (2, 1)], 0);
+        p.credit_block(500_000, &[(1, 1)], 1_000); // 10% fee
+        p.record_paid(1, 600_000);
+        let (owed, paid, fees) = p.totals();
+        assert_eq!(paid, 600_000);
+        assert_eq!(fees, 50_000);
+        assert_eq!(owed + paid + fees, 1_500_000, "every credited unit is owed, paid, or fee");
+        // A fully paid-out miner still counts in the totals; overpay
+        // attempts are capped at what is owed (2 only had 500k).
+        p.record_paid(2, 1_000_000);
+        let (owed2, paid2, _) = p.totals();
+        assert_eq!(paid2, 1_100_000);
+        assert_eq!(owed2, 350_000);
+        assert_eq!(owed2 + paid2 + 50_000, 1_500_000);
     }
 
     #[test]
@@ -221,6 +284,9 @@ mod tests {
         assert!(valid_payout_address(&addr('R', 'a', 33)));
         assert!(valid_payout_address(&addr('L', 'a', 33))); // Lucky Lode prefix
         assert!(valid_payout_address("LYPJ8Vy8pEHMqMBksWzgxnZx6VsfuFXxtf")); // live regtest addr
+        assert!(valid_payout_address("n4EijXmFTNf7tMDGYSQB7rZytCCmRttZb6")); // live testnet addr
+        assert!(valid_payout_address(&addr('m', 'a', 33))); // testnet prefix
+        assert!(valid_payout_address(&addr('n', 'a', 33))); // testnet prefix
         assert!(!valid_payout_address("t1short"));
         assert!(!valid_payout_address("")); // empty
         assert!(!valid_payout_address(&addr('R', '0', 33))); // 0 not base58
@@ -230,3 +296,30 @@ mod tests {
         assert!(!valid_payout_address(&addr('R', 'a', 34))); // long
     }
 }
+
+    #[test]
+    fn dev_slice_moves_from_fees_not_miners() {
+        let mut p = PayoutLedger::default();
+        p.credit_block(10_000, &[(1, 1)], 200); // 2% pool fee = 200
+        assert_eq!(p.fees(), 200);
+        assert_eq!(p.owed(1), 9_800);
+        // Dev takes 50 (0.5pp of the block) out of the operator's 200.
+        assert_eq!(p.allocate_dev(99, 50), 50);
+        assert_eq!(p.fees(), 150);
+        assert_eq!(p.owed(99), 50);
+        assert_eq!(p.owed(1), 9_800); // miners untouched
+        assert_eq!(p.owed(1) + p.owed(99) + p.fees(), 10_000);
+        // Capped by the pot: asking for more moves only what's there.
+        assert_eq!(p.allocate_dev(99, 500), 150);
+        assert_eq!(p.fees(), 0);
+        assert_eq!(p.owed(99), 200);
+    }
+
+    #[test]
+    fn dev_slice_empty_when_pool_fee_zero() {
+        let mut p = PayoutLedger::default();
+        p.credit_block(10_000, &[(1, 1)], 0);
+        assert_eq!(p.allocate_dev(99, 50), 0);
+        assert_eq!(p.owed(99), 0);
+        assert_eq!(p.owed(1), 10_000);
+    }

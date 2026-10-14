@@ -11,7 +11,7 @@ use std::process::Command;
 
 #[test]
 fn binary_mines_two_shares_against_live_pool() {
-    let server = spawn_server(MockProvider::instant(1_000_000), "127.0.0.1:0").expect("bind");
+    let server = spawn_server(MockProvider::instant(1_000_000), "127.0.0.1:0", None, None, None).expect("bind");
     let out = Command::new(env!("CARGO_BIN_EXE_lm-miner"))
         .args([
             "pool",
@@ -59,11 +59,20 @@ fn pool_connection_and_usage_failures_are_typed() {
         .expect("run");
     assert_eq!(out.status.code(), Some(2));
     // Closed port (bound then released): connection failure, exit 1.
-    let probe = spawn_server(MockProvider::instant(1_000_000), "127.0.0.1:0").expect("bind");
+    let probe = spawn_server(MockProvider::instant(1_000_000), "127.0.0.1:0", None, None, None).expect("bind");
     let addr = probe.addr().to_string();
     probe.stop();
     let out = Command::new(env!("CARGO_BIN_EXE_lm-miner"))
-        .args(["pool", "--pool", &addr, "--worker", "x", "--job-timeout", "2"])
+        .args([
+            "pool",
+            "--pool",
+            &addr,
+            "--worker",
+            "x",
+            "--job-timeout",
+            "2",
+            "--fail-fast",
+        ])
         .output()
         .expect("run");
     assert_eq!(out.status.code(), Some(1));

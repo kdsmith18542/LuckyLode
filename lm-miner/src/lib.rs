@@ -1,4 +1,4 @@
-//! Reference miner core for EmberHash v1 (Lucky Lode docs 02 §2.3, 05 §5.6).
+//! Reference miner core for LuckyHash v1 (Lucky Lode docs 02 §2.3, 05 §5.6).
 //!
 //! Portable-first Rust: one Argon2id instance per thread (`p = 1` scales
 //! across threads, as Chukwa did). Two entry points:
@@ -104,8 +104,7 @@ pub fn search_with_policy(
                     let out = pow_hash(header, n, height);
                     if meets_target(&out, target) {
                         if !stop.swap(true, Ordering::SeqCst) {
-                            *found.lock().expect("found lock") =
-                                Some(Solution { nonce: n, out });
+                            *found.lock().expect("found lock") = Some(Solution { nonce: n, out });
                         }
                         return;
                     }
@@ -158,7 +157,8 @@ impl BenchReport {
     /// Single-line JSON for device-matrix collection (no dependencies —
     /// hand-rolled escaping over a controlled alphabet).
     pub fn to_json(&self) -> String {
-        let threads_json: String = self.per_thread_hps
+        let threads_json: String = self
+            .per_thread_hps
             .iter()
             .map(|h| format!("{h:.3}"))
             .collect::<Vec<_>>()
@@ -208,9 +208,14 @@ pub fn cpu_label() -> String {
 }
 
 /// Timed hashing: each of `threads` threads evaluates `hashes_per_thread`
-/// EmberHash v1 hashes (nonce = `start + thread_id * hashes_per_thread + k`).
+/// LuckyHash v1 hashes (nonce = `start + thread_id * hashes_per_thread + k`).
 /// Returns `None` for `threads == 0` (nothing to measure).
-pub fn bench(header: &[u8], height: u64, hashes_per_thread: u64, threads: usize) -> Option<BenchReport> {
+pub fn bench(
+    header: &[u8],
+    height: u64,
+    hashes_per_thread: u64,
+    threads: usize,
+) -> Option<BenchReport> {
     if threads == 0 {
         return None;
     }

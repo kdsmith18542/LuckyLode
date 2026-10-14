@@ -179,7 +179,10 @@ mod tests {
     const CB_HEX: &str = "01000000010000000000000000000000000000000000000000000000000000000000000000ffffffff03550101ffffffff01c3a4220100000000232103f9c81821efd89ad66e9fc56e0a3d870aa8ce9a424396cb5c856fb6a609977666ac67d7cb6a";
 
     fn hexd(s: &str) -> Vec<u8> {
-        (0..s.len()).step_by(2).map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap()).collect()
+        (0..s.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap())
+            .collect()
     }
 
     #[test]
@@ -199,8 +202,7 @@ mod tests {
         assert_eq!(coinbase_outputs_total(&cb).expect("sum"), 0x01_22a4c3);
         // Two vouts: fixture value + spliced bonus, exactly.
         let l = parse_coinbase_layout(&cb).expect("parse");
-        let with_bonus =
-            append_output(&cb, 1_142_856, &l.last_script).expect("append");
+        let with_bonus = append_output(&cb, 1_142_856, &l.last_script).expect("append");
         assert_eq!(
             coinbase_outputs_total(&with_bonus).expect("sum2"),
             0x01_22a4c3 + 1_142_856
@@ -223,14 +225,18 @@ mod tests {
         assert_eq!(&with_bonus[..l2.vout_count_at], &cb[..l1.vout_count_at]);
         // the first output is preserved verbatim between count and bonus
         assert_eq!(
-            &with_bonus[l2.vout_count_at + 1..l2.vout_count_at + 1 + (l1.vouts_end - l1.vout_count_at - 1)],
+            &with_bonus[l2.vout_count_at + 1
+                ..l2.vout_count_at + 1 + (l1.vouts_end - l1.vout_count_at - 1)],
             &cb[l1.vout_count_at + 1..l1.vouts_end]
         );
         assert_eq!(&with_bonus[l2.vouts_end..], &cb[l1.vouts_end..]);
         // size delta = 8 (value) + 1 (script len) + script
         assert_eq!(with_bonus.len(), cb.len() + 8 + 1 + bonus_script.len());
         // txid changes (it must — the merkle depends on it)
-        assert_ne!(crate::node_provider::txid(&cb), crate::node_provider::txid(&with_bonus));
+        assert_ne!(
+            crate::node_provider::txid(&cb),
+            crate::node_provider::txid(&with_bonus)
+        );
     }
 
     #[test]
