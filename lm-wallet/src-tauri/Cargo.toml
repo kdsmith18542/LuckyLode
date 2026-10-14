@@ -1,0 +1,24 @@
+[package]
+name = "lucky-lode-wallet"
+version = "0.1.0"
+edition = "2021"
+description = "Lucky Lode desktop wallet (Tauri v2): wallet, luckynodes, game stats"
+license = "GPL-3.0-only"
+
+# Standalone project (outside the lm-* workspace on purpose: GUI builds are
+# heavy and platform-specific; the reusable logic lives in the workspace
+# crates this depends on).
+[workspace]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+ed25519-dalek = "2.2"
+lm-stratum = { path = "../../lm-stratum" }
+lm-pool = { path = "../../lm-pool" }
+lm-luckynode = { path = "../../lm-luckynode" }
