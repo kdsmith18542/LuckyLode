@@ -1,0 +1,14 @@
+[package]
+name = "lm-sync"
+version = "0.1.0"
+edition = "2021"
+description = "Lucky Lode fast-sync tool: RPC-driven header+block sync that bypasses P2P stalls"
+license = "GPL-3.0-only"
+
+[dependencies]
+lm-stratum = { path = "../lm-stratum" }
+serde_json = "1"
+
+[[bin]]
+name = "lm-sync"
+path = "src/main.rs"
