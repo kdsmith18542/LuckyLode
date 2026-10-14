@@ -1,7 +1,7 @@
 //! Tauri commands: everything the UI can ask the backend to do.
 
 use crate::node;
-use crate::{luckynode, pool, AppState};
+use crate::{luckynode, miner, pool, AppState};
 use serde_json::json;
 use std::sync::atomic::Ordering;
 use tauri::State;
@@ -229,4 +229,73 @@ pub fn set_config(
     cfg.rpc_pass = rpc_pass;
     cfg.pool_url = pool_url;
     cfg.save(&state.cfg_path)
+}
+
+// ---- Built-in pool miner (internal/19) ----------------------------------
+
+/// Persist the mining-specific settings (stratum endpoint + worker address).
+#[tauri::command(rename_all = "snake_case")]
+pub fn set_mining_config(
+    state: State<'_, AppState>,
+    pool_stratum: String,
+    mining_worker: String,
+) -> Result<(), String> {
+    let mut cfg = state.cfg.lock().expect("cfg");
+    cfg.pool_stratum = pool_stratum;
+    cfg.mining_worker = mining_worker;
+    cfg.save(&state.cfg_path)
+}
+
+/// Start the embedded miner. `device` = cpu | opencl | auto.
+#[tauri::command(rename_all = "snake_case")]
+pub fn miner_start(
+    state: State<'_, AppState>,
+    pool: String,
+    worker: String,
+    device: String,
+    threads: usize,
+    duty: u32,
+    max_temp: i64,
+) -> Result<(), String> {
+    let mut slot = state.miner.lock().expect("miner");
+    if let Some(m) = slot.as_ref() {
+        if m.status.lock().expect("miner status").running {
+            return Err("miner already running".to_string());
+        }
+    }
+    let m = miner::start(pool, worker, device, threads, duty, max_temp)?;
+    *slot = Some(m);
+    Ok(())
+}
+
+/// Ask the miner to stop (returns immediately; status flips when the
+/// search loop reaches a chunk boundary).
+#[tauri::command]
+pub fn miner_stop(state: State<'_, AppState>) -> Result<(), String> {
+    if let Some(m) = state.miner.lock().expect("miner").as_ref() {
+        m.stop.store(true, Ordering::Relaxed);
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn miner_status(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
+    let slot = state.miner.lock().expect("miner");
+    match slot.as_ref() {
+        Some(m) => {
+            let s = m.status.lock().expect("miner status").clone();
+            serde_json::to_value(s).map_err(|e| e.to_string())
+        }
+        None => Ok(json!({ "running": false })),
+    }
+}
+
+/// Recent miner log lines (ring buffer, oldest first).
+#[tauri::command]
+pub fn miner_log(state: State<'_, AppState>) -> Result<Vec<String>, String> {
+    let slot = state.miner.lock().expect("miner");
+    Ok(slot
+        .as_ref()
+        .map(|m| m.log.lock().expect("miner log").iter().cloned().collect())
+        .unwrap_or_default())
 }

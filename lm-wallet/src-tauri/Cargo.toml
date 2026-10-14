@@ -20,5 +20,6 @@ serde_json = "1"
 sha2 = "0.10"
 ed25519-dalek = "2.2"
 lm-stratum = { path = "../../lm-stratum" }
+lm-miner = { path = "../../lm-miner" }
 lm-pool = { path = "../../lm-pool" }
 lm-luckynode = { path = "../../lm-luckynode" }

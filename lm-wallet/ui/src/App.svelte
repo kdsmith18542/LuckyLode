@@ -2,6 +2,7 @@
   import Overview from "./views/Overview.svelte";
   import Send from "./views/Send.svelte";
   import Receive from "./views/Receive.svelte";
+  import Miner from "./views/Miner.svelte";
   import Luckynodes from "./views/Luckynodes.svelte";
   import Game from "./views/Game.svelte";
   import Settings from "./views/Settings.svelte";
@@ -17,6 +18,7 @@
     ["overview", "Overview"],
     ["send", "Send"],
     ["receive", "Receive"],
+    ["miner", "Miner"],
     ["luckynodes", "Luckynodes"],
     ["game", "Game"],
     ["settings", "Settings"],
@@ -80,6 +82,6 @@
       <div class="banner pot">💧 NEXT BLOCK ({next.height}) IS A POT EVENT — tier {next.tier} splash</div>
     {/if}
 
-    {#if view === "overview"}<Overview />{:else if view === "send"}<Send />{:else if view === "receive"}<Receive />{:else if view === "luckynodes"}<Luckynodes />{:else if view === "game"}<Game />{:else if view === "settings"}<Settings />{/if}
+    {#if view === "overview"}<Overview />{:else if view === "send"}<Send />{:else if view === "receive"}<Receive />{:else if view === "miner"}<Miner />{:else if view === "luckynodes"}<Luckynodes />{:else if view === "game"}<Game />{:else if view === "settings"}<Settings />{/if}
   </main>
 </div>

@@ -26,6 +26,19 @@ export const setConfig = (c: {
   rpc_pass: string;
   pool_url: string;
 }) => invoke<void>("set_config", c);
+export const setMiningConfig = (pool_stratum: string, mining_worker: string) =>
+  invoke<void>("set_mining_config", { pool_stratum, mining_worker });
+export const minerStart = (p: {
+  pool: string;
+  worker: string;
+  device: string;
+  threads: number;
+  duty: number;
+  max_temp: number;
+}) => invoke<void>("miner_start", p);
+export const minerStop = () => invoke<void>("miner_stop");
+export const minerStatus = () => invoke<Json>("miner_status");
+export const minerLog = () => invoke<string[]>("miner_log");
 
 /** coin display: base units → LKYL with 2-4 decimals */
 export function coin(v: unknown): string {

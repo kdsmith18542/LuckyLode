@@ -4,6 +4,7 @@ mod commands;
 mod config;
 mod draws;
 mod luckynode;
+mod miner;
 mod node;
 mod pool;
 
@@ -15,6 +16,7 @@ pub struct AppState {
     pub cfg: Mutex<config::Config>,
     pub cfg_path: std::path::PathBuf,
     pub services: Mutex<HashMap<String, luckynode::Service>>,
+    pub miner: Mutex<Option<miner::Miner>>,
 }
 
 fn main() {
@@ -31,6 +33,7 @@ fn main() {
                 cfg: Mutex::new(cfg),
                 cfg_path,
                 services: Mutex::new(HashMap::new()),
+                miner: Mutex::new(None),
             });
             Ok(())
         })
@@ -50,7 +53,12 @@ fn main() {
             commands::luckynode_service_status,
             commands::get_config,
             commands::set_config,
+            commands::set_mining_config,
             commands::test_rpc,
+            commands::miner_start,
+            commands::miner_stop,
+            commands::miner_status,
+            commands::miner_log,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Lucky Lode Wallet");
