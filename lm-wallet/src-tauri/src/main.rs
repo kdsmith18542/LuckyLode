@@ -59,6 +59,7 @@ fn main() {
             commands::miner_stop,
             commands::miner_status,
             commands::miner_log,
+            commands::miner_gpus,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Lucky Lode Wallet");

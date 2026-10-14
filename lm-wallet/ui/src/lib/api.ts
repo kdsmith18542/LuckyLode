@@ -35,7 +35,12 @@ export const minerStart = (p: {
   threads: number;
   duty: number;
   max_temp: number;
+  gpu_platform?: number;
+  gpu_device?: number;
+  gpu_batch?: number;
+  max_power?: number;
 }) => invoke<void>("miner_start", p);
+export const minerGpus = () => invoke<Json>("miner_gpus");
 export const minerStop = () => invoke<void>("miner_stop");
 export const minerStatus = () => invoke<Json>("miner_status");
 export const minerLog = () => invoke<string[]>("miner_log");

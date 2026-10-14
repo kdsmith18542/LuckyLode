@@ -277,6 +277,48 @@ impl GpuDevice {
         })
     }
 
+/// Enumerate OpenCL devices as `(platform index, device index, name)` —
+/// what GUI pickers and `gpu-test` need without opening a context.
+/// Mirrors [`GpuDevice::open`]'s traversal (GPU kind first, then all kinds
+/// for odd iGPU drivers).
+pub fn list_devices() -> Vec<(usize, usize, String)> {
+    let mut out = Vec::new();
+    let mut n_platforms = 0u32;
+    if unsafe { clGetPlatformIDs(0, ptr::null_mut(), &mut n_platforms) } != CL_SUCCESS
+        || n_platforms == 0
+    {
+        return out;
+    }
+    let mut platforms = vec![ptr::null_mut(); n_platforms as usize];
+    if unsafe { clGetPlatformIDs(n_platforms, platforms.as_mut_ptr(), ptr::null_mut()) }
+        != CL_SUCCESS
+    {
+        return out;
+    }
+    for (p, platform) in platforms.iter().enumerate() {
+        for kind in [CL_DEVICE_TYPE_GPU, CL_DEVICE_TYPE_ALL] {
+            let mut n = 0u32;
+            if unsafe { clGetDeviceIDs(*platform, kind, 0, ptr::null_mut(), &mut n) } != CL_SUCCESS
+                || n == 0
+            {
+                continue;
+            }
+            let mut devs = vec![ptr::null_mut(); n as usize];
+            if unsafe {
+                clGetDeviceIDs(*platform, kind, n, devs.as_mut_ptr(), ptr::null_mut())
+            } != CL_SUCCESS
+            {
+                continue;
+            }
+            for (d, dev) in devs.iter().enumerate() {
+                out.push((p, d, GpuDevice::device_name(*dev)));
+            }
+            break; // GPU kind covered this platform
+        }
+    }
+    out
+}
+
     fn pick_device(platform: *mut c_void, idx: usize) -> Result<*mut c_void, String> {
         for kind in [CL_DEVICE_TYPE_GPU, CL_DEVICE_TYPE_ALL] {
             let mut n = 0u32;

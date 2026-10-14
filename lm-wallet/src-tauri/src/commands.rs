@@ -256,6 +256,10 @@ pub fn miner_start(
     threads: usize,
     duty: u32,
     max_temp: i64,
+    gpu_platform: Option<usize>,
+    gpu_device: Option<usize>,
+    gpu_batch: Option<usize>,
+    max_power: Option<u32>,
 ) -> Result<(), String> {
     let mut slot = state.miner.lock().expect("miner");
     if let Some(m) = slot.as_ref() {
@@ -263,9 +267,29 @@ pub fn miner_start(
             return Err("miner already running".to_string());
         }
     }
-    let m = miner::start(pool, worker, device, threads, duty, max_temp)?;
+    let m = miner::start(
+        pool,
+        worker,
+        device,
+        threads,
+        duty,
+        max_temp,
+        gpu_platform.unwrap_or(0),
+        gpu_device.unwrap_or(0),
+        gpu_batch.unwrap_or(512),
+        max_power.unwrap_or(0),
+    )?;
     *slot = Some(m);
     Ok(())
+}
+
+/// OpenCL devices for the GPU picker: [{platform, device, name}].
+#[tauri::command]
+pub fn miner_gpus() -> Vec<serde_json::Value> {
+    lm_miner::opencl::GpuDevice::list_devices()
+        .into_iter()
+        .map(|(p, d, name)| json!({ "platform": p, "device": d, "name": name }))
+        .collect()
 }
 
 /// Ask the miner to stop (returns immediately; status flips when the

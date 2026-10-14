@@ -40,6 +40,10 @@ pub struct Status {
     pub uptime_secs: u64,
     pub last_line: String,
     pub error: Option<String>,
+    /// Card sensor on GPU runs, package sensor on CPU runs (−1 = n/a).
+    pub temp_c: i32,
+    /// Board power in W when reported (NVIDIA via nvidia-smi).
+    pub power_w: Option<u32>,
 }
 
 fn log_line(log: &Mutex<VecDeque<String>>, line: String) {
@@ -59,6 +63,10 @@ fn set_error(status: &Mutex<Status>, log: &Mutex<VecDeque<String>>, err: Option<
 
 /// Start mining. `device` = `cpu` | `opencl` | `auto`; `duty` = percent of
 /// wall time spent hashing (0–100); `max_temp` = pause threshold in °C.
+/// GPU knobs: `gpu_platform`/`gpu_device` pick the card, `gpu_batch` =
+/// Argon2 instances per launch (1 MiB VRAM each; 0 → 512), `max_power` =
+/// NVIDIA board limit in W via `nvidia-smi -pl` (0 = leave alone).
+#[allow(clippy::too_many_arguments)]
 pub fn start(
     pool: String,
     worker: String,
@@ -66,6 +74,10 @@ pub fn start(
     threads: usize,
     duty: u32,
     max_temp: i64,
+    gpu_platform: usize,
+    gpu_device: usize,
+    gpu_batch: usize,
+    max_power: u32,
 ) -> Result<Miner, String> {
     if worker.trim().is_empty() {
         return Err("set a payout address (worker name) first".to_string());
@@ -87,14 +99,33 @@ pub fn start(
         uptime_secs: 0,
         last_line: String::new(),
         error: None,
+        temp_c: -1,
+        power_w: None,
     }));
     let log: Arc<Mutex<VecDeque<String>>> = Arc::new(Mutex::new(VecDeque::new()));
 
     let (s, st, lg) = (Arc::clone(&stop), Arc::clone(&status), Arc::clone(&log));
-    std::thread::spawn(move || run(s, st, lg, pool, worker, device, threads, duty, max_temp));
+    std::thread::spawn(move || {
+        run(
+            s,
+            st,
+            lg,
+            pool,
+            worker,
+            device,
+            threads,
+            duty,
+            max_temp,
+            gpu_platform,
+            gpu_device,
+            gpu_batch,
+            max_power,
+        )
+    });
     Ok(Miner { stop, status, log })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run(
     stop: Arc<AtomicBool>,
     status: Arc<Mutex<Status>>,
@@ -105,6 +136,10 @@ fn run(
     threads: usize,
     duty: u32,
     max_temp: i64,
+    gpu_platform: usize,
+    gpu_device: usize,
+    gpu_batch: usize,
+    max_power: u32,
 ) {
     let policy = match MiningPolicy::new(max_temp, duty.min(100) as i64) {
         Ok(p) => p,
@@ -116,8 +151,9 @@ fn run(
     };
     // Device resolution: opencl = hard requirement, auto = prefer GPU,
     // cpu = threads only.
+    let gpu_batch = if gpu_batch == 0 { 512 } else { gpu_batch };
     let gpu = match device.as_str() {
-        "opencl" => match GpuSearcher::open(0, 0, 512) {
+        "opencl" => match GpuSearcher::open(gpu_platform, gpu_device, gpu_batch) {
             Ok(g) => Some(g),
             Err(e) => {
                 set_error(&status, &log, Some(format!("opencl: {e}")));
@@ -125,7 +161,7 @@ fn run(
                 return;
             }
         },
-        "auto" => GpuSearcher::open(0, 0, 512).ok(),
+        "auto" => GpuSearcher::open(gpu_platform, gpu_device, gpu_batch).ok(),
         _ => None,
     };
     let device_label = match &gpu {
@@ -137,6 +173,18 @@ fn run(
         s.device = device_label.clone();
     }
     log_line(&log, format!("mining {device_label} → {pool} as {worker}"));
+    if gpu.is_some() {
+        log_line(
+            &log,
+            format!("gpu platform {gpu_platform} device {gpu_device}, batch {gpu_batch} ({} MiB VRAM)", gpu_batch),
+        );
+        if max_power > 0 {
+            match lm_miner::gpu::apply_power_limit(max_power) {
+                Ok(()) => log_line(&log, format!("gpu power limit set to {max_power} W")),
+                Err(e) => log_line(&log, format!("gpu power limit {max_power} W not applied: {e}")),
+            }
+        }
+    }
 
     let started = Instant::now();
     let mut hashes: u64 = 0;
@@ -188,6 +236,7 @@ fn run(
                             .unwrap_or(false);
                         if !same_header {
                             pos = 0;
+                            log_line(&log, format!("job {} height {}", j.id, j.height));
                         }
                         current = Some(j);
                     }
@@ -204,6 +253,7 @@ fn run(
                     Ok(Some(j)) => {
                         current = Some(j);
                         pos = 0;
+                        log_line(&log, "job (after wait)".to_string());
                     }
                     Ok(None) => {}
                     Err(e) => {
@@ -289,6 +339,15 @@ fn run(
             s.rejected = rejected;
             s.duplicates = duplicates;
             s.uptime_secs = started.elapsed().as_secs();
+            let (t, p) = match &gpu {
+                Some(_) => {
+                    let (t, p) = lm_miner::gpu::gpu_status();
+                    (t, p)
+                }
+                None => (lm_miner::thermal::read_temp_c(), None),
+            };
+            s.temp_c = t;
+            s.power_w = p;
             if let Some(l) = log.lock().expect("log").back() {
                 s.last_line = l.clone();
             }
@@ -325,10 +384,16 @@ mod tests {
             "cpu".into(),
             1,
             100,
-            80,
+            95, // guard effectively off: this box's Tctl spikes to 80 under load
+            0,
+            0,
+            512,
+            0,
         )
         .expect("start");
         std::thread::sleep(Duration::from_secs(20));
+        let lg: Vec<String> = m.log.lock().expect("log").iter().cloned().collect();
+        println!("cpu smoke log: {lg:?}");
         let s = m.status.lock().expect("s").clone();
         assert!(s.running, "miner should be running: {s:?}");
         assert!(s.hashes > 0, "hashes should grow: {s:?}");
@@ -338,5 +403,37 @@ mod tests {
         let s = m.status.lock().expect("s").clone();
         assert!(!s.running, "miner should stop: {s:?}");
         println!("smoke ok: {s:?}");
+    }
+
+    /// GPU path smoke: open platform 0 / device 0 with a 512 batch and
+    /// prove hashes flow + the card sensor reports. Needs the local pool
+    /// and an OpenCL GPU; run with `-- --ignored` in release.
+    #[test]
+    #[ignore]
+    fn live_smoke_gpu_against_local_pool() {
+        let m = start(
+            "127.0.0.1:3356".into(),
+            "wallet-smoke-gpu".into(),
+            "opencl".into(),
+            1,
+            100,
+            80,
+            0,
+            0,
+            512,
+            0,
+        )
+        .expect("start");
+        std::thread::sleep(Duration::from_secs(20));
+        let s = m.status.lock().expect("s").clone();
+        assert!(s.running, "gpu miner should be running: {s:?}");
+        assert!(s.device.starts_with("gpu:"), "should be on the GPU: {s:?}");
+        assert!(s.hashes > 0, "hashes should grow: {s:?}");
+        assert!(s.temp_c > 0, "gpu sensor should report: {s:?}");
+        m.stop.store(true, Ordering::Relaxed);
+        std::thread::sleep(Duration::from_secs(12));
+        let s = m.status.lock().expect("s").clone();
+        assert!(!s.running, "gpu miner should stop: {s:?}");
+        println!("gpu smoke ok: {s:?}");
     }
 }
