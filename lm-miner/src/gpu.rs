@@ -101,6 +101,24 @@ pub fn read_gpu_temp_c() -> i32 {
     gpu_status().0
 }
 
+/// Apply an NVIDIA board power limit (`nvidia-smi -pl W`). Needs driver
+/// permission (often root); failure is returned, never fatal — the
+/// thermal guard still bounds the card.
+pub fn apply_power_limit(watts: u32) -> Result<(), String> {
+    match std::process::Command::new("nvidia-smi")
+        .args(["-pl", &watts.to_string()])
+        .output()
+    {
+        Ok(o) if o.status.success() => Ok(()),
+        Ok(o) => {
+            let err = String::from_utf8_lossy(&o.stderr).trim().to_string();
+            let out = String::from_utf8_lossy(&o.stdout).trim().to_string();
+            Err(if err.is_empty() { out } else { err })
+        }
+        Err(e) => Err(format!("nvidia-smi unavailable ({e})")),
+    }
+}
+
 /// A compiled GPU ready to grind LuckyHash.
 pub struct GpuSearcher {
     dev: GpuDevice,

@@ -5,6 +5,10 @@
   let threads = $state(4);
   let duty = $state(100);
   let maxTemp = $state(80);
+  let gpus = $state<any[]>([]);
+  let gpuSel = $state("0:0");
+  let gpuBatch = $state(512);
+  let maxPower = $state(0);
   let st = $state<any>(null);
   let log = $state<string[]>([]);
   let err = $state("");
@@ -15,6 +19,13 @@
       .getConfig()
       .then((c: any) => (cfg = c))
       .catch((e) => (err = String(e)));
+    api
+      .minerGpus()
+      .then((g: any) => {
+        gpus = g as any[];
+        if (gpus.length > 0) gpuSel = `${gpus[0].platform}:${gpus[0].device}`;
+      })
+      .catch(() => (gpus = []));
     const t = setInterval(async () => {
       try {
         st = await api.minerStatus();
@@ -27,12 +38,14 @@
   });
 
   const running = $derived(!!st?.running);
+  const useGpu = $derived(device !== "cpu");
 
   async function start() {
     err = "";
     busy = true;
     try {
       await api.setMiningConfig(cfg.pool_stratum, cfg.mining_worker.trim());
+      const [gp, gd] = gpuSel.split(":").map((x) => Number(x) || 0);
       await api.minerStart({
         pool: cfg.pool_stratum,
         worker: cfg.mining_worker.trim(),
@@ -40,6 +53,10 @@
         threads: Number(threads) || 1,
         duty: Number(duty) || 100,
         max_temp: Number(maxTemp) || 80,
+        gpu_platform: gp,
+        gpu_device: gd,
+        gpu_batch: Number(gpuBatch) || 512,
+        max_power: Number(maxPower) || 0,
       });
     } catch (e) {
       err = String(e);
@@ -108,7 +125,7 @@
   <div class="row" style="margin-top:4px">
     <div>
       <label for="th">threads (cpu)</label>
-      <input id="th" type="number" min="1" max="64" bind:value={threads} disabled={running} style="width:90px" />
+      <input id="th" type="number" min="1" max="64" bind:value={threads} disabled={running || useGpu} style="width:90px" />
     </div>
     <div>
       <label for="dt">duty %</label>
@@ -119,6 +136,28 @@
       <input id="mt" type="number" min="40" max="100" bind:value={maxTemp} disabled={running} style="width:90px" />
     </div>
   </div>
+  {#if useGpu}
+    <label for="gpu">GPU</label>
+    {#if gpus.length > 0}
+      <select id="gpu" bind:value={gpuSel} disabled={running}>
+        {#each gpus as g}
+          <option value={`${g.platform}:${g.device}`}>{g.name} (platform {g.platform}, device {g.device})</option>
+        {/each}
+      </select>
+    {:else}
+      <div class="muted">no OpenCL devices found — install the vendor driver (the miner falls back to CPU with "auto")</div>
+    {/if}
+    <div class="row" style="margin-top:4px">
+      <div>
+        <label for="gb">gpu batch (MiB VRAM)</label>
+        <input id="gb" type="number" min="1" max="8192" bind:value={gpuBatch} disabled={running} style="width:110px" />
+      </div>
+      <div>
+        <label for="mp">power limit W (0 = off)</label>
+        <input id="mp" type="number" min="0" max="1000" bind:value={maxPower} disabled={running} style="width:110px" />
+      </div>
+    </div>
+  {/if}
   <div class="row" style="margin-top:14px">
     {#if !running}
       <button class="btn primary" onclick={start} disabled={busy}>Start mining</button>
@@ -139,6 +178,12 @@
     <div class="card"><div class="k">duplicates</div><div class="v">{st.duplicates}</div></div>
     <div class="card"><div class="k">hashes</div><div class="v">{st.hashes}</div></div>
     <div class="card"><div class="k">uptime</div><div class="v">{uptime(st.uptime_secs)}</div></div>
+    {#if st.temp_c > 0}
+      <div class="card"><div class="k">temp</div><div class="v">{st.temp_c}°C</div></div>
+    {/if}
+    {#if st.power_w}
+      <div class="card"><div class="k">power</div><div class="v">{st.power_w} W</div></div>
+    {/if}
   </div>
   <div class="row" style="margin-top:8px">
     <span class="muted">{st.device} · {st.pool} · worker {st.worker}</span>

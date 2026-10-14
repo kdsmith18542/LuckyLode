@@ -218,20 +218,9 @@ fn open_gpu(cfg: &GpuCfg) -> Result<Option<GpuSearcher>, String> {
 /// permission (often root); failure is a warning, never fatal — the
 /// thermal guard still bounds the card.
 fn apply_power_limit(watts: u32) {
-    match std::process::Command::new("nvidia-smi")
-        .args(["-pl", &watts.to_string()])
-        .output()
-    {
-        Ok(o) if o.status.success() => println!("gpu power limit set to {watts} W"),
-        Ok(o) => {
-            let err = String::from_utf8_lossy(&o.stderr).trim().to_string();
-            let out = String::from_utf8_lossy(&o.stdout).trim().to_string();
-            eprintln!(
-                "gpu power limit {watts} W not applied: {}",
-                if err.is_empty() { out } else { err }
-            );
-        }
-        Err(e) => eprintln!("gpu power limit: nvidia-smi unavailable ({e})"),
+    match lm_miner::gpu::apply_power_limit(watts) {
+        Ok(()) => println!("gpu power limit set to {watts} W"),
+        Err(e) => eprintln!("gpu power limit {watts} W not applied: {e}"),
     }
 }
 
