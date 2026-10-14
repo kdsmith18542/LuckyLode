@@ -40,10 +40,12 @@ are set up (`tauri.conf.json` → `bundle.active`).
 - The luckynode ed25519 key is stored 0600 in the app config dir; it is
   separate from wallet funds and never leaves the machine.
 
-## Status (M1)
+## Status (M1+)
 
 Built: shell + status bar, next-block draw banner (pre-committed draws),
-overview balances/activity, send/receive, luckynode list + register +
+overview balances/activity, send/receive, **embedded miner** (Miner tab:
+CPU/OpenCL with duty + temperature guard, live hashrate/shares/log —
+same engine as the reference `lm-miner`), luckynode list + register +
 embedded service, game stats, settings. Next (M2–M5 in the spec):
 contacts/QR, draw history polish, luck chart, notifications, themes,
 packaging, OS keyring.

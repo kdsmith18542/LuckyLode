@@ -11,6 +11,16 @@ pub struct Config {
     pub rpc_pass: String,
     /// Pool HTTP API (dashboard + luckynode endpoints).
     pub pool_url: String,
+    /// Stratum endpoint for the built-in miner (host:port).
+    #[serde(default = "default_stratum")]
+    pub pool_stratum: String,
+    /// Default worker/payout address for the built-in miner.
+    #[serde(default)]
+    pub mining_worker: String,
+}
+
+fn default_stratum() -> String {
+    "luckylode.cc:3346".to_string()
 }
 
 impl Default for Config {
@@ -21,6 +31,8 @@ impl Default for Config {
             rpc_user: String::new(),
             rpc_pass: String::new(),
             pool_url: "https://luckylode.cc/pool".to_string(),
+            pool_stratum: default_stratum(),
+            mining_worker: String::new(),
         }
     }
 }
