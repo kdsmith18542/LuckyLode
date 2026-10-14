@@ -2,11 +2,14 @@
 
 **Name:** Lucky Lode — decided 2026-10-11; primary domain `luckylode.cc`
 **registered 2026-10-11** (RDAP-verified, expires 2027-10-11).
-**Docs renamed to Lucky Lode 2026-10-11.** Remaining
-legacy identifiers, kept deliberately: crate names `lm-*` and the wire
-profile string `lowmine/1` (rename deferred to rebrand execution), and the
-**frozen consensus strings** `LMv1` / `lowmine-pow/v1` — those never
-change; they are construction identifiers, not branding (doc 05).
+**Docs renamed to Lucky Lode 2026-10-11; feature names done 2026-10-14**
+(LuckyID identity layer, LuckyHash algorithm — docs/13). Remaining
+legacy identifiers, kept deliberately: crate names `lm-*`, internal
+algorithm identifiers (`ember_*.cpp`, `CEmberHash`, `GetEmberHash`,
+`ASSETCHAINS_EMBERHASH`), and the legacy `-ac_algo=emberhash` alias for
+`-ac_algo=luckyhash`; and the **frozen consensus strings** `LMv1` /
+`lowmine-pow/v1` — those never change; they are construction identifiers,
+not branding (doc 05).
 
 **One-liner:** a fair-launch, CPU/ARM-first mineable coin for the hardware
 people already own — phones, miniPCs, laptops old and new — with mining

@@ -2,7 +2,7 @@
 
 **Status:** maintainer policy, 2026-10-11. Tunable by review; it constrains
 *when we act*, never consensus rules. Touches nothing frozen (doc 05 rev 1.0
-stands: EmberHash v1 genesis at 1 MiB).
+stands: LuckyHash v1 genesis at 1 MiB).
 
 ## Posture in one sentence
 
@@ -41,7 +41,7 @@ competitors
 CPUs first was the launch posture; the supported set now explicitly
 includes **low-end GPUs: Pascal-class discrete cards, AMD GCN/RDNA
 low-end, and Intel/AMD iGPUs**. Rationale: "whatever hardware you already
-own" includes a 2016 GTX 1060 and every laptop iGPU — and EmberHash's
+own" includes a 2016 GTX 1060 and every laptop iGPU — and LuckyHash's
 1 MiB footprint (vs 4 GB+ DAGs) is precisely what makes that class
 *includable* instead of gated out. This changes nothing about the
 tripwire above: it guards the efficiency *ratio*, and leagues still

@@ -1,0 +1,45 @@
+Lucky Lode — attribution and licensing
+======================================
+
+Lucky Lode is a fair-launch, hybrid PoW/PoS mineable coin. This repository
+contains the Rust reference crates and the design documents; the node/wallet
+software is a fork of VerusCoin maintained in the `verus/` submodule/fork
+(see `verus/NOTICE`).
+
+Licensing
+---------
+
+  Rust code (lm-* crates)       GNU GPL-3.0-only (see LICENSE)
+  Design documents (docs/)      CC-BY-SA-4.0
+  Node fork (verus/)            MIT — upstream license, see verus/COPYING
+
+Upstream attribution
+--------------------
+
+The node fork derives from VerusCoin/VerusCoin, which derives from Komodo and
+Zcash, which derive from Bitcoin Core. Their copyright notices are retained
+verbatim in `verus/COPYING` and in source headers:
+
+  Copyright (c) 2009-2017 The Bitcoin Core developers
+  Copyright (c) 2009-2018 Bitcoin Developers
+  Copyright (c) 2016-2024 The Zcash developers
+  Copyright (c) 2016-2025 The Komodo developers
+  Copyright (c) 2018-2025 The VerusCoin developers
+  Copyright (c) 2015-     jl777 and SuperNET developers
+
+Lucky Lode additions:
+  Copyright (c) 2026 The Lucky Lode developers
+
+Vendored components
+-------------------
+
+  verus/src/crypto/blake3/   BLAKE3 (CC0-1.0)
+  verus/src/crypto/argon2/   Argon2 reference (CC0-1.0 / Apache-2.0)
+  Rust dependencies          per-crate licenses (see Cargo.lock / crates.io)
+
+Fair-launch note
+----------------
+
+Lucky Lode has no premine, no ICO, and no team allocation. The genesis
+game-fund seed is consensus state that pays miners only (see docs/06 and
+docs/04).
