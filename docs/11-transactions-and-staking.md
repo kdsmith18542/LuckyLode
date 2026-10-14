@@ -14,7 +14,9 @@ policy, wallet, or sidecar work.
   Zcash-lineage (larger than Bitcoin/Litecoin; shielded far larger).
 - Fee policy in force (doc 04 §4.1): minimal anti-spam floor, no fee burns
   at launch.
-- VerusID, PBaaS inheritance potential — kept for later (deferred decision).
+- **LuckyID** (the identity/badges layer; user-facing rename of VerusID
+  decided 2026-10-14, see doc 13), PBaaS inheritance potential — kept for
+  later (deferred decision).
 
 ## 11.2 "Cheap" — policy, not a promise to Litecoin parity
 
@@ -73,7 +75,7 @@ exist yet** — and the game layer (doc 12) is exactly where such jobs live.
 
 ## 11.6 Two candidate PoS extensions (the "cool unique" part)
 
-### Direction A — Keeper nodes (service nodes for the game layer)
+### Direction A — Luckynodes (service nodes for the game layer)
 
 Bonded, opt-in staking role. Duties (all currently sidecar/pool-layer, no
 consensus change if kept so):
@@ -109,7 +111,7 @@ mostly sidecar.
 **Recommendation:** B ships with Season 1 (cheap, safe, closes the loop).
 A gets a P3 exploration charter — only if the game layer proves retention
 (doc 01 success criteria) and needs decentralized trust. Do not build
-keepers before the game is fun.
+luckynodes before the game is fun.
 
 ## 11.7 Decision points
 
@@ -118,5 +120,5 @@ keepers before the game is fun.
 | Relay fee floor values + shielded guidance | P1 testnet | before public testnet |
 | Wallet privacy defaults per amount tier | app design | P2 |
 | Season stakes adoption (Direction B) | founder | before Season 1 |
-| Keeper nodes charter (Direction A) | founder | P3, retention-gated |
+| Luckynode charter (Direction A) | founder | P3, retention-gated |
 | Any [consensus] promotion | doc 02 allowlist + review | per item |

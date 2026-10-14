@@ -3,30 +3,49 @@
 ## 4.1 Emission: fair + forever (anti-fade by construction)
 
 - **No premine, no ICO** (non-negotiable for the narrative; TRTL lesson).
-- **Declining base schedule** (e.g. halving-ish every 2–4 years) **plus a
-  permanent tail emission** (Monero-style, e.g. fixed minimum per block
-  forever). The tail is the single most important anti-fade mechanism:
-  miners can never face a future of fees-only on a low-fee chain.
-- **Jackpot funding** (§3.2): jackpots paid from a small per-block lottery
-  levy (e.g. 2–5% of each block reward into a jackpot reserve), smoothed so
-  jackpot variance doesn't starve base rewards. Progressive split on payout.
+  The only genesis allocation is the **game-fund seed** (doc 06 §6.2/§6.6):
+  consensus-locked, no keys, no address, spendable only through the
+  jackpot/pot payout rules — it pays miners, never insiders.
+- **Emission schedule — LOCKED 2026-10-13** (60 s blocks, 1,440/day):
+  - **Week 1 (blocks 1–10,080): linear ramp 0 → 16 LKYL/block.** Early
+    miners earn in proportion to hash as the reward climbs — no block-1
+    payout spike to front-run, no head start for insiders.
+  - **Years 1–8: 16 LKYL/block, halving every 2 years** (16 → 8 → 4 → 2).
+  - **Year 9 onward: a fixed 1 LKYL/block forever** (Monero-style tail).
+    The tail is the single most important anti-fade mechanism: miners can
+    never face a future of fees-only on a low-fee chain.
+  - ≈31.6M LKYL over 8 years, +525.6k/year tail. **Testnet mirrors this
+    schedule exactly**, so the ramp and halvings are exercised before
+    mainnet.
+- **Jackpot + Lucky Pot funding** (§3.2, doc 06): a 5% per-block levy,
+  split **4% jackpot reserve / 1% Lucky Pot**; jackpots pay the finder up
+  to `5×R`, pot draws pay tiered splashes (10/25/50%, pity-timer floor);
+  jackpot-reserve overflow feeds the league pool, pot overflow burns.
+  Expectation-neutral by construction — the game layer redistributes
+  miner-earned value, it never mints.
+- **Luckynodes** (docs/11 §11.6 Direction A, internal/18): cheap-bond
+  service nodes paid from fun-layer budgets (league pool), **never from
+  inflation** — so the emission schedule funds only PoW miners and PoS
+  stakers.
 - Fees: minimal anti-spam floor; no fee burns at launch (keep the economy
   legible while small).
 
 ## 4.2 Dev funding that doesn't break fair-launch trust
 
-TRTL died partly of volunteer burnout. Pick the least-evil transparent mix:
+TRTL died partly of volunteer burnout. **Policy LOCKED 2026-10-13** (the
+least-evil transparent mix; implementation pending before mainnet):
 
-1. **Reference-miner dev fee 1%** (XMRig-norm, visible in logs, ideally
-   opt-out-able with a nag — transparency over coercion).
-2. **Reference-pool fee slice** (e.g. 0.5pp of pool fee) to a published
-   multisig address, dashboard-traceable coin-for-coin.
-3. **Optional treasury block share, governance-capped** (e.g. ≤5%, sunsets
-   unless renewed by community vote) — only if 1+2 underfund; contentious,
-   so default to *off* at launch and let the community vote it on.
+1. **Reference-miner dev fee 1%** (XMRig-norm): visible in logs,
+   opt-out-able with a nag — transparency over coercion.
+2. **Reference-pool fee slice 0.5pp** to a published multisig address,
+   dashboard-traceable coin-for-coin.
+3. **Treasury block share: OFF by default** (≤5%, governance-capped,
+   sunsets unless renewed by community vote) — only if 1+2 underfund.
 
 All funding addresses + spends on a public dashboard from day one. The
-moment funding looks sneaky, the fair-launch story dies and so does the coin.
+moment funding looks sneaky, the fair-launch story dies and so does the
+coin. None of this touches the emission schedule (§4.1) or the game-fund
+seed.
 
 ## 4.3 Launch sequence (fairness is the marketing)
 
@@ -36,9 +55,13 @@ moment funding looks sneaky, the fair-launch story dies and so does the coin.
    before block 1; genesis timestamp public; no friends-and-family head start.
 3. **Rebrand checklist (must clear before countdown):** name/ticker/domain/
    socials secured + collision-searched; address version bytes and network
-   magic distinct from Verus (cross-chain safety); user-facing string purge;
-   upstream license/copyright attribution in code + NOTICE file; genesis
-   message written; name-the-algo contest concluded (doc 02 §2.2).
+   magic distinct from Verus (cross-chain safety) — **done 2026-10-13**
+   (prefixes 111/196, magic `LucT`, `LUCKYLODETEST`); user-facing string
+   purge — **node/miner/pool done 2026-10-13; feature names done
+   2026-10-14** (VerusID → LuckyID, doc 13); upstream license/copyright
+   attribution in code + NOTICE file — **done**; genesis message written —
+   **done** (mainnet pin + testnet's own genesis); name-the-algo contest
+   concluded (doc 02 §2.2) — **done 2026-10-14** (**LuckyHash**, docs/13).
 3. **Launch day = event**: live leaderboards, first-jackpot watch party,
    league signups open. Treat genesis like a game launch, not a deploy.
 4. **Season 1 starts at block N** (e.g. 1 month in): leagues, streaks,
@@ -49,7 +72,7 @@ moment funding looks sneaky, the fair-launch story dies and so does the coin.
 | Phase | Scope | Exit gate |
 |---|---|---|
 | **P0 — Decision** (4–6 wks) | Fork eval (doc 02 options A/D), brand + rebrand checklist, PoW spec frozen ([doc 05](05-pow-algorithm.md) rev 1.0 ✓) | Written fork decision + frozen PoW params + vectors |
-| **P1 — Testnet** | Forked node mining EmberHash from block 1, reference Rust miner (`lm-pow`) + thermal scheduler, 1–2 ref pools (Stratum V2), wallets, faucet, miner bake-off (third-party ports) | Public testnet ≥8 weeks on frozen params, 1k+ miners, device-matrix benchmarks published (doc 05 §5.6 gate), third-party PoW review commissioned |
+| **P1 — Testnet** | Forked node mining LuckyHash from block 1, reference Rust miner (`lm-pow`) + thermal scheduler, 1–2 ref pools (Stratum V1 proven on testnet; V2 framing in P2), wallets, faucet, miner bake-off (third-party ports) | Public testnet ≥8 weeks on frozen params, 1k+ miners, device-matrix benchmarks published (doc 05 §5.6 gate), third-party PoW review commissioned |
 | **P2 — Mainnet + Season 1** | Genesis event, Android app beta, leagues/streaks/badges live, 3+ pools | Review clean (no open High/Critical), 10k low-end accounts; median day-90 retention tracked |
 | **P3 — Mobile GA** | Thermal engine v1 (`lm-sched` policy, doc 07), overnight mode, iOS companion (wallet/spectate/faucet games) | Phone-league participation doubled vs S1 |
 | **P4 — Depth** | Attestation-gated leagues, solo guides push, P2 optional treasury vote | Farm/spoof rate bounded; funding runway ≥18 mo |

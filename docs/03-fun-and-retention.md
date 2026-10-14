@@ -2,8 +2,15 @@
 
 Mining dies when it becomes invisible background process with dust payouts.
 This doc designs mining as a **game with seasons, leagues, streaks, and
-jackpots** — most of it *without consensus changes* (pool-side + sidecar),
+jackpots** — most of it *without* consensus changes (pool-side + sidecar),
 so it ships fast and iterates faster.
+
+> **Update 2026-10-14 (owner-directed):** the project now also ships a
+> first-party **casino** at `luckylode.cc/casino` where LKYL is wagered in
+> themed slots. That is a deliberate, scoped exception to the "no-wager"
+> posture this doc and docs 12 assumed; it is specified in
+> [doc 14](14-casino-and-slots.md). Mining leagues/streaks/jackpots here are
+> unchanged and remain consensus-neutral.
 
 ## 3.1 Design principles
 
@@ -21,14 +28,19 @@ so it ships fast and iterates faster.
 
 ## 3.2 Block lottery (the one consensus change — port of a proven idea)
 
-Every block draws a deterministic lottery (VRF/BLS-style seed, same pattern
-as HyperBlock lotteries):
+Every PoW block is a deterministic lottery ticket fixed before the find:
+`draw = SHA256D(parent hash ‖ height)` — no VRF machinery, the parent's
+PoW *is* the ticket, so a pool can advertise the exact bonus before it
+commits a coinbase.
 
-> **Full frozen spec: [doc 06](06-jackpot-lottery.md).** Summary: a block
-> is a jackpot block iff its PoW hash beats `target/100` (~1%, no VRF
-> machinery — the hash *is* the ticket); 5% per-block levy funds a reserve;
-> jackpot pays base + up to `5×R` bonus (expectation-neutral); reserve
-> overflow feeds the league prize pool (§3.3); pools split progressively
+> **Full frozen spec: [doc 06](06-jackpot-lottery.md) rev 1.2.** Summary:
+> jackpot iff `draw < 2²⁵⁶/100` (~1%); 5% per-block levy split 4% jackpot
+> reserve / 1% Lucky Pot; jackpot pays base + up to `5×R` bonus
+> (expectation-neutral, reserve-capped); pot splash `draw < 2²⁵⁶/1000`
+> with tiered draws (10/25/50%) and a 4,320-block pity timer; pot
+> cap-overflow burns, reserve overflow feeds the league prize pool
+> (§3.3); **PoW-finder-only** — PoS blocks never claim (stakers get the
+> Luckynode Draw instead, doc 06 §6.6); pools split progressively
 > (sqrt-weight, 25% cap, PPLNS window), solo miners keep everything.
 > Pool dashboards celebrate draws loudly — spectacle is specified in
 > doc 06 §6.4.
@@ -63,7 +75,7 @@ money at these sums.
 
 ## 3.5 Badges, tipping, social (TRTL's playbook, modernized)
 
-- **Achievement badges** as on-chain IDs/NFTs (free if VerusID inherited):
+- **Achievement badges** as on-chain IDs/NFTs (free if LuckyID inherited):
   "First share", "30-day streak", "Phone-only month", "Solo block hero",
   season placements. Portable across pools.
 - **Faucet + tipping in-wallet**: every wallet ships with one-tap tipping

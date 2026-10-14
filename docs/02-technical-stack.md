@@ -2,9 +2,13 @@
 
 ## 2.1 Fork Verus? — decision framework (Phase 0 gate)
 
+> **DECIDED 2026-10-10:** Option A — fork Verus, keep the consensus core,
+> modernize the edges (custom algorithm at genesis, §2.2). The framework
+> below is kept for the record.
+
 **What a Verus fork buys:** battle-tested hybrid consensus, VerusHash 2.2
 (ARM miners like VerusMiner9000/Primo point at your chain on day one),
-VerusID (free identity/badges layer for doc 03 achievements), possible
+LuckyID (free identity/badges layer for doc 03 achievements), possible
 PBaaS/DeFi inheritance later, merged-mining research surface.
 
 **What it costs:** a large, old C++ (Komodo/Zcash-derived) monolith —
@@ -15,20 +19,26 @@ and every future change pays the "don't touch consensus" tax.
 
 | Option | Pros | Cons | Verdict |
 |---|---|---|---|
-| A. Fork Verus, keep consensus, modernize edges | Launch in months; ARM miner codebases portable with a small algo-variant patch; VerusID badges free | Inherit tech debt; C++ core forever | **Recommended default** |
+| A. Fork Verus, keep consensus, modernize edges | Launch in months; ARM miner codebases portable with a small algo-variant patch; LuckyID badges free | Inherit tech debt; C++ core forever | **Chosen 2026-10-10** |
 | B. Fork TurtleCoin lineage | Tiny codebase, Chukwa/Argon2id already phone-ideal | Dead upstream, small audit base, C++ anyway, no ecosystem | Fallback if Verus eval fails |
 | C. Fresh chain (Rust consensus) | Clean, modular, auditable | 12–24 months before mainnet; consensus bugs are existential | Reject for v1; revisit for v2 modules |
 | D. No fork: launch as Verus PBaaS chain | Verus security + ecosystem free | Couples fate/schedule to Verus; weaker "own coin" story | Research in Phase 0, decide fast |
 
 **Strangler-fig rule:** whatever the base, *consensus code is frozen* except
-for the two planned changes below (lottery rewards §3.2, league/accounting
-fields if needed). All innovation goes into replaceable modules around it.
+for the planned changes (lottery rewards §3.2, league/accounting fields if
+needed). All innovation goes into replaceable modules around it.
 Consensus changes are the #1 killer of small-chain projects.
+
+**Update 2026-10-14:** the shipped consensus set is the pre-committable
+draw rules (doc 06 rev 1.2), the Lucky Pot, the emission schedule (doc 04
+§4.1), and the PoS parameter fixes — each speced, KAT-gated, and proven on
+testnet with the pool in claim mode. Everything else still follows the
+strangler-fig rule.
 
 ## 2.2 Algorithm strategy (custom at genesis — rev 1.2)
 
 **Decision (2026-10-10):** the project launches with purpose-built
-**EmberHash v1** (Argon2id-based, phone-ideal) at genesis — full spec,
+**LuckyHash v1** (Argon2id-based, phone-ideal) at genesis — full spec,
 parameters, and test vectors frozen in [doc 05](05-pow-algorithm.md).
 One algorithm means one identity and one benchmark story; the added risk
 vs. a VerusHash-compatible launch is contained by conservative parameters
@@ -46,12 +56,12 @@ message.
 
 **How custom (decided): full construction at genesis, staged tuning after.**
 
-- **Genesis: EmberHash v1** — purpose-built Argon2id construction
+- **Genesis: LuckyHash v1** — purpose-built Argon2id construction
   (1 MiB, single-lane, height-bound, domain-separated), frozen with real
   test vectors in [doc 05](05-pow-algorithm.md). This *is* the custom
   algorithm — no VerusHash-compatible stage, no later migration. The
-  name-the-algo contest can still rename it; parameters don't move without
-  a scheduled upgrade.
+  name-the-algo contest concluded 2026-10-14 — **LuckyHash** (docs/13);
+  parameters don't move without a scheduled upgrade.
 - **Later: parameter levers only** — `t_cost` up (GPU pressure), `m_cost`
   up (ASIC pressure, trading away old phones explicitly), via scheduled
   upgrades with testnet bake-in. Never a surprise fork.

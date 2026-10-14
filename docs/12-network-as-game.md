@@ -7,6 +7,15 @@ is frozen; every mechanic carries a funding rule and a legal gate.
 
 ## 12.1 The one law: variance-dressed labor, never wagering
 
+> **Update 2026-10-14 (owner-directed):** the project now operates a
+> first-party LKYL casino at `luckylode.cc/casino` (slots, small wagers, wins
+> in LKYL), specified in [doc 14](14-casino-and-slots.md). That product is an
+> **explicit exception** to §12.1/§12.6 and does *not* change the law below for
+> the network-as-game mechanics in this doc (jackpots, pots, leagues, rebate
+> lottery, draws), which remain no-wager. §12.6's "never casino" branding rule
+> applies to network surfaces, not to the casino section, which is age/geo
+> gated and separated.
+
 Every mechanic in this doc obeys:
 
 1. **No player ever stakes coins on an outcome.** You cannot lose coins by
@@ -34,7 +43,7 @@ What actually hooks players in gambling products, translated:
 | Near-miss drama | "Almost" feed: this block was 1.3× from a jackpot, this share 2 hashes away |
 | Streaks and comps | Exists (doc 03 §3.4): streaks, comeback, seasons |
 | Table spectacle | Livestreamed draws, hall of fame, public odds |
-| Collection/identity | Badges as VerusIDs (doc 03 §3.5) |
+| Collection/identity | Badges as LuckyIDs (doc 03 §3.5) |
 | Escalating stakes | Escalating *status tiers* (leagues), never coin stakes |
 | Free chips / comps | Faucet games, tip roulette, rebate lotteries |
 
@@ -98,15 +107,21 @@ Bring doc 11 §11.6 together with §12.3:
   eligibility. Stakers become the game's sponsors-of-record (their staked
   uptime is what the draw celebrates), and season votes are limited to
   presentation parameters.
-- **P3+ (deep version): Keeper nodes** — bonded staking nodes that
+- **P3+ (deep version): Luckynodes** — bonded staking nodes that
   notarize draws, replicate verification, and hold the game layer honest.
   The casino's dealers are bonded by the same PoS that secures the chain:
   misbehave and the bond burns; behave and the fun-layer budget pays you.
-  Nobody has shipped "the game's trust anchors are stake-bonded keepers"
+  Nobody has shipped "the game's trust anchors are stake-bonded luckynodes"
   as a first-class role. That is the unique thing — and it exists *because*
   of the hybrid consensus decision (2026-10-11), not despite it.
 
 ## 12.6 Legal & platform posture (honest, non-negotiable gates)
+
+> **Exception (2026-10-14):** the first-party casino (doc 14) *is* wagering and
+> therefore **must** carry its own gambling licence, 18+/geo gating, KYC
+> thresholds and responsible-gaming surfaces before real value is enabled
+> (testnet play-money first). The gates below still govern every network-side
+> game mechanic.
 
 - No-wager design targets prize-competition framing, but **chance-based
   prizes are still regulated in many jurisdictions**; skill/chance mixes
@@ -127,7 +142,7 @@ Bring doc 11 §11.6 together with §12.3:
    simulation in pool software (no real value).
 2. **Season 1:** bingo, stake draws, season stakes (doc 11 Dir B); capped
    prizes; legal review of the Season-1 prize set.
-3. **P3+:** keeper-nodes charter (doc 11 Dir A) — gated on Season 1–2
+3. **P3+:** luckynodes charter (doc 11 Dir A) — gated on Season 1–2
    retention evidence and real prize value only after review.
 
 ## 12.8 Open questions
@@ -137,8 +152,9 @@ Bring doc 11 §11.6 together with §12.3:
 2. Rebate lottery on-chain ([consensus], audit cost) vs pool-credited
    (today's recommendation) — revisit only if pool-credited can't be
    trusted at scale.
-3. "Keeper" naming invites scrutiny — alternatives: stewards, dealers,
-   gamekeepers? Decide at charter time with legal input.
+3. Naming decided 2026-10-13: **Luckynodes** (the bonded service node)
+   and **stakers** (the people who run them; replaces "keepers"). Legal
+   input still applies at charter time.
 4. Does the rebate lottery create a tx-spam incentive (cheap lottery
    tickets)? Mitigate: rebate ≤ fee paid, eligibility weighted by confirmed
    value/min fee rate — design detail for the simulation phase.
@@ -229,7 +245,7 @@ review first; store binaries keep shipping mining/wallet/leagues only.
 
 **Status:** exploration with a working prototype (`lm-rewards::luck`,
 21 tests green incl. exact conservation + simulation). Adoption requires a
-doc 06 rev 1.1 (freeze + per-class gates) — nothing here is consensus yet.
+doc 06 rev 1.2 (freeze + per-class gates) — nothing here is consensus yet.
 
 ### The fee wall (decided posture)
 
@@ -277,7 +293,7 @@ against partition weights: `Σ bonus_millis × w_i = 5_000_000` (= 5% levy ×
 (≥225R, vs doc 06's 50R) or prizes clip via `min(prize, reserve)` during
 warm-up — resize consciously in rev 1.1; per-class rate gates join §6.5.
 
-### Prize flow: auto-pay on-chain, claim-and-expire off-chain, keepers never custody
+### Prize flow: auto-pay on-chain, claim-and-expire off-chain, luckynode stakers never custody
 
 - **On-chain (luck classes, jackpot, league account credits): paid
   instantly to the block finder in the coinbase** (doc 06 §6.3). No claim
@@ -291,16 +307,16 @@ warm-up — resize consciously in rev 1.1; per-class rate gates join §6.5.
   next season's events. "Unclaimed grand prize funds next season" is the
   honest rollover; *never* random-recipient redistribution (un-auditable,
   scam optics, and randomness belongs in draws, not money routing).
-- **Keepers (doc 11 Dir A) may automate notification and notarization of
+- **Luckynodes (doc 11 Dir A) may automate notification and notarization of
   claim windows — they never custody funds.** Custody would create a
   honeypot and push operators into money-transmitter territory. On-chain
   money is already paid; off-chain money moves multisig → winner address
-  under a published rule that no keeper can redirect.
+  under a published rule that no luckynode staker can redirect.
 
 ### Adoption sequencing
 
 Simulation in pool software on testnet (no real value) → legal review of
-the Season-1 prize set → doc 06 rev 1.1 (table, reserve resize, gates) →
+the Season-1 prize set → doc 06 rev 1.2 (table, reserve resize, gates) →
 consensus only after review. The `lm-rewards::luck` module is the seed of
 that revision's executable spec.
 
@@ -348,9 +364,9 @@ zombie mechanics.
 - **Bingo season cards** — per-season cards, rows pay from league pool.
 - **Stake-uptime draws** — weekly draw among stakers with uninterrupted
   attested uptime (doc 11 §11.6 Direction B tie-in; the mine→stake→play loop).
-- **Keeper-notarized draws** — when keeper nodes exist (doc 11 Direction A,
+- **Luckynode-notarized draws** — when luckynodes exist (doc 11 Direction A,
   P3+), *all event draws* get cosigned notarization so any player can
-  verify the game ran honestly. Keepers never custody, never lift odds.
+  verify the game ran honestly. Luckynode stakers never custody, never lift odds.
 
 ### Cadence guardrails (anti-bloat, the part that protects the fun)
 

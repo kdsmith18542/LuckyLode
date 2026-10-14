@@ -1,9 +1,10 @@
-# 05 — Proof-of-Work Algorithm: EmberHash v1 (working name, FROZEN rev 1.0)
+# 05 — Proof-of-Work Algorithm: LuckyHash v1 (name final 2026-10-14, FROZEN rev 1.0)
 
 **Status:** spec frozen 2026-10-10. Test vectors below are real outputs of
 the pinned construction (generated with `argon2` 0.6 + `blake3` reference
-crates). Name is provisional — community rename contest may replace it
-without touching parameters.
+crates). Name is final: **LuckyHash** (decided 2026-10-14, docs/13;
+formerly the EmberHash working name). The rename touches no parameters or
+vectors.
 
 **Decision record:** the project launches with a purpose-built phone-ideal
 algorithm at genesis (not a VerusHash-compatible stage). Rationale: one
@@ -171,10 +172,11 @@ Verus fork and every external implementation agree on `header_bytes`.
 Rev 1.0's construction is untouched: this addendum defines only *what goes
 into* `header_bytes` for fork blocks. New vectors below are real outputs.
 
-**Naming note (2026-10-11):** the project was renamed **Lucky Lode**. The
-construction strings `LMv1` and `lowmine-pow/v1` predate the rename and
-are **frozen consensus identifiers** — they do not follow branding and
-never change (the KAT vectors depend on them byte-for-byte).
+**Naming note (2026-10-11, extended 2026-10-14):** the project was renamed
+**Lucky Lode** and the algorithm **LuckyHash** (docs/13). The construction
+strings `LMv1` and `lowmine-pow/v1` predate both renames and are **frozen
+consensus identifiers** — they do not follow branding and never change
+(the KAT vectors depend on them byte-for-byte).
 
 ```text
 header_bytes (fork blocks) :=
@@ -191,7 +193,7 @@ height     := validation context (CheckProofOfWork parameter; never serialized)
 
 Validity rule (fork): PoW blocks require `CPOSNonce` bytes `[8..32] == 0`
 (the nonce is exactly the u64 miners grind); PoS blocks are exempt from the
-EmberHash target check and keep full `CPOSNonce` semantics. Empty solution ⇒ Length 109 for a minimal PoW header.
+LuckyHash target check and keep full `CPOSNonce` semantics. Empty solution ⇒ Length 109 for a minimal PoW header.
 
 Frozen vector `A1` (doc 05 §5.4 style — full inputs in
 `lm-pow/examples/fork_vector.rs`, asserted in `lm-pow/tests/fork_layout.rs`):
