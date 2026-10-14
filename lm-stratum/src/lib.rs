@@ -11,10 +11,12 @@
 //! provider seam, ledger wiring, and money rules carry over unchanged.
 
 pub mod client;
+pub mod monitor;
 pub mod node_provider;
 pub mod provider;
 pub mod rpc;
 pub mod server;
+pub mod tls;
 pub mod tx;
 pub mod v1;
 pub mod vardiff;

@@ -2,7 +2,7 @@
 name = "lm-miner"
 version = "0.1.0"
 edition = "2021"
-description = "Reference CPU/ARM miner core for EmberHash v1 (lowmine docs 02, 05): parallel nonce search + benchmark mode"
+description = "Reference CPU/ARM miner core for LuckyHash v1 (docs 02, 05): parallel nonce search + benchmark mode"
 license = "GPL-3.0-only"
 
 [dependencies]

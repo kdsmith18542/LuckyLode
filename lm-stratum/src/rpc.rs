@@ -22,7 +22,11 @@ pub struct RpcClient {
 
 impl RpcClient {
     pub fn new(addr: &str, user: &str, pass: &str) -> Self {
-        Self { addr: addr.to_string(), user: user.to_string(), pass: pass.to_string() }
+        Self {
+            addr: addr.to_string(),
+            user: user.to_string(),
+            pass: pass.to_string(),
+        }
     }
 
     /// Call `method` with `params` (array), returning the JSON `result`.
@@ -48,17 +52,21 @@ impl RpcClient {
             body.len(),
             body
         );
-        let mut stream = TcpStream::connect(&self.addr)
-            .map_err(|e| format!("connect {}: {e}", self.addr))?;
+        let mut stream =
+            TcpStream::connect(&self.addr).map_err(|e| format!("connect {}: {e}", self.addr))?;
         stream
             .set_read_timeout(Some(Duration::from_secs(20)))
             .map_err(|e| format!("set timeout: {e}"))?;
         stream
             .set_write_timeout(Some(Duration::from_secs(10)))
             .map_err(|e| format!("set timeout: {e}"))?;
-        stream.write_all(req.as_bytes()).map_err(|e| format!("write: {e}"))?;
+        stream
+            .write_all(req.as_bytes())
+            .map_err(|e| format!("write: {e}"))?;
         let mut resp = Vec::new();
-        stream.read_to_end(&mut resp).map_err(|e| format!("read: {e}"))?;
+        stream
+            .read_to_end(&mut resp)
+            .map_err(|e| format!("read: {e}"))?;
         let text = String::from_utf8_lossy(&resp);
         let (head, payload) = text
             .split_once("\r\n\r\n")
@@ -85,7 +93,9 @@ impl RpcClient {
                 return Err(format!("rpc error: {err}"));
             }
         }
-        msg.get("result").cloned().ok_or_else(|| "rpc response missing result".to_string())
+        msg.get("result")
+            .cloned()
+            .ok_or_else(|| "rpc response missing result".to_string())
     }
 }
 
@@ -102,8 +112,16 @@ fn base64(input: &[u8]) -> String {
         let n = ((b[0] as u32) << 16) | ((b[1] as u32) << 8) | b[2] as u32;
         out.push(T[(n >> 18) as usize & 63] as char);
         out.push(T[(n >> 12) as usize & 63] as char);
-        out.push(if chunk.len() > 1 { T[(n >> 6) as usize & 63] as char } else { '=' });
-        out.push(if chunk.len() > 2 { T[n as usize & 63] as char } else { '=' });
+        out.push(if chunk.len() > 1 {
+            T[(n >> 6) as usize & 63] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            T[n as usize & 63] as char
+        } else {
+            '='
+        });
     }
     out
 }
@@ -165,7 +183,10 @@ mod tests {
         let resp = "HTTP/1.1 500 Internal Server Error\r\n\r\n{}";
         let (addr, _h) = one_shot_server(resp);
         let c = RpcClient::new(&addr, "u", "p");
-        assert!(c.call("x", serde_json::json!([])).unwrap_err().contains("500"));
+        assert!(c
+            .call("x", serde_json::json!([]))
+            .unwrap_err()
+            .contains("500"));
     }
 
     #[test]

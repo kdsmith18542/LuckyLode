@@ -4,7 +4,7 @@
 //! behind short-lived mutexes, job broadcasts polled (no async runtime by
 //! design — this must build and run on a miniPC with nothing but rustc).
 //!
-//! Per-submit flow: job lookup → dupe check → real EmberHash verification
+//! Per-submit flow: job lookup → dupe check → real LuckyHash verification
 //! against the pool target → ledger share (work = expected max-target
 //! hashes) → on network-target hit, authoritative chain submission via the
 //! [`TemplateProvider`](crate::provider::TemplateProvider): reserve update,
@@ -15,13 +15,14 @@
 
 use crate::provider::TemplateProvider;
 use crate::v1::{
-    error_response, notify, response, worker_id, work_for_share, Dedupe, Job, JobRegistry, Message,
+    error_response, notify, response, work_for_share, worker_id, Dedupe, Job, JobRegistry, Message,
     Verdict,
 };
 use crate::vardiff::{target_for_work, Vardiff};
 use crate::workerstats::{WorkerSnapshot, WorkerStats};
 use lm_pool::ledger::{Ledger, MinerAgg, ShareRec, PPLNS_WINDOW_SECS as LEDGER_PPLNS};
 use lm_pool::payout::PayoutLedger;
+use std::collections::{HashMap, VecDeque};
 use std::io::{BufRead, BufReader, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::sync::{
@@ -38,16 +39,23 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 const REFRESH_TICK_MS: u64 = 100;
 
 /// One found block, as the pool paid it.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct BlockRecord {
     pub height: u64,
     pub finder: u64,
     /// Net block value the pool received (normal coinbase, no claims).
     pub value: u64,
     pub bonus: u64,
+    /// Pot splash the coinbase claimed (0 without a pot event).
+    pub pot: u64,
     pub league_overflow: u64,
+    /// PPLNS split of every claimed amount (jackpot + pot), per miner.
     pub payouts: Vec<(u64, u64)>,
 }
+/// Retained block history (finding G spirit: the dashboard must never
+/// OOM the pool; the cap is deep enough for every UI window).
+pub const BLOCK_HISTORY_CAP: usize = 1000;
+
 /// Pool counters.
 #[derive(Debug, Clone, Default)]
 pub struct Stats {
@@ -64,7 +72,7 @@ struct JobState {
 struct Shared<P> {
     provider: Mutex<P>,
     ledger: Mutex<Ledger>,
-    blocks: Mutex<Vec<BlockRecord>>,
+    blocks: Mutex<VecDeque<BlockRecord>>,
     stats: Mutex<Stats>,
     broadcast: Mutex<JobState>,
     /// Pool-wide work-identity dedupe: one share can be replayed on a
@@ -80,12 +88,67 @@ struct Shared<P> {
     balances: Mutex<PayoutLedger>,
     /// Pool fee in per-myriad, applied when blocks credit balances.
     pool_fee: Mutex<u16>,
+    /// Dev-fee slice (miner id, per-myriad of the block), taken from the
+    /// operator fee pot via `allocate_dev` — docs/04 §4.2. `None` = off.
+    dev_fee: Mutex<Option<(u64, u16)>>,
+    pool_password: Option<String>,
+    /// Per-worker tokens (worker -> token). When set, it is authoritative:
+    /// only listed workers with a matching token may authorize. Otherwise
+    /// `pool_password` applies (open when unset).
+    worker_tokens: Option<HashMap<String, String>>,
+    /// TLS server config; `None` = plaintext wire (default).
+    tls: Option<Arc<rustls::ServerConfig>>,
     job_counter: AtomicU64,
     shutdown: AtomicBool,
 }
 
 fn now_secs() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// Parse a workers file: one `worker:token` per line; `#` comments and
+/// blank lines ignored. Worker names are matched exactly (they double as
+/// payout addresses); the token is everything after the first colon.
+pub fn parse_workers_file(content: &str) -> Result<HashMap<String, String>, String> {
+    let mut out = HashMap::new();
+    for (n, raw) in content.lines().enumerate() {
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let (worker, token) = line
+            .split_once(':')
+            .ok_or_else(|| format!("line {}: expected worker:token", n + 1))?;
+        let (worker, token) = (worker.trim(), token.trim());
+        if worker.is_empty() || token.is_empty() {
+            return Err(format!("line {}: empty worker or token", n + 1));
+        }
+        if out.insert(worker.to_string(), token.to_string()).is_some() {
+            return Err(format!("line {}: duplicate worker '{worker}'", n + 1));
+        }
+    }
+    Ok(out)
+}
+
+/// Authorization decision. A per-worker token map (when configured) is
+/// authoritative: the worker must exist and the token must match. Otherwise
+/// the shared pool password applies (open when unset).
+fn auth_ok(
+    tokens: Option<&HashMap<String, String>>,
+    password: Option<&str>,
+    worker: &str,
+    pass: &str,
+) -> bool {
+    if let Some(tokens) = tokens {
+        return tokens.get(worker).map(|t| t == pass).unwrap_or(false);
+    }
+    match password {
+        Some(pw) => pw == pass,
+        None => true,
+    }
 }
 
 /// Read the current broadcast job + version. Hot path for connection
@@ -136,12 +199,15 @@ fn refresh_loop<P: TemplateProvider + 'static>(shared: Arc<Shared<P>>) {
 fn handle_conn<P: TemplateProvider + 'static>(stream: TcpStream, shared: Arc<Shared<P>>) {
     let _ = stream.set_read_timeout(Some(Duration::from_millis(100)));
     let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
-    let reader_stream = match stream.try_clone() {
-        Ok(s) => s,
+    // Kill Nagle: `writeln!` issues body and newline as two writes, and
+    // Nagle + delayed ACK stretch the gap to ~100 ms — right at the read
+    // tick, which is how half-submits got lost.
+    let _ = stream.set_nodelay(true);
+    let io = match crate::tls::accept(stream, shared.tls.as_ref()) {
+        Ok(io) => io,
         Err(_) => return,
     };
-    let mut reader = BufReader::new(reader_stream);
-    let mut writer = stream;
+    let mut stream = BufReader::new(io);
     // 16 jobs at 30s rotation = 8 minutes of job lifetime: a slow find
     // (p=1/65536 has a long tail) must still be submittable.
     let mut registry = JobRegistry::new(16);
@@ -174,27 +240,40 @@ fn handle_conn<P: TemplateProvider + 'static>(stream: TcpStream, shared: Arc<Sha
             let clean = cur.height != sent_height;
             sent_height = cur.height;
             let msg = notify(&cur, clean);
-            if writeln!(writer, "{msg}").is_err() {
+            if writeln!(stream.get_mut(), "{msg}").is_err() {
                 break;
             }
         }
-        line.clear();
-        match reader.read_line(&mut line) {
+        // Partial reads MUST survive the tick timeout: a message split
+        // across it (TCP segmentation, Nagle) was silently discarded by the
+        // old clear-then-read pattern — half a submit got eaten, the miner
+        // never got a response and reconnected (live-caught with pcaps:
+        // submit body ACKed, pool silent 10 s, then FIN). Keep accumulating
+        // in `line` until a full line arrives.
+        match stream.read_line(&mut line) {
             Ok(0) => break, // peer closed
             Ok(_) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock || e.kind() == std::io::ErrorKind::TimedOut => {
+            Err(e)
+                if e.kind() == std::io::ErrorKind::WouldBlock
+                    || e.kind() == std::io::ErrorKind::TimedOut =>
+            {
                 continue;
             }
             Err(_) => break,
         }
-        let trimmed = line.trim();
+        let msg_line = std::mem::take(&mut line);
+        let trimmed = msg_line.trim();
         if trimmed.is_empty() {
             continue;
         }
         let msg: Message = match serde_json::from_str(trimmed) {
             Ok(m) => m,
             Err(_) => {
-                let _ = writeln!(writer, "{}", error_response(&serde_json::Value::Null, -32700, "parse error"));
+                let _ = writeln!(
+                    stream.get_mut(),
+                    "{}",
+                    error_response(&serde_json::Value::Null, -32700, "parse error")
+                );
                 continue;
             }
         };
@@ -212,41 +291,57 @@ fn handle_conn<P: TemplateProvider + 'static>(stream: TcpStream, shared: Arc<Sha
                     agent = a.to_string();
                 }
                 let _ = writeln!(
-                    writer,
+                    stream.get_mut(),
                     "{}",
                     response(&id, serde_json::json!([["mining.notify", "sid"], "", 0]))
                 );
             }
             "mining.authorize" => {
-                let worker = msg
-                    .params
-                    .as_ref()
-                    .and_then(|p| p.as_array())
+                let arr = msg.params.as_ref().and_then(|p| p.as_array());
+                let worker = arr
                     .and_then(|a| a.first())
                     .and_then(|w| w.as_str())
                     .unwrap_or("anonymous")
                     .to_string();
+                let pass = arr
+                    .and_then(|a| a.get(1))
+                    .and_then(|w| w.as_str())
+                    .unwrap_or("");
+                if !auth_ok(
+                    shared.worker_tokens.as_ref(),
+                    shared.pool_password.as_deref(),
+                    &worker,
+                    pass,
+                ) {
+                    let _ = writeln!(
+                        stream.get_mut(),
+                        "{}",
+                        error_response(&id, -32600, "invalid credentials")
+                    );
+                    continue;
+                }
                 let mid = worker_id(&worker);
-                shared
-                    .workers
-                    .lock()
-                    .expect("workers")
-                    .authorized(mid, &worker, &agent, now_secs());
+                shared.workers.lock().expect("workers").authorized(
+                    mid,
+                    &worker,
+                    &agent,
+                    now_secs(),
+                );
                 authorized = Some((worker, mid));
                 _vd_target = Some((cur.pool_target, cur.height));
                 // Immediately push the current job (clean start).
                 registry.issue(cur.clone());
                 seen_version = cur_version;
                 sent_height = cur.height;
-                let _ = writeln!(writer, "{}", response(&id, serde_json::Value::Bool(true)));
+                let _ = writeln!(stream.get_mut(), "{}", response(&id, serde_json::Value::Bool(true)));
                 let msg = notify(&cur, true);
-                if writeln!(writer, "{msg}").is_err() {
+                if writeln!(stream.get_mut(), "{msg}").is_err() {
                     break;
                 }
             }
             "mining.submit" => {
                 let Some((worker_name, miner_id)) = authorized.clone() else {
-                    let _ = writeln!(writer, "{}", error_response(&id, -32600, "authorize first"));
+                    let _ = writeln!(stream.get_mut(), "{}", error_response(&id, -32600, "authorize first"));
                     continue;
                 };
                 let arr = msg.params.as_ref().and_then(|p| p.as_array());
@@ -256,7 +351,11 @@ fn handle_conn<P: TemplateProvider + 'static>(stream: TcpStream, shared: Arc<Sha
                         a[2].as_str().unwrap_or("").to_string(),
                     ),
                     _ => {
-                        let _ = writeln!(writer, "{}", error_response(&id, -32600, "submit needs [worker, job, nonce]"));
+                        let _ = writeln!(
+                            stream.get_mut(),
+                            "{}",
+                            error_response(&id, -32600, "submit needs [worker, job, nonce]")
+                        );
                         continue;
                     }
                 };
@@ -296,18 +395,27 @@ fn handle_conn<P: TemplateProvider + 'static>(stream: TcpStream, shared: Arc<Sha
                                 net_target: s.job.net_target,
                             };
                             registry.issue(derived.clone());
-                            let _ = writeln!(writer, "{}", notify(&derived, false));
+                            let _ = writeln!(stream.get_mut(), "{}", notify(&derived, false));
                         }
                         if matches!(verdict, Verdict::Accept { block: true }) {
-                            let outcome = shared
-                                .provider
-                                .lock()
-                                .expect("provider")
-                                .submit_block(&s.job.header, s.job.height, s.nonce);
+                            let outcome = shared.provider.lock().expect("provider").submit_block(
+                                &s.job.header,
+                                s.job.height,
+                                s.nonce,
+                            );
                             if outcome.accepted {
                                 let mut ledger = shared.ledger.lock().expect("ledger");
                                 ledger.credit_league(outcome.league_overflow);
-                                let payouts = ledger.jackpot_payout(outcome.bonus, LEDGER_PPLNS, now);
+                                // Both claimed amounts split over the PPLNS
+                                // window (each with the reference sqrt/cap
+                                // rules); the combined list is what pays out.
+                                let mut payouts =
+                                    ledger.jackpot_payout(outcome.bonus, LEDGER_PPLNS, now);
+                                payouts.extend(ledger.jackpot_payout(
+                                    outcome.pot,
+                                    LEDGER_PPLNS,
+                                    now,
+                                ));
                                 // Per-miner value accounting (internal/17 §17.4):
                                 // the normal block value by PPLNS weight plus
                                 // the block's own split payouts.
@@ -320,19 +428,37 @@ fn handle_conn<P: TemplateProvider + 'static>(stream: TcpStream, shared: Arc<Sha
                                 let fee = *shared.pool_fee.lock().expect("pool fee");
                                 balances.credit_block(outcome.coinbase, &weights, fee);
                                 balances.credit_split(&payouts);
+                                if let Some((dev_id, pp)) = *shared.dev_fee.lock().expect("dev fee") {
+                                    let dev = outcome.coinbase as u128 * u64::from(pp) as u128
+                                        / lm_pool::payout::FEE_DENOM_PERMYRIAD as u128;
+                                    let moved = balances.allocate_dev(dev_id, dev as u64);
+                                    if moved > 0 {
+                                        eprintln!(
+                                            "dev fee: {} -> miner {} ({} blocks paid)",
+                                            moved, dev_id, shared.blocks.lock().expect("blocks").len()
+                                        );
+                                    }
+                                }
                                 drop(balances);
-                                shared.blocks.lock().expect("blocks").push(BlockRecord {
+                                let mut blocks = shared.blocks.lock().expect("blocks");
+                                blocks.push_back(BlockRecord {
                                     height: s.job.height,
                                     finder: miner_id,
                                     value: outcome.coinbase,
                                     bonus: outcome.bonus,
+                                    pot: outcome.pot,
                                     league_overflow: outcome.league_overflow,
                                     payouts,
                                 });
+                                while blocks.len() > BLOCK_HISTORY_CAP {
+                                    blocks.pop_front();
+                                }
+                                drop(blocks);
                                 shared.stats.lock().expect("stats").blocks += 1;
                             }
                         }
-                        let _ = writeln!(writer, "{}", response(&id, serde_json::Value::Bool(true)));
+                        let _ =
+                            writeln!(stream.get_mut(), "{}", response(&id, serde_json::Value::Bool(true)));
                     }
                     _ => {
                         shared.stats.lock().expect("stats").rejects += 1;
@@ -341,17 +467,17 @@ fn handle_conn<P: TemplateProvider + 'static>(stream: TcpStream, shared: Arc<Sha
                             .lock()
                             .expect("workers")
                             .rejected(miner_id, now_secs());
-                        let (code, text) = err.unwrap_or(( -32600, "invalid submit".to_string()));
-                        let _ = writeln!(writer, "{}", error_response(&id, code, &text));
+                        let (code, text) = err.unwrap_or((-32600, "invalid submit".to_string()));
+                        let _ = writeln!(stream.get_mut(), "{}", error_response(&id, code, &text));
                     }
                 }
             }
             "" => {
-                let _ = writeln!(writer, "{}", error_response(&id, -32600, "missing method"));
+                let _ = writeln!(stream.get_mut(), "{}", error_response(&id, -32600, "missing method"));
             }
             other => {
                 let _ = writeln!(
-                    writer,
+                    stream.get_mut(),
                     "{}",
                     error_response(&id, -32601, &format!("unknown method {other}"))
                 );
@@ -382,11 +508,58 @@ impl<P: TemplateProvider + 'static> RunningServer<P> {
     }
 
     pub fn blocks(&self) -> Vec<BlockRecord> {
-        self.shared.blocks.lock().expect("blocks").clone()
+        self.shared
+            .blocks
+            .lock()
+            .expect("blocks")
+            .iter()
+            .cloned()
+            .collect()
+    }
+
+    /// Ledger snapshot for `--state-file` persistence (internal/17).
+    pub fn ledger_snapshot(&self) -> PayoutLedger {
+        self.shared.balances.lock().expect("balances").clone()
+    }
+
+    /// Restore a persisted ledger (replaces the fresh one).
+    pub fn restore_ledger(&self, ledger: PayoutLedger) {
+        *self.shared.balances.lock().expect("balances") = ledger;
+    }
+
+    /// Persisted worker-name map (miner id → payout address).
+    pub fn names(&self) -> Vec<(u64, String)> {
+        self.shared.workers.lock().expect("workers").names()
+    }
+
+    /// Restore persisted worker names (payout destinations survive a
+    /// restart even before miners reconnect).
+    pub fn restore_names(&self, names: &[(u64, String)]) {
+        self.shared
+            .workers
+            .lock()
+            .expect("workers")
+            .restore_names(names);
+    }
+
+    /// Restore persisted block history; the lifetime counter follows so
+    /// the dashboard reads continuously across restarts.
+    pub fn restore_blocks(&self, blocks: Vec<BlockRecord>) {
+        let n = blocks.len() as u64;
+        let mut b = self.shared.blocks.lock().expect("blocks");
+        b.clear();
+        b.extend(blocks);
+        drop(b);
+        let mut st = self.shared.stats.lock().expect("stats");
+        st.blocks = st.blocks.max(n);
     }
 
     pub fn aggregate(&self, window_secs: u64, now: u64) -> Vec<MinerAgg> {
-        self.shared.ledger.lock().expect("ledger").aggregate(window_secs, now)
+        self.shared
+            .ledger
+            .lock()
+            .expect("ledger")
+            .aggregate(window_secs, now)
     }
 
     pub fn league_balance(&self) -> u64 {
@@ -412,12 +585,39 @@ impl<P: TemplateProvider + 'static> RunningServer<P> {
 
     /// Debit after a successful on-chain send.
     pub fn record_paid(&self, miner: u64, amount: u64) {
-        self.shared.balances.lock().expect("balances").record_paid(miner, amount);
+        self.shared
+            .balances
+            .lock()
+            .expect("balances")
+            .record_paid(miner, amount);
+    }
+
+    /// Lifetime paid to one miner (stats reconciliation).
+    pub fn paid(&self, miner: u64) -> u64 {
+        self.shared.balances.lock().expect("balances").paid(miner)
+    }
+
+    /// `(owed_total, paid_total, fees)` — the payout reconciliation triple.
+    pub fn payout_totals(&self) -> (u64, u64, u64) {
+        self.shared.balances.lock().expect("balances").totals()
     }
 
     /// Pool fee in per-myriad for block credits (0 = none).
     pub fn set_pool_fee(&self, fee_permyriad: u16) {
         *self.shared.pool_fee.lock().expect("pool fee") = fee_permyriad;
+    }
+
+    /// Dev-fee slice (docs/04 §4.2): `pp` per-myriad of each block's
+    /// coinbase moves from the operator fee pot to `addr`'s balance. The
+    /// address is registered as a payout name so the payout loop pays it
+    /// like any worker. No-op when `addr` is empty or `pp` is 0.
+    pub fn set_dev_fee(&self, addr: &str, pp: u16) {
+        if addr.is_empty() || pp == 0 {
+            return;
+        }
+        let id = worker_id(addr);
+        *self.shared.dev_fee.lock().expect("dev fee") = Some((id, pp));
+        self.restore_names(&[(id, addr.to_string())]);
     }
 
     /// Signal shutdown and wait for the accept loop (connection threads exit
@@ -451,6 +651,9 @@ impl RunningServer<crate::provider::MockProvider> {
 pub fn spawn_server<P: TemplateProvider + 'static>(
     provider: P,
     addr: &str,
+    password: Option<String>,
+    worker_tokens: Option<HashMap<String, String>>,
+    tls: Option<Arc<rustls::ServerConfig>>,
 ) -> std::io::Result<RunningServer<P>> {
     let listener = TcpListener::bind(addr)?;
     listener.set_nonblocking(true)?;
@@ -466,13 +669,17 @@ pub fn spawn_server<P: TemplateProvider + 'static>(
     let shared = Arc::new(Shared {
         provider: Mutex::new(provider),
         ledger: Mutex::new(Ledger::new()),
-        blocks: Mutex::new(Vec::new()),
+        blocks: Mutex::new(VecDeque::new()),
         stats: Mutex::new(Stats::default()),
         broadcast: Mutex::new(JobState { job, version: 1 }),
         dedupe: Mutex::new(Dedupe::default()),
         workers: Mutex::new(WorkerStats::default()),
         balances: Mutex::new(PayoutLedger::default()),
         pool_fee: Mutex::new(0),
+        dev_fee: Mutex::new(None),
+        pool_password: password,
+        worker_tokens,
+        tls,
         job_counter: AtomicU64::new(1),
         shutdown: AtomicBool::new(false),
     });
@@ -503,5 +710,126 @@ pub fn spawn_server<P: TemplateProvider + 'static>(
     });
     let refresh_shared = shared.clone();
     let refresh = std::thread::spawn(move || refresh_loop(refresh_shared));
-    Ok(RunningServer { addr: local, shared, accept: Some(accept), refresh: Some(refresh) })
+    Ok(RunningServer {
+        addr: local,
+        shared,
+        accept: Some(accept),
+        refresh: Some(refresh),
+    })
+}
+
+#[cfg(test)]
+mod auth_tests {
+    use super::*;
+
+    fn tokens() -> HashMap<String, String> {
+        let mut m = HashMap::new();
+        m.insert("worker-a".to_string(), "tok-a".to_string());
+        m.insert("worker-b".to_string(), "tok-b".to_string());
+        m
+    }
+
+    #[test]
+    fn tokens_are_authoritative_when_set() {
+        let t = tokens();
+        assert!(auth_ok(Some(&t), None, "worker-a", "tok-a"));
+        assert!(!auth_ok(Some(&t), None, "worker-a", "wrong"));
+        assert!(!auth_ok(Some(&t), None, "unknown", "tok-a"));
+        assert!(!auth_ok(Some(&t), None, "worker-a", ""));
+        // Even a shared password does not bypass the token allowlist.
+        assert!(!auth_ok(Some(&t), Some("shared"), "worker-a", "shared"));
+    }
+
+    #[test]
+    fn shared_password_fallback_and_open_mode() {
+        assert!(auth_ok(None, Some("pw"), "anyone", "pw"));
+        assert!(!auth_ok(None, Some("pw"), "anyone", "nope"));
+        assert!(auth_ok(None, None, "anyone", ""));
+        assert!(auth_ok(None, None, "anyone", "anything"));
+    }
+
+    #[test]
+    fn workers_file_parses_and_validates() {
+        let m = parse_workers_file(
+            "# comment\n\nworker-a: tok-a\nworker-b:tok:b\n",
+        )
+        .expect("parse");
+        assert_eq!(m.get("worker-a").map(String::as_str), Some("tok-a"));
+        // Token keeps colons after the first separator.
+        assert_eq!(m.get("worker-b").map(String::as_str), Some("tok:b"));
+
+        assert!(parse_workers_file("no-colon-line").is_err());
+        assert!(parse_workers_file("worker:").is_err());
+        assert!(parse_workers_file(":token").is_err());
+        assert!(parse_workers_file("w:1\nw:2").is_err());
+    }
+
+    /// Regression (live-caught with pcaps on testnet): a message split
+    /// across the 100 ms read tick — submit body, then the newline after a
+    /// Nagle-sized gap — must still be answered. The old clear-then-read
+    /// pattern discarded the partial line, the miner never got a response,
+    /// timed out and reconnected in a loop.
+    #[test]
+    fn split_line_across_read_tick_is_not_discarded() {
+        use std::io::{BufRead, BufReader, Write};
+        use std::net::TcpStream;
+        use std::time::Duration;
+
+        let provider = crate::provider::MockProvider::new(
+            [0xffu8; 32],
+            [0x00u8; 32],
+            1_000_000,
+            0,
+        );
+        let server = spawn_server(provider, "127.0.0.1:0", None, None, None)
+            .expect("spawn");
+        let stream = TcpStream::connect(server.addr).expect("connect");
+        stream
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .expect("timeout");
+        let mut r = BufReader::new(stream.try_clone().expect("clone"));
+        let mut w = stream;
+
+        w.write_all(
+            b"{\"id\":1,\"method\":\"mining.subscribe\",\"params\":[]}\n",
+        )
+        .expect("subscribe");
+        w.write_all(
+            b"{\"id\":2,\"method\":\"mining.authorize\",\"params\":[\"split\",\"\"]}\n",
+        )
+        .expect("authorize");
+
+        // Drain up to the authorize response (notify may follow it).
+        let mut saw_authorize = false;
+        let mut line = String::new();
+        while !saw_authorize {
+            line.clear();
+            let n = r.read_line(&mut line).expect("read");
+            assert!(n > 0, "server closed before authorize response");
+            saw_authorize = line.contains("\"id\":2");
+        }
+
+        // The bug: body and newline in separate writes >100 ms apart.
+        w.write_all(
+            b"{\"id\":3,\"method\":\"mining.submit\",\"params\":[\"split\",\"x\",\"0000000000000001\"]}",
+        )
+        .expect("submit body");
+        std::thread::sleep(Duration::from_millis(150));
+        w.write_all(b"\n").expect("submit newline");
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        while std::time::Instant::now() < deadline {
+            line.clear();
+            match r.read_line(&mut line) {
+                Ok(0) => panic!("server closed before submit response"),
+                Ok(_) => {
+                    if line.contains("\"id\":3") {
+                        return; // answered — bug fixed
+                    }
+                }
+                Err(_) => break, // timeout
+            }
+        }
+        panic!("split submit got no response within 3 s (partial line discarded)");
+    }
 }

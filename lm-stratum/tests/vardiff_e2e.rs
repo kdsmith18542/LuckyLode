@@ -27,13 +27,19 @@ fn fast_miner_steps_up_twice() {
     let server = spawn_server(
         MockProvider::new([0xffu8; 32], [0x00u8; 32], 1_000_000, 0),
         "127.0.0.1:0",
+        None,
+        None,
+        None
     )
     .expect("bind");
     let mut c = PoolClient::connect(server.addr()).expect("connect");
     assert!(c.subscribe("vardiff-probe").expect("sub"));
     assert!(c.authorize("speedy").expect("auth"));
 
-    let job1 = c.read_job(Duration::from_secs(5)).expect("io").expect("job1");
+    let job1 = c
+        .read_job(Duration::from_secs(5))
+        .expect("io")
+        .expect("job1");
     assert_eq!(job1.pool_target, [0xffu8; 32]);
 
     // Window 1: 8 instant shares at work 1 → burst pace → 4× → work 4.
@@ -43,7 +49,10 @@ fn fast_miner_steps_up_twice() {
         let (ok, err) = c.submit("speedy", &job1.id, n).expect("submit");
         assert!(ok, "{err:?}");
     }
-    let job2 = c.read_job(Duration::from_secs(5)).expect("io").expect("job2");
+    let job2 = c
+        .read_job(Duration::from_secs(5))
+        .expect("io")
+        .expect("job2");
     assert_ne!(job2.id, job1.id);
     assert_eq!(job2.pool_target, target_for_work(4));
 
@@ -53,7 +62,10 @@ fn fast_miner_steps_up_twice() {
         let (ok, err) = c.submit("speedy", &job2.id, n).expect("submit");
         assert!(ok, "{err:?}");
     }
-    let job3 = c.read_job(Duration::from_secs(5)).expect("io").expect("job3");
+    let job3 = c
+        .read_job(Duration::from_secs(5))
+        .expect("io")
+        .expect("job3");
     assert_ne!(job3.id, job2.id);
     assert_eq!(job3.pool_target, target_for_work(16));
 

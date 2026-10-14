@@ -2,14 +2,18 @@
 name = "lm-stratum"
 version = "0.1.0"
 edition = "2021"
-description = "Reference pool wire layer (lowmine): Stratum V1 framing with the Lowmine job profile, mock-chain provider, threaded server + client"
+description = "Reference pool wire layer (Lucky Lode): Stratum V1 framing with the Lucky Lode job profile, mock-chain provider, threaded server + client"
 license = "GPL-3.0-only"
 
 [dependencies]
 lm-pow = { path = "../lm-pow" }
 lm-pool = { path = "../lm-pool" }
+lm-luckynode = { path = "../lm-luckynode" }
 lm-rewards = { path = "../lm-rewards" }
 primitive-types = "0.14"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+rustls-pemfile = "2"
+webpki-roots = "1.0"

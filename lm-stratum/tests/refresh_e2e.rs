@@ -62,6 +62,7 @@ impl TemplateProvider for GatedProvider {
             out: [0u8; 32],
             jackpot: false,
             bonus: 0,
+            pot: 0,
             league_overflow: 0,
             reserve: 0,
             coinbase: 0,
@@ -91,7 +92,7 @@ fn connection_threads_never_poll_the_provider() {
     // background refresh, parked inside the provider forever — and so is
     // every later call. A miner must still get served.
     let (provider, calls, gate) = GatedProvider::new(1);
-    let server = spawn_server(provider, "127.0.0.1:0").expect("bind");
+    let server = spawn_server(provider, "127.0.0.1:0", None, None, None).expect("bind");
 
     let mut c = PoolClient::connect_patient(server.addr(), RPC_WAIT).expect("connect");
     assert!(c.subscribe("slow-node").expect("subscribe"));
@@ -103,7 +104,9 @@ fn connection_threads_never_poll_the_provider() {
     // path reads the broadcast, never the provider. The old inline poll
     // parked the connection thread here and the client timed out.
     for nonce in 1..=5u64 {
-        let (ok, err) = c.submit("patient", &job.id, nonce).expect("submit answered");
+        let (ok, err) = c
+            .submit("patient", &job.id, nonce)
+            .expect("submit answered");
         assert!(ok, "submit stalled behind the refresh: {err:?}");
     }
     assert_eq!(server.stats().shares, 5);
@@ -149,6 +152,7 @@ fn background_refresh_publishes_new_templates() {
                 out: [0u8; 32],
                 jackpot: false,
                 bonus: 0,
+                pot: 0,
                 league_overflow: 0,
                 reserve: 0,
                 coinbase: 0,
@@ -157,7 +161,16 @@ fn background_refresh_publishes_new_templates() {
     }
 
     let calls = Arc::new(AtomicUsize::new(0));
-    let server = spawn_server(Advancing { calls: Arc::clone(&calls) }, "127.0.0.1:0").expect("bind");
+    let server = spawn_server(
+        Advancing {
+            calls: Arc::clone(&calls),
+        },
+        "127.0.0.1:0",
+        None,
+        None,
+        None
+    )
+    .expect("bind");
     let mut c = PoolClient::connect_patient(server.addr(), RPC_WAIT).expect("connect");
     assert!(c.subscribe("watcher").expect("subscribe"));
     assert!(c.authorize("watcher").expect("authorize"));

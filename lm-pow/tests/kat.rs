@@ -1,4 +1,4 @@
-//! Known-answer tests for EmberHash v1 — frozen vectors from doc 05 §5.4.
+//! Known-answer tests for LuckyHash v1 — frozen vectors from doc 05 §5.4.
 //! Any failure here is a consensus-breaking bug: fix the code, never the vectors.
 
 use lm_pow::pow_full;

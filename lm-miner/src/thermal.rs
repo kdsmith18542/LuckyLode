@@ -13,6 +13,10 @@ use std::time::Duration;
 /// Default thermal cap in Celsius (0 = disabled via CLI).
 pub const DEFAULT_MAX_TEMP_C: i64 = 75;
 const HYSTERESIS_C: i32 = 2;
+/// Width of the proportional duty band below the cap: full duty at
+/// `cap - BAND`, ~zero duty approaching `cap`. Smooths the equilibrium
+/// instead of bang-bang pause/resume (live-caught GPU sawtooth at cap).
+const THERMAL_SOFT_BAND_C: i32 = 8;
 const MIN_DWELL: Duration = Duration::from_secs(30);
 const BACKOFF_MIN_SECS: u64 = 5;
 const BACKOFF_MAX_SECS: u64 = 60;
@@ -31,17 +35,26 @@ impl MiningPolicy {
             return Err(format!("duty must be 1..=100, got {duty}"));
         }
         if max_temp < 0 {
-            return Err(format!("max-temp must be >= 0 (0 disables), got {max_temp}"));
+            return Err(format!(
+                "max-temp must be >= 0 (0 disables), got {max_temp}"
+            ));
         }
         Ok(Self {
-            max_temp_c: if max_temp == 0 { None } else { Some(max_temp as i32) },
+            max_temp_c: if max_temp == 0 {
+                None
+            } else {
+                Some(max_temp as i32)
+            },
             duty_percent: duty as u8,
         })
     }
 
     /// No guards (library default for deterministic callers/tests).
     pub fn unguarded() -> Self {
-        Self { max_temp_c: None, duty_percent: 100 }
+        Self {
+            max_temp_c: None,
+            duty_percent: 100,
+        }
     }
 
     /// Per-thread runtime state (cloned policy + private bookkeeping).
@@ -109,11 +122,21 @@ impl PolicyRuntime {
                     } else {
                         sleep += Duration::from_secs(self.backoff_secs);
                         if self.backoff_secs < BACKOFF_MAX_SECS {
-                            self.backoff_secs =
-                                (self.backoff_secs * 2).min(BACKOFF_MAX_SECS);
+                            self.backoff_secs = (self.backoff_secs * 2).min(BACKOFF_MAX_SECS);
                         }
                     }
                 }
+            }
+        }
+        // Proportional band (post pause/resume, so the resuming decision
+        // also paces): scale extra sleep from 0 at `cap - BAND` to ~full
+        // at `cap`, so the device settles just below the cap instead of
+        // oscillating pause/resume.
+        if let Some(cap) = self.policy.max_temp_c {
+            if temp_c >= 0 && !self.paused && temp_c >= cap - THERMAL_SOFT_BAND_C && temp_c < cap {
+                let over = (temp_c - (cap - THERMAL_SOFT_BAND_C)) as u64;
+                let extra = chunk_elapsed.as_millis() as u64 * over / THERMAL_SOFT_BAND_C as u64;
+                sleep += Duration::from_millis(extra.min(60_000));
             }
         }
         self.clock += sleep;
@@ -198,8 +221,8 @@ mod tests {
     #[test]
     fn thermal_trip_dwell_resume_and_backoff() {
         let mut rt = MiningPolicy::new(75, 100).unwrap().runtime();
-        // below cap: no pause
-        assert_eq!(rt.decide(70, Duration::from_secs(1)), Duration::ZERO);
+        // well below the cap (and below the proportional band): no pause
+        assert_eq!(rt.decide(60, Duration::from_secs(1)), Duration::ZERO);
         // at cap: trip, 5s backoff
         assert_eq!(ms(rt.decide(75, Duration::from_secs(1))), 5000);
         assert!(rt.is_paused());
@@ -208,11 +231,14 @@ mod tests {
         assert_eq!(ms(rt.decide(80, Duration::from_secs(1))), 20_000);
         // by now 5+10+20 = 35s of sleep have passed since the trip (>30s
         // dwell); a cool chunk resumes immediately
-        assert_eq!(rt.decide(70, Duration::from_secs(1)), Duration::ZERO);
+        assert_eq!(rt.decide(60, Duration::from_secs(1)), Duration::ZERO);
         assert!(!rt.is_paused());
-        // hysteresis: 73 (the cap-2 band) must NOT re-trip
-        assert_eq!(rt.decide(73, Duration::from_secs(1)), Duration::ZERO);
-        // 75 trips again with the reset backoff
+        // hysteresis: 73 (the cap-2 band) must NOT re-trip — it now gets
+        // proportional pacing instead (band 67..75)
+        let d = rt.decide(73, Duration::from_secs(1));
+        assert!(!rt.is_paused());
+        assert_eq!(ms(d), 750); // over=6 of 8 -> 750ms
+                                // 75 trips again with the reset backoff
         assert_eq!(ms(rt.decide(75, Duration::from_secs(1))), 5000);
     }
 
@@ -223,8 +249,13 @@ mod tests {
         assert!(rt.is_paused());
         // cap-2 = 73: 73 is NOT below 73 -> stays paused
         assert!(rt.decide(73, Duration::from_secs(60)) > Duration::ZERO);
-        // 72 resumes (dwell now satisfied)
-        assert_eq!(rt.decide(72, Duration::from_secs(1)), Duration::ZERO);
+        // 72 resumes (dwell now satisfied); inside the proportional band
+        // it paces rather than running full tilt, but the pause clears.
+        let d = rt.decide(72, Duration::from_secs(1));
+        assert!(!rt.is_paused());
+        assert_eq!(ms(d), 625); // over=5 of 8
+                                // well below the band: no pacing
+        assert_eq!(rt.decide(60, Duration::from_secs(1)), Duration::ZERO);
     }
 
     #[test]
@@ -239,11 +270,32 @@ mod tests {
         while rt.is_paused() {
             let d = rt.decide(70, Duration::from_millis(450));
             decisions += 1;
-            assert!(decisions < 10, "dwell should be satisfied in <10 decisions, took {decisions}");
+            assert!(
+                decisions < 10,
+                "dwell should be satisfied in <10 decisions, took {decisions}"
+            );
             assert!(d >= Duration::ZERO);
         }
         // 5s + 10 + 20 + 40(partial) -> resumes by the 5th decision at most
         assert!(decisions <= 6, "took {decisions} decisions");
+    }
+
+    #[test]
+    fn proportional_band_smooths_toward_the_cap() {
+        let mut rt = MiningPolicy::new(80, 100).unwrap().runtime();
+        // soft edge: no extra sleep yet
+        assert_eq!(rt.decide(72, Duration::from_secs(1)), Duration::ZERO);
+        // halfway: ~50% extra sleep
+        assert_eq!(ms(rt.decide(76, Duration::from_secs(1))), 500);
+        // near the cap: almost fully paced
+        assert_eq!(ms(rt.decide(79, Duration::from_secs(1))), 875);
+        // at the cap the pause logic still takes over
+        assert_eq!(ms(rt.decide(80, Duration::from_secs(1))), 5000);
+        assert!(rt.is_paused());
+        // proportional adds to duty pacing (duty is a floor, thermal
+        // adds rest on top): 1000ms duty + 500ms thermal
+        let mut rt = MiningPolicy::new(80, 50).unwrap().runtime();
+        assert_eq!(ms(rt.decide(76, Duration::from_secs(1))), 1500);
     }
 
     #[test]

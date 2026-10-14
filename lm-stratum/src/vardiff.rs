@@ -50,8 +50,15 @@ impl Vardiff {
         if self.times.len() < self.window {
             return None;
         }
-        let span = self.times.last().copied().unwrap_or(ts).saturating_sub(self.times[0]);
-        let expected = self.target_spb.saturating_mul(self.window.saturating_sub(1) as u64);
+        let span = self
+            .times
+            .last()
+            .copied()
+            .unwrap_or(ts)
+            .saturating_sub(self.times[0]);
+        let expected = self
+            .target_spb
+            .saturating_mul(self.window.saturating_sub(1) as u64);
         // Zero-span burst (all shares in one second): maximally fast → top step.
         let raw = if span == 0 {
             work.saturating_mul(MAX_STEP)
@@ -62,7 +69,11 @@ impl Vardiff {
         let hi = work.saturating_mul(MAX_STEP).min(self.max_work);
         let new = raw.max(lo).min(hi);
         self.times.clear();
-        if new == work { None } else { Some(new) }
+        if new == work {
+            None
+        } else {
+            Some(new)
+        }
     }
 }
 
@@ -148,7 +159,10 @@ mod tests {
         for w in [1u64, 2, 3, 4, 7, 100, 999_999, 1 << 40] {
             let back = work_for_share(&target_for_work(w));
             let bound = w as u128 * w as u128 / u64::MAX as u128 + 1;
-            assert!(back >= w && back as u128 - w as u128 <= bound, "w={w} back={back}");
+            assert!(
+                back >= w && back as u128 - w as u128 <= bound,
+                "w={w} back={back}"
+            );
         }
         assert_eq!(work_for_share(&target_for_work(1)), 1);
     }

@@ -1,9 +1,9 @@
-//! Stratum V1 message layer with the Lucky Lode job profile (`lowmine/1`).
+//! Stratum V1 message layer with the Lucky Lode job profile (`luckylode/1`).
 //!
 //! Framing is classic Stratum V1 (newline-delimited JSON-RPC over TCP:
 //! `mining.subscribe`, `mining.authorize`, `mining.notify`, `mining.submit`)
 //! so generic V1 tooling connects at the transport layer. The *job payload*
-//! is purpose-shaped for EmberHash (doc 05): a fixed header template plus a
+//! is purpose-shaped for LuckyHash (doc 05): a fixed header template plus a
 //! u64 nonce the miner grinds — Bitcoin's coinbase/merkle dance buys nothing
 //! before the forked node exists, so it is omitted by design:
 //!
@@ -41,7 +41,9 @@ pub struct Job {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Verdict {
     /// Acceptable share; `block` is true when it also meets the network target.
-    Accept { block: bool },
+    Accept {
+        block: bool,
+    },
     Stale,
     Duplicate,
     LowDifficulty,
@@ -140,7 +142,10 @@ impl JobRegistry {
             return (Verdict::LowDifficulty, None);
         }
         let block = meets_target(&out, &job.net_target);
-        (Verdict::Accept { block }, Some(JobSubmit { job, nonce, out }))
+        (
+            Verdict::Accept { block },
+            Some(JobSubmit { job, nonce, out }),
+        )
     }
 }
 
@@ -190,7 +195,11 @@ pub struct Dedupe {
 
 impl Dedupe {
     pub fn new(cap: usize) -> Self {
-        Self { seen: HashSet::new(), order: VecDeque::new(), cap: cap.max(1) }
+        Self {
+            seen: HashSet::new(),
+            order: VecDeque::new(),
+            cap: cap.max(1),
+        }
     }
 
     /// Record a submission; `false` when this identity is already present
@@ -313,7 +322,10 @@ pub fn parse_hex(s: &str) -> Option<Vec<u8>> {
     if !s.len().is_multiple_of(2) {
         return None;
     }
-    (0..s.len()).step_by(2).map(|i| u8::from_str_radix(&s[i..i + 2], 16).ok()).collect()
+    (0..s.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).ok())
+        .collect()
 }
 
 /// Decode a notify `params` array into a [`Job`] (client side).
@@ -334,7 +346,13 @@ pub fn job_from_params(params: &serde_json::Value) -> Option<Job> {
     let mut net_target = [0u8; 32];
     pool_target.copy_from_slice(&pool);
     net_target.copy_from_slice(&net);
-    Some(Job { id, header, height, pool_target, net_target })
+    Some(Job {
+        id,
+        header,
+        height,
+        pool_target,
+        net_target,
+    })
 }
 
 #[cfg(test)]

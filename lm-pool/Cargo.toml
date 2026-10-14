@@ -2,8 +2,12 @@
 name = "lm-pool"
 version = "0.1.0"
 edition = "2021"
-description = "Pool-side fun-layer accounting (lowmine docs 03, 06): streaks, device-class leagues, PPLNS ledger, jackpot/league payouts"
+description = "Pool-side fun-layer accounting (docs 03, 06): streaks, device-class leagues, PPLNS ledger, jackpot/league payouts"
 license = "GPL-3.0-only"
 
 [dependencies]
 lm-rewards = { path = "../lm-rewards" }
+serde = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+serde_json = "1"

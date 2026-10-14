@@ -1,4 +1,4 @@
-//! `lm-pow`: reference implementation of **EmberHash v1**, the Lucky Lode
+//! `lm-pow`: reference implementation of **LuckyHash v1**, the Lucky Lode
 //! proof-of-work (frozen spec: `../05-pow-algorithm.md` rev 1.0).
 //!
 //! Construction:
@@ -53,7 +53,7 @@ fn argon2_ctx() -> &'static Argon2<'static> {
             .output_len(OUT_LEN)
             .data(AssociatedData::new(ASSOCIATED_DATA).expect("AD within 32 B limit"))
             .build()
-            .expect("EmberHash v1 params satisfy Argon2 limits");
+            .expect("LuckyHash v1 params satisfy Argon2 limits");
         Argon2::new(Algorithm::Argon2id, Version::V0x13, params)
     })
 }

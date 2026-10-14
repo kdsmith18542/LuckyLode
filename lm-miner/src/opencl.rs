@@ -19,7 +19,11 @@ use std::ptr;
 
 #[link(name = "OpenCL")]
 extern "C" {
-    fn clGetPlatformIDs(num_entries: u32, platforms: *mut *mut c_void, num_platforms: *mut u32) -> i32;
+    fn clGetPlatformIDs(
+        num_entries: u32,
+        platforms: *mut *mut c_void,
+        num_platforms: *mut u32,
+    ) -> i32;
     fn clGetDeviceIDs(
         platform: *mut c_void,
         device_type: u64,
@@ -64,8 +68,11 @@ extern "C" {
         param_value: *mut c_void,
         param_value_size_ret: *mut usize,
     ) -> i32;
-    fn clCreateKernel(program: *mut c_void, kernel_name: *const c_char, errcode_ret: *mut i32)
-        -> *mut c_void;
+    fn clCreateKernel(
+        program: *mut c_void,
+        kernel_name: *const c_char,
+        errcode_ret: *mut i32,
+    ) -> *mut c_void;
     fn clCreateBuffer(
         context: *mut c_void,
         flags: u64,
@@ -221,9 +228,8 @@ impl GpuDevice {
             .map_err(|e| format!("kernel source has NUL: {e}"))?;
         let src_ptr = source.as_ptr();
         let src_len = source.as_bytes().len();
-        let program = unsafe {
-            clCreateProgramWithSource(context, 1, &src_ptr, &src_len, &mut err)
-        };
+        let program =
+            unsafe { clCreateProgramWithSource(context, 1, &src_ptr, &src_len, &mut err) };
         if err != CL_SUCCESS {
             unsafe {
                 clReleaseCommandQueue(queue);
@@ -232,7 +238,14 @@ impl GpuDevice {
             return Err(format!("clCreateProgramWithSource failed ({err})"));
         }
         let rc = unsafe {
-            clBuildProgram(program, 1, &dev as *const *mut c_void, ptr::null(), ptr::null(), ptr::null_mut())
+            clBuildProgram(
+                program,
+                1,
+                &dev as *const *mut c_void,
+                ptr::null(),
+                ptr::null(),
+                ptr::null_mut(),
+            )
         };
         if rc != CL_SUCCESS {
             let log = Self::build_log(program, dev);
@@ -254,7 +267,14 @@ impl GpuDevice {
             return Err(format!("clCreateKernel(argon2id_fill) failed ({err})"));
         }
         let name = Self::device_name(dev);
-        Ok(Self { context, queue, program, kernel, device: dev, name })
+        Ok(Self {
+            context,
+            queue,
+            program,
+            kernel,
+            device: dev,
+            name,
+        })
     }
 
     fn pick_device(platform: *mut c_void, idx: usize) -> Result<*mut c_void, String> {
@@ -273,32 +293,52 @@ impl GpuDevice {
             if let Some(&d) = devs.get(idx) {
                 return Ok(d);
             }
-            return Err(format!("device {idx} missing (platform has {})", devs.len()));
+            return Err(format!(
+                "device {idx} missing (platform has {})",
+                devs.len()
+            ));
         }
         Err("no OpenCL devices found on platform".to_string())
     }
 
     fn device_name(dev: *mut c_void) -> String {
         let mut size = 0usize;
-        if unsafe { clGetDeviceInfo(dev, CL_DEVICE_NAME, 0, ptr::null_mut(), &mut size) } != CL_SUCCESS
+        if unsafe { clGetDeviceInfo(dev, CL_DEVICE_NAME, 0, ptr::null_mut(), &mut size) }
+            != CL_SUCCESS
             || size == 0
             || size > 4096
         {
             return "(unknown device)".to_string();
         }
         let mut buf = vec![0u8; size];
-        if unsafe { clGetDeviceInfo(dev, CL_DEVICE_NAME, size, buf.as_mut_ptr() as *mut c_void, ptr::null_mut()) }
-            != CL_SUCCESS
+        if unsafe {
+            clGetDeviceInfo(
+                dev,
+                CL_DEVICE_NAME,
+                size,
+                buf.as_mut_ptr() as *mut c_void,
+                ptr::null_mut(),
+            )
+        } != CL_SUCCESS
         {
             return "(unknown device)".to_string();
         }
-        String::from_utf8_lossy(&buf).trim_end_matches('\0').to_string()
+        String::from_utf8_lossy(&buf)
+            .trim_end_matches('\0')
+            .to_string()
     }
 
     fn build_log(program: *mut c_void, dev: *mut c_void) -> String {
         let mut size = 0usize;
         if unsafe {
-            clGetProgramBuildInfo(program, dev, CL_PROGRAM_BUILD_LOG, 0, ptr::null_mut(), &mut size)
+            clGetProgramBuildInfo(
+                program,
+                dev,
+                CL_PROGRAM_BUILD_LOG,
+                0,
+                ptr::null_mut(),
+                &mut size,
+            )
         } != CL_SUCCESS
             || size == 0
             || size > 1 << 20
@@ -454,7 +494,9 @@ impl GpuDevice {
             for (i, buf) in [init_buf, mem_buf, out_buf, scratch_buf].iter().enumerate() {
                 let mut b = *buf;
                 ck(
-                    unsafe { clSetKernelArg(self.kernel, i as u32, 8, &mut b as *mut _ as *const c_void) },
+                    unsafe {
+                        clSetKernelArg(self.kernel, i as u32, 8, &mut b as *mut _ as *const c_void)
+                    },
                     "clSetKernelArg",
                 )?;
             }
@@ -544,7 +586,9 @@ pub fn gpu_kat_vectors(dev: &GpuDevice) -> Result<(), String> {
         let mut mine = [0u8; 32];
         mine.copy_from_slice(&tag);
         if mine != f.mem {
-            return Err(format!("GPU/CPU mem mismatch at nonce={nonce} height={height}"));
+            return Err(format!(
+                "GPU/CPU mem mismatch at nonce={nonce} height={height}"
+            ));
         }
     }
     Ok(())

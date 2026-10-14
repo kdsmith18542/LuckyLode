@@ -9,7 +9,7 @@
 //!   prep (this file) + fill mirror  ==  `lm-pow`'s argon2id mem  (KAT)
 //!   GPU kernel                      ==  fill mirror              (diff test)
 //!
-//! Params are the frozen EmberHash ones: p=1, m=1024 KiB, t=3, v=0x13,
+//! Params are the frozen LuckyHash ones: p=1, m=1024 KiB, t=3, v=0x13,
 //! Argon2id, tag 32. Transcribed from the `argon2` 0.6 crate internals
 //! (fill_blocks / compress / blake2b_long) — the same code that produced
 //! the frozen vectors, so the mirror is authoritative rather than
@@ -336,7 +336,7 @@ pub fn mem_from_last(last: &[u64; BLOCK_WORDS]) -> [u8; 32] {
     out
 }
 
-/// Full Argon2id mem output for the EmberHash parameters: `blake2b_long`
+/// Full Argon2id mem output for the LuckyHash parameters: `blake2b_long`
 /// of the last block, 32 bytes.
 pub fn mem(seed: &[u8], salt: &[u8], ad: &[u8]) -> [u8; 32] {
     let h0 = h0(seed, salt, ad);
@@ -345,7 +345,7 @@ pub fn mem(seed: &[u8], salt: &[u8], ad: &[u8]) -> [u8; 32] {
     mem_from_last(&last)
 }
 
-/// EmberHash salt for a height: `"LMv1" || height_le64` (frozen, doc 05).
+/// LuckyHash salt for a height: `"LMv1" || height_le64` (frozen, doc 05).
 pub fn ember_salt(height: u64) -> [u8; 12] {
     let mut salt = [0u8; 12];
     salt[..4].copy_from_slice(b"LMv1");
@@ -363,9 +363,21 @@ mod tests {
     fn cpu_pipeline_matches_lm_pow_mem() {
         let header: Vec<u8> = (0u8..80).collect();
         let cases: [(u64, u64, &str); 3] = [
-            (0, 1, "446765c0245c7d3da7185456343055971444c45dd90b015d4fd7b3c6262a2b99"),
-            (1, 1, "3924a6a0bfefe126c881fc7764794d6f45b992f5f22d33b2fd339af5bf405dbe"),
-            (u64::MAX, 12345, "48063374526971416c8c7d8f7b4e4ab815d4e4c6a4956024d2c3b459817a2791"),
+            (
+                0,
+                1,
+                "446765c0245c7d3da7185456343055971444c45dd90b015d4fd7b3c6262a2b99",
+            ),
+            (
+                1,
+                1,
+                "3924a6a0bfefe126c881fc7764794d6f45b992f5f22d33b2fd339af5bf405dbe",
+            ),
+            (
+                u64::MAX,
+                12345,
+                "48063374526971416c8c7d8f7b4e4ab815d4e4c6a4956024d2c3b459817a2791",
+            ),
         ];
         for (nonce, height, want_hex) in cases {
             let f = lm_pow::pow_full(&header, nonce, height);
@@ -416,8 +428,14 @@ mod tests {
         let out = blake2b_long(&[b"seed", &[0u8, 0, 0, 0], &[0u8, 0, 0, 0]], 1024);
         assert_eq!(out.len(), 1024);
         // Deterministic.
-        assert_eq!(out, blake2b_long(&[b"seed", &[0u8, 0, 0, 0], &[0u8, 0, 0, 0]], 1024));
+        assert_eq!(
+            out,
+            blake2b_long(&[b"seed", &[0u8, 0, 0, 0], &[0u8, 0, 0, 0]], 1024)
+        );
         // Different inputs diverge.
-        assert_ne!(out, blake2b_long(&[b"seed", &[1u8, 0, 0, 0], &[0u8, 0, 0, 0]], 1024));
+        assert_ne!(
+            out,
+            blake2b_long(&[b"seed", &[1u8, 0, 0, 0], &[0u8, 0, 0, 0]], 1024)
+        );
     }
 }
