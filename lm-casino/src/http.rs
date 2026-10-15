@@ -925,7 +925,7 @@ const pid=()=>parseInt($("pid").value||"1",10);
 let me=null;
 function status(t,ok){$("status").innerHTML=`<span class="${ok?'ok':'err'}">${t||""}</span>`;}
 async function api(path,payload){
-  const r=await fetch(path,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload||{})});
+  const r=await fetch(path.replace(/^\//,""),{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload||{})});
   const j=await r.json();
   if(!r.ok||j.error) throw new Error(j.error||r.statusText);
   return j;
@@ -993,14 +993,14 @@ document.querySelectorAll(".tabs button").forEach(b=>b.onclick=()=>{
   ["lode","ways","fun","fair","cash","house"].forEach(t=>$("tab-"+t).classList.toggle("hide",t!==b.dataset.tab));
 });
 async function adminPost(path,payload){payload.token=$("atok").value;
-  const r=await fetch(path,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
+  const r=await fetch(path.replace(/^\//,""),{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
   const j=await r.json();if(!r.ok||j.error)throw new Error(j.error||r.statusText);return j;}
 $("hstate").onclick=async()=>{try{const j=await adminPost("/api/admin/state",{});$("hout").classList.remove("hide");$("hout").textContent=JSON.stringify(j,null,2);status("admin state loaded",true);}catch(e){status(e.message,false);}};
 $("hlog").onclick=async()=>{try{const j=await adminPost("/api/admin/log",{});$("hout").classList.remove("hide");$("hout").textContent=JSON.stringify(j,null,2);status("bonus log loaded",true);}catch(e){status(e.message,false);}};
 $("award").onclick=async()=>{try{const j=await adminPost("/api/admin/award",{player:parseInt($("ap").value,10),amount:$("aamt").value,reason:$("areason").value});status("awarded "+j.award.micros+" µLKYL to player "+j.award.player,true);}catch(e){status(e.message,false);}};
 $("awardtop").onclick=async()=>{try{const j=await adminPost("/api/admin/award-top",{kind:$("atop").value,n:parseInt($("an").value,10),amount:$("aeach").value});status("awarded "+j.awarded.length+" bonuses",true);}catch(e){status(e.message,false);}};
 $("map").onclick=async()=>{try{await adminPost("/api/admin/map",{player:parseInt($("mp").value,10),worker:$("mw").value,stake:$("ms").value,luckynode:$("ml").value||undefined});status("mapped player "+$("mp").value,true);}catch(e){status(e.message,false);}};
-fetch("/api/stats").then(r=>r.json()).then(s=>{$("net").textContent=s.network+" · RTP "+(s.rtp*100).toFixed(0)+"% · bankroll "+s.bankroll_lkyl+" LKYL";
+fetch("api/stats").then(r=>r.json()).then(s=>{$("net").textContent=s.network+" · RTP "+(s.rtp*100).toFixed(0)+"% · bankroll "+s.bankroll_lkyl+" LKYL";
   const e=s.edge;$("house-stats").innerHTML="edge → dev "+e.dev+" · pot "+e.pot+" · airdrop "+e.airdrop+" · services "+e.services+" µLKYL · spins "+s.total_spins+" · max bet "+s.max_bet_lkyl+" LKYL";}).catch(()=>{});
 loadPlayer().catch(()=>{});
 </script></body></html>

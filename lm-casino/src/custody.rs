@@ -52,16 +52,30 @@ impl Custody {
 
     /// The player's deposit address, created on first use.
     ///
+    /// A node wallet can re-issue an address it handed out before (seen live:
+    /// the VPS node returned an old luckynode address to a fresh casino
+    /// player after a wallet rewind). Addresses the casino already knows are
+    /// refused and a fresh one is requested, so deposit attribution can
+    /// never collide.
+    ///
     /// # Errors
-    /// Propagates node errors.
+    /// Propagates node errors; fails closed after repeated re-issues.
     pub fn address_for(&mut self, node: &Node, player: u64) -> Result<String, String> {
         if let Some(a) = self.addresses.get(&player) {
             return Ok(a.clone());
         }
         let label = format!("casino-{player}");
-        let addr = node.get_new_address(&label)?;
-        self.addresses.insert(player, addr.clone());
-        Ok(addr)
+        for _ in 0..5 {
+            let addr = node.get_new_address(&label)?;
+            let known = self.addresses.values().any(|a| a == &addr)
+                || self.credited.contains_key(&addr);
+            if !known {
+                self.addresses.insert(player, addr.clone());
+                return Ok(addr);
+            }
+            eprintln!("custody: node re-issued known address {addr} — requesting a fresh one");
+        }
+        Err("node kept re-issuing a known deposit address".to_string())
     }
 
     /// Known deposit address for `player`, if any.
@@ -161,6 +175,26 @@ mod tests {
         assert_eq!(c.address_for(&node, 7).unwrap(), "addr-1");
         assert_eq!(c.address_for(&node, 7).unwrap(), "addr-1");
         assert_eq!(c.address_of(7), Some("addr-1"));
+    }
+
+    #[test]
+    fn address_for_refuses_reissued_addresses() {
+        let mut c = Custody::new(1, 1_000, 1_000_000_000);
+        // The node re-issues a known address once, then returns a fresh one.
+        let m = MockNode::new();
+        m.push("getnewaddress", serde_json::json!("dup-addr"));
+        m.push("getnewaddress", serde_json::json!("dup-addr"));
+        m.push("getnewaddress", serde_json::json!("fresh-addr"));
+        let node = Node::from_api(Box::new(m));
+        assert_eq!(c.address_for(&node, 1).unwrap(), "dup-addr");
+        assert_eq!(c.address_for(&node, 2).unwrap(), "fresh-addr");
+        // A node that only re-issues known addresses fails closed.
+        let m2 = MockNode::new();
+        m2.set("getnewaddress", serde_json::json!("dup-addr"));
+        let node2 = Node::from_api(Box::new(m2));
+        let err = c.address_for(&node2, 3).unwrap_err();
+        assert!(err.contains("re-issuing"), "{err}");
+        assert_eq!(c.address_of(3), None);
     }
 
     #[test]

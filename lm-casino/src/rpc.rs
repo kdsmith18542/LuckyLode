@@ -102,6 +102,7 @@ impl NodeApi for HttpRpc {
 #[derive(Debug, Default)]
 pub struct MockNode {
     responses: Mutex<BTreeMap<String, Value>>,
+    queue: Mutex<BTreeMap<String, Vec<Value>>>,
     calls: Mutex<Vec<String>>,
 }
 
@@ -120,6 +121,16 @@ impl MockNode {
             .insert(method.to_string(), result);
     }
 
+    /// Queue a result for `method`, consumed in order before the fixed value.
+    pub fn push(&self, method: &str, result: Value) {
+        self.queue
+            .lock()
+            .expect("mock lock")
+            .entry(method.to_string())
+            .or_default()
+            .push(result);
+    }
+
     /// Methods called so far, in order.
     #[must_use]
     pub fn calls(&self) -> Vec<String> {
@@ -133,6 +144,14 @@ impl NodeApi for MockNode {
             .lock()
             .expect("mock lock")
             .push(method.to_string());
+        {
+            let mut q = self.queue.lock().expect("mock lock");
+            if let Some(list) = q.get_mut(method) {
+                if !list.is_empty() {
+                    return Ok(list.remove(0));
+                }
+            }
+        }
         self.responses
             .lock()
             .expect("mock lock")
