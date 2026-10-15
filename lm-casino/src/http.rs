@@ -820,6 +820,7 @@ pre{background:#0d0f14;border:1px solid var(--line);border-radius:8px;padding:10
     <span class="dim">Nonce</span><b id="nonce">—</b>
     <span class="dim">Commitment</span><code id="commit">—</code>
     <span class="dim">FUN</span><b id="funbal">—</b>
+    <span class="dim">Tier</span><b id="tier">—</b>
   </div>
 
   <section id="tab-lode" class="panel">
@@ -951,6 +952,11 @@ async function loadPlayer(){
   $("commit").textContent=p.commitment;$("cseed").value=p.client_seed;
   setFun(p.fun_balance);
   if(p.deposit_address)$("addr").textContent=p.deposit_address;
+  api("/api/tier",{player:pid()}).then(t=>{
+    const tr=t.tier;
+    $("tier").title=`pow ${t.participation.pow_shares} shares · stake ${t.participation.pos_stake_lkyl} LKYL · luckynode ${t.participation.luckynode_service_days} d (score ${t.score})`;
+    $("tier").textContent=tr.level+(tr.rakeback_permille?` · ${tr.rakeback_permille}‰ rakeback`:"")+(tr.bonus_free_spins?` · ${tr.bonus_free_spins} free spins`:"")+(tr.tournaments?" · tournaments":"");
+  }).catch(()=>{$("tier").textContent="—";});
   status("loaded player "+p.player,true);
 }
 function setFun(b){if(b===undefined||b===null)return;$("funbal").textContent=b+" FUN";$("funbal2").textContent=b+" FUN";}
