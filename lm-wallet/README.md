@@ -30,8 +30,25 @@ cd lm-wallet/ui && npm run build
 cd ../src-tauri && cargo build --release
 ```
 
-Bundling (`deb`/AppImage/msi/dmg) is disabled until icons and signing
-are set up (`tauri.conf.json` → `bundle.active`).
+Bundles (`deb` + AppImage) are enabled (`tauri.conf.json` →
+`bundle.active`):
+
+```sh
+cd lm-wallet/src-tauri && cargo tauri build --bundles deb,appimage
+```
+
+AppImage note: linuxdeploy scans `$PATH` and aborts on unreadable
+entries. A dangling `/usr/sbin/poetry` → `/root/.local/bin/poetry`
+symlink breaks the build on this box — trim the `sbin` dirs:
+
+```sh
+cd lm-wallet/src-tauri
+PATH=$(echo "$PATH" | tr ':' '\n' | grep -vE '/sbin$' | paste -sd:) \
+  cargo tauri build --bundles appimage
+```
+
+Verified click-to-run: the built AppImage launches standalone (bundles
+webkit/gtk; needs `libfuse2`).
 
 ## Defaults
 
@@ -44,8 +61,10 @@ are set up (`tauri.conf.json` → `bundle.active`).
 
 Built: shell + status bar, next-block draw banner (pre-committed draws),
 overview balances/activity, send/receive, **embedded miner** (Miner tab:
-CPU/OpenCL with duty + temperature guard, live hashrate/shares/log —
-same engine as the reference `lm-miner`), luckynode list + register +
-embedded service, game stats, settings. Next (M2–M5 in the spec):
-contacts/QR, draw history polish, luck chart, notifications, themes,
-packaging, OS keyring.
+CPU/OpenCL — GPU device picker, batch (MiB VRAM), NVIDIA power limit,
+duty + temperature guard, live hashrate/shares/temp/power/log — same
+engine as the reference `lm-miner`; live-verified CPU 846 H/s and GPU
+10.9 kH/s with accepted shares), luckynode list + register + embedded
+service, game stats, settings. Packaged: deb + AppImage (click-to-run
+verified). Next (M2–M5 in the spec): contacts/QR, draw history polish,
+luck chart, notifications, themes, OS keyring.
