@@ -265,6 +265,17 @@ pub fn format_micros(micros: u64) -> String {
     )
 }
 
+/// Format a FUN balance (same fixed point, play money) as a two-decimal
+/// chip-style string — `1000.00`. Display only; values stay exact.
+#[must_use]
+pub fn format_fun(units: u64) -> String {
+    format!(
+        "{}.{:02}",
+        units / MICROS_PER_LKYL,
+        (units % MICROS_PER_LKYL) / 10_000
+    )
+}
+
 /// Convert a JSON value (number or string) to micro-LKYL.
 ///
 /// # Errors

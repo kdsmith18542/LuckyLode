@@ -11,6 +11,8 @@
 //! - `POST /api/scan`     → credit confirmed deposits
 //! - `POST /api/withdraw` → withdraw to an external address
 //! - `POST /api/spin`     → spin and settle
+//! - `POST /api/fun/claim`→ claim the free FUN play-money allowance
+//! - `POST /api/fun/spin` → spin with FUN (never touches the house ledger)
 //! - `POST /api/verify`   → recompute a spin from a revealed seed
 //!
 //! Testnet posture (doc 14 §14.5): no auth/TLS in this reference server; put
@@ -46,6 +48,10 @@ pub struct App {
     pub oracle: Mutex<Oracle>,
     /// Admin token; `None` disables the admin routes.
     pub admin_token: Option<String>,
+    /// Free FUN allowance per claim (play money, in the same fixed point).
+    pub fun_grant: u64,
+    /// Seconds between FUN claims.
+    pub fun_cooldown: u64,
 }
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -62,6 +68,14 @@ fn err_json(status: u16, msg: &str) -> (u16, &'static str, String) {
 
 fn ok_json(v: Value) -> (u16, &'static str, String) {
     (200, "application/json", v.to_string())
+}
+
+/// Wall-clock unix seconds (claim cooldowns; display only).
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 fn body_json(body: &str) -> Result<Value, (u16, &'static str, String)> {
@@ -105,6 +119,14 @@ pub fn handle(app: &App, method: &str, path: &str, body: &str) -> (u16, &'static
                     "services": edge.services,
                 },
                 "net_ggr": c.ledger.net_ggr().to_string(),
+                "fun": {
+                    "grant": app.fun_grant,
+                    "grant_fun": rpc::format_fun(app.fun_grant),
+                    "cooldown": app.fun_cooldown,
+                    "total_spins": c.total_fun_spins,
+                    "wagered_fun": rpc::format_fun(c.total_fun_wagered),
+                    "won_fun": rpc::format_fun(c.total_fun_won),
+                },
             }))
         }
         ("POST", "/api/player") => {
@@ -122,7 +144,13 @@ pub fn handle(app: &App, method: &str, path: &str, body: &str) -> (u16, &'static
             let address = cu.address_for(&app.node, player).unwrap_or_default();
             drop(cu);
             let p = c.player(player).expect("just ensured");
-            ok_json(player_json(p, c.balance(player), &address))
+            ok_json(player_json(
+                p,
+                c.balance(player),
+                &address,
+                app.fun_grant,
+                app.fun_cooldown,
+            ))
         }
         ("POST", "/api/seed") => {
             let req = match body_json(body) {
@@ -256,6 +284,72 @@ pub fn handle(app: &App, method: &str, path: &str, body: &str) -> (u16, &'static
                     "balance": c.balance(player),
                     "balance_lkyl": rpc::format_micros(c.balance(player)),
                     "win_lkyl": rpc::format_micros(rec.win),
+                })),
+                Err(e) => err_json(400, &e.to_string()),
+            }
+        }
+        ("POST", "/api/fun/claim") => {
+            let req = match body_json(body) {
+                Ok(v) => v,
+                Err(e) => return e,
+            };
+            let player = match as_u64(&req, "player") {
+                Ok(p) => p,
+                Err(e) => return e,
+            };
+            let mut c = lock(&app.casino);
+            if !c.players.contains_key(&player) {
+                return err_json(400, "unknown player");
+            }
+            match c.claim_fun(player, unix_now(), app.fun_grant, app.fun_cooldown) {
+                Ok(fc) => ok_json(json!({
+                    "granted": fc.granted,
+                    "granted_fun": rpc::format_fun(fc.granted),
+                    "balance": fc.balance,
+                    "balance_fun": rpc::format_fun(fc.balance),
+                    "next_claim_at": fc.next_claim_at,
+                })),
+                Err(crate::engine::CasinoError::FunCooldown(next)) => (
+                    429,
+                    "application/json",
+                    json!({
+                        "error": format!("FUN claim on cooldown — next at {next}"),
+                        "next_claim_at": next,
+                    })
+                    .to_string(),
+                ),
+                Err(e) => err_json(400, &e.to_string()),
+            }
+        }
+        ("POST", "/api/fun/spin") => {
+            let req = match body_json(body) {
+                Ok(v) => v,
+                Err(e) => return e,
+            };
+            let player = match as_u64(&req, "player") {
+                Ok(p) => p,
+                Err(e) => return e,
+            };
+            let game = match as_str(&req, "game").ok().and_then(Game::parse) {
+                Some(g) => g,
+                None => return err_json(400, "unknown game"),
+            };
+            let bet = match as_str(&req, "bet")
+                .and_then(|s| rpc::parse_amount_to_micros(s).map_err(|e| err_json(400, &e)))
+            {
+                Ok(b) => b,
+                Err(e) => return e,
+            };
+            let mut c = lock(&app.casino);
+            if !c.players.contains_key(&player) {
+                return err_json(400, "unknown player");
+            }
+            match c.spin_fun(player, game, bet) {
+                Ok(rec) => ok_json(json!({
+                    "spin": rec,
+                    "balance": c.fun_balance(player),
+                    "balance_fun": rpc::format_fun(c.fun_balance(player)),
+                    "win_fun": rpc::format_fun(rec.win),
                 })),
                 Err(e) => err_json(400, &e.to_string()),
             }
@@ -539,7 +633,18 @@ fn admin_ok(app: &App, req: &Value) -> Result<(), (u16, &'static str, String)> {
     }
 }
 
-fn player_json(p: &crate::engine::Player, balance: u64, address: &str) -> Value {
+fn player_json(
+    p: &crate::engine::Player,
+    balance: u64,
+    address: &str,
+    fun_grant: u64,
+    fun_cooldown: u64,
+) -> Value {
+    let fun_next_claim_at = if p.fun_last_claim == 0 {
+        0
+    } else {
+        p.fun_last_claim.saturating_add(fun_cooldown)
+    };
     json!({
         "player": p.id,
         "balance": balance,
@@ -552,6 +657,17 @@ fn player_json(p: &crate::engine::Player, balance: u64, address: &str) -> Value 
         "won_lkyl": rpc::format_micros(p.won),
         "deposit_address": address,
         "last": p.last,
+        "fun": p.fun,
+        "fun_balance": rpc::format_fun(p.fun),
+        "fun_spins": p.fun_spins,
+        "fun_wagered_fun": rpc::format_fun(p.fun_wagered),
+        "fun_won_fun": rpc::format_fun(p.fun_won),
+        "fun_claimed_fun": rpc::format_fun(p.fun_claimed),
+        "fun_last_claim": p.fun_last_claim,
+        "fun_next_claim_at": fun_next_claim_at,
+        "fun_grant_fun": rpc::format_fun(fun_grant),
+        "fun_cooldown": fun_cooldown,
+        "fun_last": p.fun_last,
     })
 }
 
@@ -683,6 +799,7 @@ pre{background:#0d0f14;border:1px solid var(--line);border-radius:8px;padding:10
   <div class="tabs" style="margin-left:auto">
     <button data-tab="lode" class="on">Lucky Lode</button>
     <button data-tab="ways">Lucky Lode Ways</button>
+    <button data-tab="fun">FUN (free)</button>
     <button data-tab="fair">Provably fair</button>
     <button data-tab="cash">Cashier</button>
     <button data-tab="house">House</button>
@@ -695,6 +812,7 @@ pre{background:#0d0f14;border:1px solid var(--line);border-radius:8px;padding:10
     <span class="dim">Balance</span><b id="bal">—</b>
     <span class="dim">Nonce</span><b id="nonce">—</b>
     <span class="dim">Commitment</span><code id="commit">—</code>
+    <span class="dim">FUN</span><b id="funbal">—</b>
   </div>
 
   <section id="tab-lode" class="panel">
@@ -715,6 +833,24 @@ pre{background:#0d0f14;border:1px solid var(--line);border-radius:8px;padding:10
     </div>
     <div class="reels" id="reels-ways"></div>
     <div class="win" id="win-ways"></div>
+  </section>
+
+  <section id="tab-fun" class="panel hide">
+    <div class="row">
+      <b style="color:var(--gold)">FUN</b>
+      <span class="dim">free play money — no value, never on-chain, not withdrawable</span>
+      <span class="dim">Balance</span><b id="funbal2">—</b>
+      <button class="act" id="claimfun">Claim free FUN</button>
+    </div>
+    <div class="row" style="margin-top:10px">
+      <label>Game <select id="fgame"><option value="lucky-lode">Lucky Lode</option><option value="lucky-lode-ways">Lucky Lode Ways</option></select></label>
+      <label>Bet (FUN) <input id="fbet" value="10" style="min-width:90px"></label>
+      <button class="act" id="fspin">SPIN (FUN)</button>
+      <span class="dim">same provably-fair RNG · same 91% RTP</span>
+    </div>
+    <div class="reels" id="freels"></div>
+    <div class="win" id="fwin"></div>
+    <div id="fnote" class="dim"></div>
   </section>
 
   <section id="tab-fair" class="panel hide">
@@ -806,8 +942,26 @@ async function loadPlayer(){
   const p=await api("/api/player",{player:pid()});
   me=p;$("bal").textContent=p.balance_lkyl+" LKYL";$("nonce").textContent=p.nonce;
   $("commit").textContent=p.commitment;$("cseed").value=p.client_seed;
+  setFun(p.fun_balance);
   if(p.deposit_address)$("addr").textContent=p.deposit_address;
   status("loaded player "+p.player,true);
+}
+function setFun(b){if(b===undefined||b===null)return;$("funbal").textContent=b+" FUN";$("funbal2").textContent=b+" FUN";}
+async function claimFun(){
+  try{const r=await api("/api/fun/claim",{player:pid()});
+    setFun(r.balance_fun);
+    $("fnote").textContent="claimed "+r.granted_fun+" FUN — next claim "+new Date(r.next_claim_at*1000).toLocaleTimeString();
+    status("claimed "+r.granted_fun+" free FUN",true);}
+  catch(e){status(e.message,false);}
+}
+async function funSpin(){
+  try{
+    const res=await api("/api/fun/spin",{player:pid(),game:$("fgame").value,bet:$("fbet").value});
+    render($("freels"),res.spin.symbols);
+    $("fwin").textContent=res.spin.win>0?("WIN "+res.win_fun+" FUN"):"no win";
+    setFun(res.balance_fun);
+    status("FUN spin #"+res.spin.nonce+" (free play — no real value)",true);
+  }catch(e){status(e.message,false);}
 }
 async function spin(game,els){
   try{
@@ -822,6 +976,8 @@ async function spin(game,els){
 $("load").onclick=()=>loadPlayer().catch(e=>status(e.message,false));
 $("spin-lode").onclick=()=>spin("lucky-lode",{bet:"bet-lode",reels:"reels-lode",win:"win-lode"});
 $("spin-ways").onclick=()=>spin("lucky-lode-ways",{bet:"bet-ways",reels:"reels-ways",win:"win-ways"});
+$("claimfun").onclick=claimFun;
+$("fspin").onclick=funSpin;
 $("saveseed").onclick=async()=>{try{await api("/api/seed",{player:pid(),client_seed:$("cseed").value});status("client seed saved",true);}catch(e){status(e.message,false);}};
 $("rotate").onclick=async()=>{try{const r=await api("/api/rotate",{player:pid()});$("reveal").innerHTML="revealed server seed: <code>"+r.revealed_server_seed+"</code> · new commitment <code>"+r.new_commitment+"</code>";$("vseed").value=r.revealed_server_seed;status("seed rotated — old seed revealed",true);await loadPlayer();}catch(e){status(e.message,false);}};
 $("verify").onclick=async()=>{try{
@@ -834,7 +990,7 @@ $("scan").onclick=async()=>{try{const r=await api("/api/scan",{player:pid()});st
 $("withdraw").onclick=async()=>{try{const r=await api("/api/withdraw",{player:pid(),address:$("waddr").value,amount:$("wamt").value});$("cashout").classList.remove("hide");$("cashout").textContent="txid: "+r.txid;status("withdrawal sent",true);await loadPlayer();}catch(e){status(e.message,false);}};
 document.querySelectorAll(".tabs button").forEach(b=>b.onclick=()=>{
   document.querySelectorAll(".tabs button").forEach(x=>x.classList.toggle("on",x===b));
-  ["lode","ways","fair","cash","house"].forEach(t=>$("tab-"+t).classList.toggle("hide",t!==b.dataset.tab));
+  ["lode","ways","fun","fair","cash","house"].forEach(t=>$("tab-"+t).classList.toggle("hide",t!==b.dataset.tab));
 });
 async function adminPost(path,payload){payload.token=$("atok").value;
   const r=await fetch(path,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
@@ -869,6 +1025,8 @@ mod tests {
             bonus: Mutex::new(BonusEngine::new(10 * crate::engine::LKYL)),
             oracle: Mutex::new(Oracle::disabled()),
             admin_token: Some("secret".to_string()),
+            fun_grant: 1_000 * crate::engine::LKYL,
+            fun_cooldown: 3_600,
         })
     }
 
@@ -932,6 +1090,55 @@ mod tests {
             .0,
             400
         );
+    }
+
+    #[test]
+    fn fun_claim_and_spin_over_http() {
+        let a = app();
+        let (s, p) = post(&a, "/api/player", json!({"player": 7}));
+        assert_eq!(s, 200);
+        assert_eq!(p["fun_balance"], "0.00");
+        assert_eq!(p["fun_grant_fun"], "1000.00");
+        // Claim: free FUN, then a 429 inside the cooldown.
+        let (s, c) = post(&a, "/api/fun/claim", json!({"player": 7}));
+        assert_eq!(s, 200);
+        assert_eq!(c["granted_fun"], "1000.00");
+        assert_eq!(c["balance_fun"], "1000.00");
+        let (s, c) = post(&a, "/api/fun/claim", json!({"player": 7}));
+        assert_eq!(s, 429);
+        assert!(c["next_claim_at"].as_u64().unwrap() > 0);
+        // Play with FUN: the real balance stays untouched.
+        let (s, r) = post(
+            &a,
+            "/api/fun/spin",
+            json!({"player": 7, "game": "lucky-lode", "bet": "10"}),
+        );
+        assert_eq!(s, 200, "{r}");
+        assert!(r["spin"]["symbols"].is_array());
+        assert_eq!(r["spin"]["bet"].as_u64(), Some(10 * crate::engine::LKYL));
+        assert!(r["balance_fun"].is_string());
+        let (s, p) = post(&a, "/api/player", json!({"player": 7}));
+        assert_eq!(s, 200);
+        assert_eq!(p["balance"].as_u64(), Some(0));
+        assert_eq!(p["spins"].as_u64(), Some(0));
+        assert_eq!(p["fun_spins"].as_u64(), Some(1));
+        assert!(p["fun_last"].is_object());
+        // Unknown player is refused; a line bet must divide by the lines.
+        assert_eq!(post(&a, "/api/fun/claim", json!({"player": 99})).0, 400);
+        assert_eq!(
+            post(
+                &a,
+                "/api/fun/spin",
+                json!({"player": 7, "game": "lucky-lode", "bet": "0.000001"})
+            )
+            .0,
+            400
+        );
+        let (_, _, body) = handle(&a, "GET", "/api/stats", "");
+        let v: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["fun"]["grant_fun"], "1000.00");
+        assert_eq!(v["fun"]["cooldown"].as_u64(), Some(3_600));
+        assert_eq!(v["fun"]["total_spins"].as_u64(), Some(1));
     }
 
     #[test]

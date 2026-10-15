@@ -48,6 +48,8 @@ struct Args {
     bonus_budget: u64,
     pool_api: Option<String>,
     luckynode_api: Option<String>,
+    fun_grant: u64,
+    fun_cooldown: u64,
 }
 
 fn usage() -> ExitCode {
@@ -61,13 +63,15 @@ fn usage() -> ExitCode {
          \u{2009}         [--scan-interval SECS] [--save-interval SECS] [--mock]\n\
          \u{2009}         [--admin-token TOKEN] [--bonus-budget LKYL]\n\
          \u{2009}         [--pool-api URL] [--luckynode-api URL]\n\
+         \u{2009}         [--fun-grant FUN] [--fun-cooldown SECS]\n\
          \n\
          --mock     run without a node (deposits/withdrawals disabled safely)\n\
          --pool-api pool base URL for the participation oracle (e.g. http://127.0.0.1:8080)\n\
+         --fun-grant/--fun-cooldown  free FUN play-money allowance (never on-chain)\n\
          defaults:  bind 127.0.0.1:8090, bankroll 100000 LKYL, min-conf 1,\n\
          \u{2009}         withdraw-min 1 LKYL, withdraw-max 10000 LKYL, network testnet,\n\
          \u{2009}         scan every 20 s, save every 10 s, bonus budget 1000 LKYL,\n\
-         \u{2009}         admin disabled"
+         \u{2009}         FUN 1000 per claim every 3600 s, admin disabled"
     );
     ExitCode::from(2)
 }
@@ -98,6 +102,8 @@ fn parse_args(argv: &[String]) -> Result<Args, String> {
         bonus_budget: 1_000 * LKYL,
         pool_api: None,
         luckynode_api: None,
+        fun_grant: 1_000 * LKYL,
+        fun_cooldown: 3_600,
     };
     let mut i = 0;
     while i < argv.len() {
@@ -143,6 +149,15 @@ fn parse_args(argv: &[String]) -> Result<Args, String> {
             }
             "--pool-api" => a.pool_api = Some(next(argv, &mut i, "--pool-api")?),
             "--luckynode-api" => a.luckynode_api = Some(next(argv, &mut i, "--luckynode-api")?),
+            "--fun-grant" => {
+                a.fun_grant = rpc::parse_amount_to_micros(&next(argv, &mut i, "--fun-grant")?)
+                    .map_err(|e| format!("--fun-grant: {e}"))?
+            }
+            "--fun-cooldown" => {
+                a.fun_cooldown = next(argv, &mut i, "--fun-cooldown")?
+                    .parse()
+                    .map_err(|_| "--fun-cooldown expects an integer".to_string())?
+            }
             other => return Err(format!("unknown flag: {other}")),
         }
         i += 1;
@@ -253,6 +268,8 @@ fn main() -> ExitCode {
         bonus: Mutex::new(bonus),
         oracle: Mutex::new(oracle),
         admin_token: args.admin_token.clone(),
+        fun_grant: args.fun_grant,
+        fun_cooldown: args.fun_cooldown,
     });
 
     if let Some(path) = &args.state_file {
@@ -289,6 +306,11 @@ fn main() -> ExitCode {
         lm_casino::TARGET_RTP,
         rpc::format_micros(bankroll),
         rpc::format_micros(max_bet)
+    );
+    println!(
+        "fun: {} FUN per claim, cooldown {} s (free play money — never on-chain)",
+        rpc::format_fun(args.fun_grant),
+        args.fun_cooldown
     );
     let listener = match http::bind(&args.bind) {
         Ok(l) => l,

@@ -10,6 +10,9 @@
 //!   117,649 ways) exact-RTP math engine, also tuned to 91%.
 //! - [`ledger`] — house ledger: deposits/withdrawals, bets/wins, bankroll
 //!   limits and automatic throttling, with exact money conservation.
+//! - **FUN** (doc 14 §14.9) — free play money: claimable on a cooldown,
+//!   played with the same provably-fair RNG and math, and completely
+//!   isolated from the house ledger (never on-chain, never convertible).
 //! - [`edge`] — the ~9% house edge split (dev fund / Lucky Pot / miner
 //!   airdrop / game services), largest-remainder exact.
 //! - [`tier`] — mine-to-play / stake-to-play / serve-to-play participation

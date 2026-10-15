@@ -123,3 +123,35 @@ back to the people who mine, stake and serve."*
 - Whether to add the LKYL-block salt and whether any prize links the on-chain
   Lucky Pot.
 - Free-spin wagering-requirement multiplier and expiry.
+
+## 14.9 FUN — free play money (added 2026-10-15)
+
+**FUN is not a currency.** It is a free, non-transferable play credit that
+exists only inside the casino service: never on-chain, never convertible,
+never deposit- or withdraw-able, no monetary value. It exists so anyone can
+try both titles with the real provably-fair RNG and the real 91% RTP math
+before (or instead of) wagering LKYL.
+
+- **Getting FUN:** `POST /api/fun/claim` grants the configured allowance
+  (default **1,000 FUN**, cooldown **1 h**; `--fun-grant`/`--fun-cooldown`).
+  The first claim is immediate; later claims answer `429` with the next
+  allowed time. Nothing else creates FUN.
+- **Playing:** `POST /api/fun/spin` takes the same `game`/`bet` parameters
+  as `/api/spin` and settles against the FUN balance. Same commit-reveal
+  RNG, same math, same verifier — real and FUN spins share one nonce
+  cursor so every `(server_seed, nonce)` pair stays unique.
+- **Isolation (the invariant):** FUN play never touches the house ledger.
+  Bankroll, GGR, edge split, custody and the conservation invariant are
+  unaffected; FUN bets never count toward real wagering stats, tiers or
+  bonuses. FUN wins use the same ×8000 math under a per-bet cap
+  (`FUN_MAX_BET` = 10,000 FUN).
+- **Storage:** balances/counters ride in the casino state file
+  (`fun`, `fun_spins`, `fun_wagered`, `fun_won`, `fun_claimed`,
+  `fun_last_claim`, `fun_last`), serde-defaulted so pre-FUN state files
+  load cleanly.
+- **UI:** the client page has a **FUN (free)** tab (balance, claim button,
+  both titles, "SPIN (FUN)") and a FUN badge in the player bar.
+
+FUN is deliberately *outside* the legal perimeter (doc 14 §14.5): it has no
+value, cannot be bought, sold or cashed out, and is labelled as free play
+everywhere it appears.

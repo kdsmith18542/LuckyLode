@@ -57,6 +57,8 @@ pub enum CasinoError {
     Cas(CasError),
     /// Bad parameters (zero bet, non-divisible line bet, bad seed).
     BadBet(&'static str),
+    /// The free FUN allowance is on cooldown until the given unix time.
+    FunCooldown(u64),
 }
 
 impl From<CasError> for CasinoError {
@@ -71,6 +73,7 @@ impl fmt::Display for CasinoError {
             CasinoError::UnknownPlayer => write!(f, "unknown player"),
             CasinoError::Cas(e) => write!(f, "{e:?}"),
             CasinoError::BadBet(m) => write!(f, "bad bet: {m}"),
+            CasinoError::FunCooldown(t) => write!(f, "FUN claim on cooldown until {t}"),
         }
     }
 }
@@ -88,8 +91,41 @@ pub struct Player {
     pub spins: u64,
     pub wagered: u64,
     pub won: u64,
+    /// FUN play-money balance (free credits; never on-chain, never
+    /// convertible, never withdrawable).
+    #[serde(default)]
+    pub fun: u64,
+    /// FUN spins played.
+    #[serde(default)]
+    pub fun_spins: u64,
+    /// FUN wagered (play money; excluded from every house accounting).
+    #[serde(default)]
+    pub fun_wagered: u64,
+    /// FUN won.
+    #[serde(default)]
+    pub fun_won: u64,
+    /// Lifetime FUN claimed.
+    #[serde(default)]
+    pub fun_claimed: u64,
+    /// Unix time of the last FUN claim (0 = never claimed).
+    #[serde(default)]
+    pub fun_last_claim: u64,
     /// The most recent spin (for the client/verifier).
     pub last: Option<SpinRecord>,
+    /// The most recent FUN spin (verifiable the same way).
+    #[serde(default)]
+    pub fun_last: Option<SpinRecord>,
+}
+
+/// Result of a free FUN claim.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct FunClaim {
+    /// FUN granted by this claim.
+    pub granted: u64,
+    /// Player's FUN balance after the claim.
+    pub balance: u64,
+    /// Unix time when the next claim becomes available.
+    pub next_claim_at: u64,
 }
 
 /// A settled spin. Contains no secret: the commitment is public, and the
@@ -119,6 +155,14 @@ pub struct Casino {
     pub players: BTreeMap<u64, Player>,
     seed_counter: u64,
     pub total_spins: u64,
+    /// Casino-wide FUN (play-money) entertainment counters — never part of
+    /// the house ledger, GGR or edge.
+    #[serde(default)]
+    pub total_fun_spins: u64,
+    #[serde(default)]
+    pub total_fun_wagered: u64,
+    #[serde(default)]
+    pub total_fun_won: u64,
 }
 
 impl Casino {
@@ -138,6 +182,9 @@ impl Casino {
             players: BTreeMap::new(),
             seed_counter: 0,
             total_spins: 0,
+            total_fun_spins: 0,
+            total_fun_wagered: 0,
+            total_fun_won: 0,
         }
     }
 
@@ -176,7 +223,14 @@ impl Casino {
                     spins: 0,
                     wagered: 0,
                     won: 0,
+                    fun: 0,
+                    fun_spins: 0,
+                    fun_wagered: 0,
+                    fun_won: 0,
+                    fun_claimed: 0,
+                    fun_last_claim: 0,
                     last: None,
+                    fun_last: None,
                 },
             );
         }
@@ -222,30 +276,130 @@ impl Casino {
     /// [`CasinoError`] for unknown players, zero/oversized bets, or a line bet
     /// not divisible by the line count.
     pub fn spin(&mut self, player: u64, game: Game, bet: u64) -> Result<SpinRecord, CasinoError> {
-        let (server_seed, client_seed, nonce) = {
+        let (seed, client_seed, nonce) = self.spin_material(player, game, bet)?;
+        self.ledger.place_bet(player, bet)?;
+        let (symbols, stops, scatters, win) = self.compute(game, &seed, &client_seed, nonce, bet);
+        self.ledger.settle(player, win)?;
+        Ok(self.commit(
+            player, false, game, bet, &seed, &client_seed, nonce, symbols, stops, scatters, win,
+        ))
+    }
+
+    /// Spin `game` for `bet` FUN (free play money). Identical provably-fair
+    /// derivation and math as [`Casino::spin`]; the bet and win move only the
+    /// player's FUN balance — the house ledger, bankroll, GGR and edge are
+    /// never touched, and FUN can never be deposited or withdrawn.
+    ///
+    /// # Errors
+    /// [`CasinoError`] for unknown players, zero bets, a line bet not
+    /// divisible by the line count, a bet over [`FUN_MAX_BET`], or an
+    /// insufficient FUN balance.
+    pub fn spin_fun(
+        &mut self,
+        player: u64,
+        game: Game,
+        bet: u64,
+    ) -> Result<SpinRecord, CasinoError> {
+        if bet > FUN_MAX_BET {
+            return Err(CasinoError::BadBet("FUN bet over the cap"));
+        }
+        let (seed, client_seed, nonce) = self.spin_material(player, game, bet)?;
+        {
             let p = self
                 .players
-                .get(&player)
-                .ok_or(CasinoError::UnknownPlayer)?;
-            (p.server_seed.clone(), p.client_seed.clone(), p.nonce)
-        };
+                .get_mut(&player)
+                .expect("checked by spin_material");
+            if p.fun < bet {
+                return Err(CasinoError::Cas(CasError::InsufficientFunds));
+            }
+            p.fun -= bet;
+        }
+        let (symbols, stops, scatters, win) = self.compute(game, &seed, &client_seed, nonce, bet);
+        self.players.get_mut(&player).expect("checked").fun += win;
+        Ok(self.commit(
+            player, true, game, bet, &seed, &client_seed, nonce, symbols, stops, scatters, win,
+        ))
+    }
+
+    /// Claim the free FUN allowance. The first claim is always granted;
+    /// afterwards claims are spaced by `cooldown` seconds.
+    ///
+    /// # Errors
+    /// [`CasinoError::UnknownPlayer`], [`CasinoError::BadBet`] on a zero
+    /// grant, or [`CasinoError::FunCooldown`] (carrying the next allowed
+    /// unix time) while the cooldown holds.
+    pub fn claim_fun(
+        &mut self,
+        player: u64,
+        now: u64,
+        grant: u64,
+        cooldown: u64,
+    ) -> Result<FunClaim, CasinoError> {
+        if grant == 0 {
+            return Err(CasinoError::BadBet("zero FUN grant"));
+        }
+        let p = self
+            .players
+            .get_mut(&player)
+            .ok_or(CasinoError::UnknownPlayer)?;
+        let next_at = p.fun_last_claim.saturating_add(cooldown);
+        if p.fun_last_claim != 0 && now < next_at {
+            return Err(CasinoError::FunCooldown(next_at));
+        }
+        p.fun += grant;
+        p.fun_claimed += grant;
+        p.fun_last_claim = now;
+        Ok(FunClaim {
+            granted: grant,
+            balance: p.fun,
+            next_claim_at: now.saturating_add(cooldown),
+        })
+    }
+
+    /// The player's FUN balance (play money).
+    #[must_use]
+    pub fn fun_balance(&self, player: u64) -> u64 {
+        self.players.get(&player).map(|p| p.fun).unwrap_or(0)
+    }
+
+    /// Validate the bet and derive the session material for a spin.
+    fn spin_material(
+        &self,
+        player: u64,
+        game: Game,
+        bet: u64,
+    ) -> Result<([u8; fair::HASH_LEN], String, u64), CasinoError> {
+        let p = self
+            .players
+            .get(&player)
+            .ok_or(CasinoError::UnknownPlayer)?;
         if bet == 0 {
             return Err(CasinoError::BadBet("zero bet"));
         }
         if game == Game::LuckyLode && !bet.is_multiple_of(self.line.lines) {
             return Err(CasinoError::BadBet("bet must be a multiple of lines"));
         }
-        let seed_vec = fair::from_hex(&server_seed).map_err(|_| CasinoError::BadBet("bad seed"))?;
+        let seed_vec =
+            fair::from_hex(&p.server_seed).map_err(|_| CasinoError::BadBet("bad seed"))?;
         if seed_vec.len() != fair::HASH_LEN {
             return Err(CasinoError::BadBet("seed length"));
         }
         let mut seed = [0u8; fair::HASH_LEN];
         seed.copy_from_slice(&seed_vec);
+        Ok((seed, p.client_seed.clone(), p.nonce))
+    }
 
-        self.ledger.place_bet(player, bet)?;
-
-        let mut f = Fair::new(seed, client_seed.as_bytes(), nonce);
-        let (symbols, stops, scatters, win) = match game {
+    /// Derive the visible outcome + payout for one (seed, client seed, nonce).
+    fn compute(
+        &self,
+        game: Game,
+        seed: &[u8; fair::HASH_LEN],
+        client_seed: &str,
+        nonce: u64,
+        bet: u64,
+    ) -> (Vec<Vec<usize>>, Vec<u64>, usize, u64) {
+        let mut f = Fair::new(*seed, client_seed.as_bytes(), nonce);
+        match game {
             Game::LuckyLode => {
                 let counts = self.line.reel_strip_lengths();
                 let stops = f.next_reel_stops(&counts);
@@ -275,14 +429,31 @@ impl Casino {
                 let win = self.ways.payout_micros(&reels, bet);
                 (reels, stops, 0, win)
             }
-        };
+        }
+    }
 
-        self.ledger.settle(player, win)?;
+    /// Record a settled spin: advance the shared RNG cursor and the
+    /// per-mode counters, and return the public record.
+    #[allow(clippy::too_many_arguments)]
+    fn commit(
+        &mut self,
+        player: u64,
+        fun: bool,
+        game: Game,
+        bet: u64,
+        seed: &[u8; fair::HASH_LEN],
+        client_seed: &str,
+        nonce: u64,
+        symbols: Vec<Vec<usize>>,
+        stops: Vec<u64>,
+        scatters: usize,
+        win: u64,
+    ) -> SpinRecord {
         let record = SpinRecord {
             game,
             nonce,
-            client_seed: client_seed.clone(),
-            server_seed_hash: fair::to_hex(&fair::commitment(&seed)),
+            client_seed: client_seed.to_string(),
+            server_seed_hash: fair::to_hex(&fair::commitment(seed)),
             stops,
             symbols,
             bet,
@@ -290,13 +461,25 @@ impl Casino {
             scatters,
         };
         let p = self.players.get_mut(&player).expect("checked above");
+        // Real and FUN spins share one nonce cursor so every (seed, nonce)
+        // pair stays unique across both modes.
         p.nonce += 1;
-        p.spins += 1;
-        p.wagered += bet;
-        p.won += win;
-        p.last = Some(record.clone());
-        self.total_spins += 1;
-        Ok(record)
+        if fun {
+            p.fun_spins += 1;
+            p.fun_wagered += bet;
+            p.fun_won += win;
+            p.fun_last = Some(record.clone());
+            self.total_fun_spins += 1;
+            self.total_fun_wagered += bet;
+            self.total_fun_won += win;
+        } else {
+            p.spins += 1;
+            p.wagered += bet;
+            p.won += win;
+            p.last = Some(record.clone());
+            self.total_spins += 1;
+        }
+        record
     }
 
     /// The player's public session state.
@@ -392,6 +575,10 @@ impl Casino {
 
 /// One LKYL expressed in micro-LKYL (re-export for callers).
 pub const LKYL: u64 = MICROS_PER_LKYL;
+
+/// Hard cap on a single FUN bet (play money). Generous for play but keeps
+/// the payout arithmetic (max ×8000) far inside u64.
+pub const FUN_MAX_BET: u64 = 10_000 * MICROS_PER_LKYL;
 
 #[cfg(test)]
 mod tests {
@@ -512,5 +699,93 @@ mod tests {
             assert_eq!(Game::parse(g.as_str()), Some(g));
         }
         assert_eq!(Game::parse("nope"), None);
+    }
+
+    #[test]
+    fn fun_claim_grants_and_cools_down() {
+        let mut c = casino();
+        c.ensure_player(1);
+        let grant = 1_000 * LKYL;
+        let fc = c.claim_fun(1, 1_000, grant, 3_600).unwrap();
+        assert_eq!(fc.granted, grant);
+        assert_eq!(fc.balance, grant);
+        assert_eq!(fc.next_claim_at, 4_600);
+        assert_eq!(c.fun_balance(1), grant);
+        // Inside the cooldown: refused, carrying the next allowed time.
+        assert_eq!(
+            c.claim_fun(1, 1_001, grant, 3_600),
+            Err(CasinoError::FunCooldown(4_600))
+        );
+        // At the boundary it is allowed again.
+        assert!(c.claim_fun(1, 4_600, grant, 3_600).is_ok());
+        assert_eq!(c.fun_balance(1), 2 * grant);
+        assert_eq!(c.player(1).unwrap().fun_claimed, 2 * grant);
+        // Unknown player / zero grant.
+        assert_eq!(
+            c.claim_fun(9, 5_000, grant, 3_600),
+            Err(CasinoError::UnknownPlayer)
+        );
+        assert_eq!(
+            c.claim_fun(1, 9_999, 0, 3_600),
+            Err(CasinoError::BadBet("zero FUN grant"))
+        );
+    }
+
+    #[test]
+    fn fun_spin_is_isolated_from_the_house_ledger() {
+        let mut c = casino();
+        c.ensure_player(1);
+        c.claim_fun(1, 0, 1_000 * LKYL, 3_600).unwrap();
+        let bankroll_before = c.bankroll();
+        let custody_before = c.ledger.custody();
+        let rec = c.spin_fun(1, Game::LuckyLode, 10 * LKYL).unwrap();
+        // FUN moved; the real ledger did not.
+        assert_eq!(c.fun_balance(1), 1_000 * LKYL - 10 * LKYL + rec.win);
+        assert_eq!(c.balance(1), 0);
+        assert_eq!(c.bankroll(), bankroll_before);
+        assert_eq!(c.ledger.custody(), custody_before);
+        assert_eq!(c.ledger.net_ggr(), 0);
+        assert!(c.ledger.is_conserving());
+        assert_eq!((c.total_spins, c.total_fun_spins), (0, 1));
+        let p = c.player(1).unwrap();
+        assert_eq!((p.spins, p.fun_spins), (0, 1));
+        assert_eq!(p.fun_wagered, 10 * LKYL);
+        assert_eq!(p.fun_won, rec.win);
+        assert!(p.fun_last.is_some());
+        // Line bets must divide by the line count, FUN or not.
+        assert_eq!(
+            c.spin_fun(1, Game::LuckyLode, 9_999).unwrap_err(),
+            CasinoError::BadBet("bet must be a multiple of lines")
+        );
+        // Over the cap / over the balance.
+        assert_eq!(
+            c.spin_fun(1, Game::LuckyLode, FUN_MAX_BET + 10).unwrap_err(),
+            CasinoError::BadBet("FUN bet over the cap")
+        );
+        assert_eq!(
+            c.spin_fun(1, Game::LuckyLode, 5_000 * LKYL).unwrap_err(),
+            CasinoError::Cas(CasError::InsufficientFunds)
+        );
+    }
+
+    #[test]
+    fn fun_and_real_spins_share_the_nonce_cursor_and_verify() {
+        let mut c = casino();
+        c.ensure_player(1);
+        c.ledger.deposit(1, 10 * LKYL).unwrap();
+        c.claim_fun(1, 0, 1_000 * LKYL, 3_600).unwrap();
+        let a = c.spin(1, Game::LuckyLode, 10_000).unwrap();
+        let b = c.spin_fun(1, Game::LuckyLodeWays, 10 * LKYL).unwrap();
+        let d = c.spin(1, Game::LuckyLode, 10_000).unwrap();
+        assert_eq!([a.nonce, b.nonce, d.nonce], [0, 1, 2]);
+        // Both modes replay from the revealed seed.
+        let seed = c.player(1).unwrap().server_seed.clone();
+        for rec in [&a, &b, &d] {
+            let symbols = c
+                .replay(rec.game, &seed, &rec.client_seed, rec.nonce)
+                .unwrap();
+            assert_eq!(symbols, rec.symbols);
+            assert_eq!(c.outcome_win(rec.game, &symbols, rec.bet), rec.win);
+        }
     }
 }
