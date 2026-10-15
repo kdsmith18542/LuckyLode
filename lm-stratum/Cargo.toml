@@ -17,3 +17,9 @@ sha2 = "0.10"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 rustls-pemfile = "2"
 webpki-roots = "1.0"
+# Stratum V2 secure session (sv2-spec 04): Noise NX over secp256k1 with
+# ElligatorSwift handshake keys + ChaCha20-Poly1305, delegated to the
+# reference implementation (MIT OR Apache-2.0). secp256k1 is the same
+# version noise_sv2 uses, for the XOnlyPublicKey/Keypair types.
+noise_sv2 = "2.0.0"
+secp256k1 = "0.28"

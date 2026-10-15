@@ -22,5 +22,6 @@ pub mod tls;
 pub mod tx;
 pub mod v1;
 pub mod v2;
+pub mod v2_session;
 pub mod vardiff;
 pub mod workerstats;
