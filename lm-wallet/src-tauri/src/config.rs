@@ -4,6 +4,12 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Contact {
+    pub name: String,
+    pub address: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     /// Node JSON-RPC endpoint (localhost by default).
     pub rpc_url: String,
@@ -17,6 +23,9 @@ pub struct Config {
     /// Default worker/payout address for the built-in miner.
     #[serde(default)]
     pub mining_worker: String,
+    /// Saved contacts (address book; empty for older config files).
+    #[serde(default)]
+    pub contacts: Vec<Contact>,
 }
 
 fn default_stratum() -> String {
@@ -33,6 +42,7 @@ impl Default for Config {
             pool_url: "https://luckylode.cc/pool".to_string(),
             pool_stratum: default_stratum(),
             mining_worker: String::new(),
+            contacts: Vec::new(),
         }
     }
 }

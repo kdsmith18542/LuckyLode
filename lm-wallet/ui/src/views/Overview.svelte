@@ -4,6 +4,7 @@
   let txs = $state<any[]>([]);
   let pool = $state<any>(null);
   let err = $state("");
+  let detail = $state<any>(null);
 
   async function load() {
     try {
@@ -21,6 +22,15 @@
     return () => clearInterval(t);
   });
 
+  async function openDetail(txid: string) {
+    if (!txid) return;
+    try {
+      detail = await api.txDetail(txid);
+    } catch (e) {
+      err = String(e);
+    }
+  }
+
   const recent = $derived((pool?.last_blocks ?? []).slice(0, 5));
 </script>
 
@@ -37,7 +47,7 @@
   <thead><tr><th>time</th><th>direction</th><th>amount</th><th>address</th><th>status</th></tr></thead>
   <tbody>
     {#each txs.slice(0, 12) as tx}
-      <tr>
+      <tr style="cursor:pointer" onclick={() => openDetail(tx.txid)} title="click for details">
         <td>{new Date((tx.time ?? 0) * 1000).toLocaleString()}</td>
         <td class:off={tx.category !== "receive"}>{tx.category}</td>
         <td>{tx.amount}</td>
@@ -48,6 +58,39 @@
     {#if txs.length === 0}<tr><td colspan="5" class="muted">no transactions yet</td></tr>{/if}
   </tbody>
 </table>
+
+{#if detail}
+  <div class="card" style="max-width:720px">
+    <div class="row" style="justify-content:space-between">
+      <b>transaction detail</b>
+      <button class="btn" onclick={() => (detail = null)}>close</button>
+    </div>
+    <table>
+      <tbody>
+        <tr><th>txid</th><td class="addr">{detail.txid}</td></tr>
+        <tr><th>amount</th><td>{detail.amount ?? "–"} LKYL</td></tr>
+        <tr><th>fee</th><td>{detail.fee ?? "–"}</td></tr>
+        <tr><th>confirmations</th><td>{detail.confirmations ?? 0}</td></tr>
+        <tr><th>block height</th><td>{detail.blockheight ?? "–"}</td></tr>
+        <tr><th>time</th><td>{new Date((detail.time ?? 0) * 1000).toLocaleString()}</td></tr>
+      </tbody>
+    </table>
+    {#if Array.isArray(detail.details) && detail.details.length > 0}
+      <table>
+        <thead><tr><th>direction</th><th>address</th><th>amount</th></tr></thead>
+        <tbody>
+          {#each detail.details as d}
+            <tr>
+              <td>{d.category}</td>
+              <td class="muted">{api.short(d.address, 12)}</td>
+              <td>{d.amount}</td>
+            </tr>
+          {/each}
+        </tbody>
+      </table>
+    {/if}
+  </div>
+{/if}
 
 <h2>Pool blocks (recent)</h2>
 <table>
