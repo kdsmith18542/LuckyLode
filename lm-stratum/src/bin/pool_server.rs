@@ -77,6 +77,7 @@ footer{margin-top:26px;color:var(--dim);font-size:12px;line-height:1.5}
   <button data-tab="api">API</button>
   <a class="badge" href="https://luckylode.cc/" target="_blank" rel="noopener">luckylode.cc</a>
   <a class="badge" href="https://luckylode.cc/explorer/" target="_blank" rel="noopener">explorer</a>
+  <a class="badge" href="https://luckylode.cc/casino/" target="_blank" rel="noopener">casino · free FUN</a>
 </nav>
 <section id="tab-dashboard" class="active">
 <div class="grid" id="cards"></div>
