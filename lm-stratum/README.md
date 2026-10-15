@@ -61,9 +61,14 @@ This is the reference implementation; run it on testnet knowing:
   but it throttles block submission — don't run a public pool that way.
 - **Work-identity dedupe is windowed** (2^16 identities). A replay older
   than the window can pass; accepted as the reference trade-off.
-- **Stratum V1 framing only** (V2 planned; the provider seam and money
-  rules carry over). No `set_difficulty` — targets ride in `mining.notify`.
+- **Stratum V1 is what the pool serves** (V2 is built but not wired: the
+  frame codec `v2.rs`, the Noise NX secure session `v2_session.rs` with
+  spec-§4.6 encrypted transport + SetupConnection negotiation, and the
+  channel/job/share messages all have tests; the server/client roles that
+  would serve it behind a flag are next). The provider seam and money
+  rules carry over. No `set_difficulty` — targets ride in `mining.notify`.
 
 Tracked follow-ups: persistence + payout processor + auth
-(`internal/17`), Stratum V2 framing, `lm-miner pool` subcommand speaking
+(`internal/17`), Stratum V2 server/client roles (behind a flag),
+`lm-miner pool` subcommand speaking
 `client`, attestation-gated league entry.
