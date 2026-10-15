@@ -41,6 +41,90 @@ pub fn transactions(
     node::call(&state, "listtransactions", json!(["*", count.unwrap_or(50)]))
 }
 
+/// Saved contacts (address book, internal/19 M2).
+#[tauri::command]
+pub fn contacts_list(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
+    let cfg = state.cfg.lock().expect("cfg");
+    serde_json::to_value(&cfg.contacts).map_err(|e| e.to_string())
+}
+
+/// Add or update a contact (address is the key; re-adding replaces the name).
+#[tauri::command]
+pub fn contact_add(
+    state: State<'_, AppState>,
+    name: String,
+    address: String,
+) -> Result<(), String> {
+    let name = name.trim().to_string();
+    if name.is_empty() {
+        return Err("contact needs a name".to_string());
+    }
+    let address = address.trim().to_string();
+    if !lm_pool::payout::valid_payout_address(&address) {
+        return Err(format!("'{address}' is not a valid Lucky Lode address"));
+    }
+    let mut cfg = state.cfg.lock().expect("cfg");
+    match cfg.contacts.iter_mut().find(|c| c.address == address) {
+        Some(c) => c.name = name,
+        None => cfg.contacts.push(crate::config::Contact { name, address }),
+    }
+    cfg.save(&state.cfg_path)
+}
+
+/// Remove a contact by address.
+#[tauri::command]
+pub fn contact_remove(state: State<'_, AppState>, address: String) -> Result<(), String> {
+    let mut cfg = state.cfg.lock().expect("cfg");
+    cfg.contacts.retain(|c| c.address != address);
+    cfg.save(&state.cfg_path)
+}
+
+/// QR code (SVG string) for an address — the Receive view renders it.
+#[tauri::command]
+pub fn address_qr(address: String) -> Result<String, String> {
+    if address.is_empty() {
+        return Err("no address".to_string());
+    }
+    let qr = qrcodegen::QrCode::encode_text(&address, qrcodegen::QrCodeEcc::Low)
+        .map_err(|e| format!("qr: {e}"))?;
+    let n = qr.size();
+    let scale = 4i32;
+    let border = 4i32;
+    let dim = (n + border * 2) * scale;
+    let mut svg = format!(
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 {dim} {dim}\" width=\"180\" height=\"180\" shape-rendering=\"crispEdges\"><rect width=\"{dim}\" height=\"{dim}\" fill=\"#ffffff\"/>"
+    );
+    for y in 0..n {
+        for x in 0..n {
+            if qr.get_module(x, y) {
+                let px = (x + border) * scale;
+                let py = (y + border) * scale;
+                svg += &format!(
+                    "<rect x=\"{px}\" y=\"{py}\" width=\"{scale}\" height=\"{scale}\" fill=\"#0d1117\"/>"
+                );
+            }
+        }
+    }
+    svg += "</svg>";
+    Ok(svg)
+}
+
+/// Wallet transaction detail for the activity view (internal/19 M2).
+#[tauri::command]
+pub fn tx_detail(state: State<'_, AppState>, txid: String) -> Result<serde_json::Value, String> {
+    let t = node::call(&state, "gettransaction", json!([txid]))?;
+    Ok(json!({
+        "txid": t.get("txid"),
+        "amount": t.get("amount"),
+        "fee": t.get("fee"),
+        "confirmations": t.get("confirmations"),
+        "time": t.get("time"),
+        "blockhash": t.get("blockhash"),
+        "blockheight": t.get("blockheight"),
+        "details": t.get("details"),
+    }))
+}
+
 #[tauri::command]
 pub fn new_address(state: State<'_, AppState>) -> Result<String, String> {
     node::call(&state, "getnewaddress", json!([]))?

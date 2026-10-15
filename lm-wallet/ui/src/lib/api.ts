@@ -6,6 +6,12 @@ export type Json = unknown;
 export const nodeStatus = () => invoke<Json>("node_status");
 export const walletBalances = () => invoke<Json>("wallet_balances");
 export const transactions = (count = 50) => invoke<Json>("transactions", { count });
+export const contactsList = () => invoke<Json>("contacts_list");
+export const contactAdd = (name: string, address: string) =>
+  invoke<void>("contact_add", { name, address });
+export const contactRemove = (address: string) => invoke<void>("contact_remove", { address });
+export const addressQr = (address: string) => invoke<string>("address_qr", { address });
+export const txDetail = (txid: string) => invoke<Json>("tx_detail", { txid });
 export const newAddress = () => invoke<string>("new_address");
 export const send = (to: string, amount: string) => invoke<string>("send", { to, amount });
 export const gameInfo = () => invoke<Json>("game_info");

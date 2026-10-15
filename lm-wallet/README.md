@@ -60,11 +60,12 @@ webkit/gtk; needs `libfuse2`).
 ## Status (M1+)
 
 Built: shell + status bar, next-block draw banner (pre-committed draws),
-overview balances/activity, send/receive, **embedded miner** (Miner tab:
+overview balances/activity (**per-tx detail**), send/receive (**contacts
+address book + receive QR**), **embedded miner** (Miner tab:
 CPU/OpenCL — GPU device picker, batch (MiB VRAM), NVIDIA power limit,
 duty + temperature guard, live hashrate/shares/temp/power/log — same
 engine as the reference `lm-miner`; live-verified CPU 846 H/s and GPU
 10.9 kH/s with accepted shares), luckynode list + register + embedded
 service, game stats, settings. Packaged: deb + AppImage (click-to-run
-verified). Next (M2–M5 in the spec): contacts/QR, draw history polish,
-luck chart, notifications, themes, OS keyring.
+verified). Next (M3–M5 in the spec): luckynode wizard, luck chart,
+notifications, themes, OS keyring.
