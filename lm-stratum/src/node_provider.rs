@@ -57,6 +57,9 @@ pub struct RecentTemplate {
     pub bonus: u64,
     /// Pot splash claimed by this template's coinbase (0 = none).
     pub pot: u64,
+    /// Advisory league-pool overflow for this height (base units): the
+    /// jackpot-levy slice overflowing the reserve cap.
+    pub league: u64,
     /// Normal net value of the template's coinbase (the pool's receipt).
     pub coinbase: u64,
     /// This template is a pity-timer claim (node drought at/over the
@@ -80,6 +83,9 @@ struct TemplateState {
     bonus: u64,
     /// Pot claimed by this template's coinbase (0 = normal template).
     pot_claim: u64,
+    /// Advisory league-pool overflow for the current template's height
+    /// (base units; credited to the pool's league ledger on accept).
+    league: u64,
     /// Normal net value of the current template's coinbase (parsed from the
     /// node's own template bytes — what an accepted block pays the pool).
     coinbase: u64,
@@ -138,6 +144,7 @@ impl NodeProvider {
             "getblocktemplate",
             serde_json::json!([{"capabilities": []}]),
         )?;
+        let league = parse_league_overflow(&gbt);
         let (tpl, txs, bonus, pot, coinbase, pity) =
             build_template(&gbt, claim_jackpots, claim_pot, 100, 1000)?;
         let mut recent = std::collections::VecDeque::new();
@@ -149,6 +156,7 @@ impl NodeProvider {
                 pot,
                 coinbase,
                 pity,
+                league,
             });
         }
         Ok(Self {
@@ -161,6 +169,7 @@ impl NodeProvider {
                 pot_claim: pot,
                 coinbase,
                 pity,
+                league,
                 fetched_at: Instant::now(),
             }),
             accepted: Mutex::new(0),
@@ -216,9 +225,11 @@ impl NodeProvider {
                 serde_json::json!([{"capabilities": []}]),
             )
             .and_then(|gbt| {
+                let league = parse_league_overflow(&gbt);
                 build_template(&gbt, claim_jackpots, claim_pot, jackpot_divisor, pot_divisor)
+                    .map(|bt| (bt, league))
             }) {
-            Ok((tpl, txs, bonus, pot, coinbase, pity)) => {
+            Ok(((tpl, txs, bonus, pot, coinbase, pity), league)) => {
                 let mut st = self.state.lock().expect("state");
                 if let Some(m) = header_merkle(&tpl.header) {
                     st.recent.push_front(RecentTemplate {
@@ -228,6 +239,7 @@ impl NodeProvider {
                         pot,
                         coinbase,
                         pity,
+                        league,
                     });
                     // 256 refreshes (~8.5 min at 2s) covers the whole job
                     // lifetime (server registry: 16 jobs x 30s), so a slow
@@ -242,6 +254,7 @@ impl NodeProvider {
                 st.pot_claim = pot;
                 st.coinbase = coinbase;
                 st.pity = pity;
+                st.league = league;
                 st.fetched_at = Instant::now();
             }
             Err(_) => {
@@ -282,13 +295,27 @@ impl TemplateProvider for NodeProvider {
         // assembly AND gating both need ITS claims, not the latest
         // template's. Its normal coinbase value rides along for payout
         // accounting.
-        let (txs, bonus, pot, coinbase, _pity) = {
+        let (txs, bonus, pot, coinbase, _pity, league) = {
             let st = self.state.lock().expect("state");
             if header_merkle(&st.template.header) == Some(merkle) {
-                (st.txs.clone(), st.bonus, st.pot_claim, st.coinbase, st.pity)
+                (
+                    st.txs.clone(),
+                    st.bonus,
+                    st.pot_claim,
+                    st.coinbase,
+                    st.pity,
+                    st.league,
+                )
             } else {
                 match st.recent.iter().find(|r| r.merkle == merkle) {
-                    Some(r) => (r.txs.clone(), r.bonus, r.pot, r.coinbase, r.pity),
+                    Some(r) => (
+                        r.txs.clone(),
+                        r.bonus,
+                        r.pot,
+                        r.coinbase,
+                        r.pity,
+                        r.league,
+                    ),
                     None => {
                         // Unknown template (older than the ring): refuse
                         // rather than assemble a block whose merkle cannot
@@ -333,11 +360,22 @@ impl TemplateProvider for NodeProvider {
             // server splits these across the PPLNS window.
             bonus: if accepted { bonus } else { 0 },
             pot: if accepted { pot } else { 0 },
-            league_overflow: 0,
+            // League credit rides on the accepted template's advisory
+            // (the node computed it with the same consensus math).
+            league_overflow: if accepted { league } else { 0 },
             reserve: 0,
             coinbase: if accepted { coinbase } else { 0 },
         }
     }
+}
+
+/// Advisory league-pool overflow for the template's height (base units):
+/// the jackpot-levy slice that overflows the reserve cap and funds the
+/// league pool / Luckynode Draw budgets (doc 06 §6.2, internal/18).
+/// Nodes predating the field read as 0 (safe: no credit).
+#[must_use]
+pub fn parse_league_overflow(gbt: &serde_json::Value) -> u64 {
+    gbt.get("leagueoverflow").and_then(|v| v.as_u64()).unwrap_or(0)
 }
 
 /// Pre-committable draw digest (doc 06 rev 1.2): SHA256D over the parent
@@ -1023,6 +1061,17 @@ mod tests {
         // Tier = digest mod 100.
         assert_eq!(draw_class(&U256::from(1075u64), 100, 1000).tier, 75);
         assert_eq!(draw_class(&U256::from(1095u64), 100, 1000).tier, 95);
+    }
+
+    #[test]
+    fn league_overflow_parses_and_defaults_to_zero() {
+        let gbt: serde_json::Value = serde_json::from_str(GBT_FIXTURE).expect("fixture json");
+        // Old node (field absent): no league credit.
+        assert_eq!(parse_league_overflow(&gbt), 0);
+        // New node: the exact per-height overflow rides through.
+        let mut gbt2 = gbt.clone();
+        gbt2["leagueoverflow"] = serde_json::json!(50794u64);
+        assert_eq!(parse_league_overflow(&gbt2), 50794);
     }
 
     #[test]
