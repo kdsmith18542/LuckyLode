@@ -5,6 +5,12 @@
 //! pending-job queue so a rotation arriving between submit and ack is not
 //! lost), but over an encrypted [`V2Session`] and the Lucky extension
 //! messages. One standard channel per connection for this milestone.
+//!
+//! Target tracking: the pool sends vardiff retargets as core `SetTarget`
+//! immediately followed by a [`LuckyJob`] carrying the same target, and
+//! this client adopts the target from the job (the `SetTarget` itself is
+//! ignored here). That pairing is the pool's contract — see
+//! `handle_v2_conn`.
 
 use std::io;
 use std::net::{SocketAddr, TcpStream};
