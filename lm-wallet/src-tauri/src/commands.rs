@@ -160,6 +160,24 @@ pub fn game_info(state: State<'_, AppState>) -> Result<serde_json::Value, String
     Ok(json!({ "jackpot": jackpot, "mining": mining }))
 }
 
+/// Live emission phase (docs/04 §4.1) at the current tip.
+#[tauri::command]
+pub fn emission_info(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
+    let height = node::call(&state, "getblockcount", json!([]))?
+        .as_u64()
+        .ok_or("getblockcount: unexpected")?;
+    let e = crate::emission::emission(height);
+    Ok(json!({
+        "height": e.height,
+        "era": e.era,
+        "phase": e.phase,
+        "reward": e.reward,
+        "net": e.net,
+        "next_milestone": e.next_milestone.map(|(h, l)| json!({"height": h, "label": l})),
+        "progress": e.progress,
+    }))
+}
+
 /// The NEXT block's draw class (pre-committed: parent = current tip).
 #[tauri::command]
 pub fn next_draw(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
