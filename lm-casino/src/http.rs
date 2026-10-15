@@ -575,8 +575,15 @@ pub fn handle(app: &App, method: &str, path: &str, body: &str) -> (u16, &'static
             let luckynode_id = req
                 .get("luckynode")
                 .and_then(Value::as_str)
-                .map(str::to_string);
-            lock(&app.oracle).set_mapping(
+                .map(str::to_string)
+                .filter(|s| !s.is_empty());
+            let mut o = lock(&app.oracle);
+            // Empty worker + zero stake + no luckynode = unmap.
+            if worker.is_empty() && stake_micros == 0 && luckynode_id.is_none() {
+                let removed = o.remove_mapping(player);
+                return ok_json(json!({ "player": player, "mapped": false, "removed": removed }));
+            }
+            o.set_mapping(
                 player,
                 Mapping {
                     worker,
@@ -1220,6 +1227,38 @@ mod tests {
         assert_eq!(s, 200);
         let (_, t) = post(&a, "/api/tier", json!({"player": 1}));
         assert!(t["tier"]["level"].as_u64().unwrap() >= 1, "{t}");
+    }
+
+    #[test]
+    fn admin_map_can_be_cleared() {
+        let a = app();
+        post(&a, "/api/player", json!({"player": 5}));
+        let (s, m) = post(
+            &a,
+            "/api/admin/map",
+            json!({"token": "secret", "player": 5, "worker": "", "stake": "400"}),
+        );
+        assert_eq!(s, 200);
+        assert_eq!(m["mapped"], true);
+        let (_, t) = post(&a, "/api/tier", json!({"player": 5}));
+        assert_eq!(t["tier"]["level"].as_u64(), Some(1));
+        // Empty worker + zero stake + no luckynode = unmap.
+        let (s, m) = post(
+            &a,
+            "/api/admin/map",
+            json!({"token": "secret", "player": 5, "worker": "", "stake": "0"}),
+        );
+        assert_eq!(s, 200);
+        assert_eq!(m["removed"], true);
+        let (_, t) = post(&a, "/api/tier", json!({"player": 5}));
+        assert_eq!(t["tier"]["level"].as_u64(), Some(0));
+        // An empty luckynode string does not create a mapping either.
+        let (_, m) = post(
+            &a,
+            "/api/admin/map",
+            json!({"token": "secret", "player": 5, "worker": "", "stake": "0", "luckynode": ""}),
+        );
+        assert_eq!(m["removed"], false);
     }
 
     #[test]

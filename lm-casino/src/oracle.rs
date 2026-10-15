@@ -212,6 +212,11 @@ impl Oracle {
         self.mappings.insert(player, mapping);
     }
 
+    /// Remove a player's mapping (unmap). Returns whether one existed.
+    pub fn remove_mapping(&mut self, player: u64) -> bool {
+        self.mappings.remove(&player).is_some()
+    }
+
     /// Current mapping for a player.
     #[must_use]
     pub fn mapping(&self, player: u64) -> Option<&Mapping> {
