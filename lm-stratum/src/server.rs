@@ -19,10 +19,10 @@ use crate::v1::{
     Verdict,
 };
 use crate::v2::{
-    from_frame, to_frame, LuckyJob, LuckySubmit, OpenMiningChannelError, OpenStandardMiningChannel,
-    OpenStandardMiningChannelSuccess, SetTarget, SetupConnectionSuccess, SubmitSharesError,
-    SubmitSharesSuccess, MSG_CLOSE_CHANNEL, MSG_LUCKY_SUBMIT, MSG_OPEN_STANDARD_MINING_CHANNEL,
-    PROTOCOL_MINING,
+    from_frame, to_frame, CloseChannel, LuckyJob, LuckySubmit, OpenMiningChannelError,
+    OpenStandardMiningChannel, OpenStandardMiningChannelSuccess, SetTarget,
+    SetupConnectionSuccess, SubmitSharesError, SubmitSharesSuccess, MSG_CLOSE_CHANNEL,
+    MSG_LUCKY_SUBMIT, MSG_OPEN_STANDARD_MINING_CHANNEL, PROTOCOL_MINING,
 };
 use crate::v2_session::{accept_setup_connection, SessionError, V2Session};
 use crate::vardiff::{target_for_work, Vardiff};
@@ -574,55 +574,70 @@ fn issue_lucky_job(
     }
 }
 
+/// One open V2 standard channel on a connection: who it pays, its vardiff
+/// controller and target override, and which broadcast version it has
+/// seen. Channels are independent (a proxy can mine several workers down
+/// one Noise session); the job registry and dedupe stay connection- and
+/// pool-wide.
+struct V2Channel {
+    channel_id: u32,
+    miner_id: u64,
+    vardiff: Vardiff,
+    /// Active target override (target, template height).
+    vd_target: Option<([u8; 32], u64)>,
+    seen_version: u64,
+    sent_height: u64,
+}
+
 /// Send the current broadcast template as a [`LuckyJob`] when it is newer
-/// than `seen_version`. `vd_target` is the vardiff override, honored only
+/// than the channel's seen version. The vardiff override is honored only
 /// while it names the current height (a new template resets the channel
-/// to the template target, mirroring V1). Returns the new
-/// `(version, sent_height)` after a successful send; `None` when already
-/// current or the send failed. The V1 [`JobRegistry`] is reused with
-/// `v2-{job_id:08x}` ids so staleness, cross-connection dupe rejection
-/// and PoW evaluation are the exact V1 rules — one validation path for
-/// both wires.
+/// to the template target, mirroring V1). Returns whether a job was sent.
+/// The V1 [`JobRegistry`] is reused with `v2-{job_id:08x}` ids so
+/// staleness, cross-connection dupe rejection and PoW evaluation are the
+/// exact V1 rules — one validation path for both wires.
 fn send_lucky_job<P: TemplateProvider + 'static, S: Read + Write>(
     session: &mut V2Session<S>,
     shared: &Shared<P>,
     registry: &mut JobRegistry,
-    channel_id: u32,
-    seen_version: u64,
-    sent_height: u64,
-    vd_target: Option<([u8; 32], u64)>,
-) -> Option<(u64, u64)> {
+    channel: &mut V2Channel,
+) -> bool {
     let (cur, cur_version) = broadcast_job(shared);
-    if cur_version == seen_version {
-        return None;
+    if cur_version == channel.seen_version {
+        return false;
     }
-    let clean = cur.height != sent_height;
-    let target = match vd_target {
+    let clean = cur.height != channel.sent_height;
+    let target = match channel.vd_target {
         Some((t, h)) if h == cur.height => t,
         _ => cur.pool_target,
     };
     let job = issue_lucky_job(
         &shared.job_counter,
         registry,
-        channel_id,
+        channel.channel_id,
         &cur,
         target,
         clean,
     );
-    session.send(&to_frame(&job)).ok()?;
-    Some((cur_version, cur.height))
+    if session.send(&to_frame(&job)).is_err() {
+        return false;
+    }
+    channel.seen_version = cur_version;
+    channel.sent_height = cur.height;
+    true
 }
 
 /// V2 connection handler (behind `--v2-bind`): Noise NX handshake, version
-/// negotiation, channel open, then [`LuckyJob`] dispatch and
-/// [`LuckySubmit`] validation. Auth mirrors V1 (`auth_ok`): the worker name
-/// is `OpenStandardMiningChannel.user_identity` and the pool password /
+/// negotiation, then any number of standard channels on the one encrypted
+/// session: [`LuckyJob`] dispatch and [`LuckySubmit`] validation per
+/// channel. Auth mirrors V1 (`auth_ok`): the worker name is
+/// `OpenStandardMiningChannel.user_identity` and the pool password /
 /// worker token rides in `SetupConnection.device_id` (the only free-form
-/// client-chosen string in the V2 handshake). One standard channel per
-/// connection for this milestone. Vardiff mirrors V1 (same controller,
-/// same 20 s/share target): retargets send core `SetTarget` plus a fresh
-/// same-header job, and a new template resets the channel to the template
-/// target.
+/// client-chosen string in the V2 handshake). Each channel has its own
+/// vardiff controller; the registry, dedupe, ledger and balances are
+/// shared. Vardiff mirrors V1 (same controller, same 20 s/share target):
+/// retargets send core `SetTarget` plus a fresh same-header job, and a new
+/// template resets the channel to the template target.
 fn handle_v2_conn<P: TemplateProvider + 'static>(
     stream: TcpStream,
     shared: Arc<Shared<P>>,
@@ -652,94 +667,21 @@ fn handle_v2_conn<P: TemplateProvider + 'static>(
         Ok(s) => s,
         Err(_) => return,
     };
-    // Channel open + auth.
-    let open_frame = match session.recv() {
-        Ok(f) => f,
-        Err(_) => return,
-    };
-    if open_frame.msg_type != MSG_OPEN_STANDARD_MINING_CHANNEL {
-        return;
-    }
-    let open = match from_frame::<OpenStandardMiningChannel>(&open_frame) {
-        Ok(o) => o,
-        Err(_) => return,
-    };
-    if !auth_ok(
-        shared.worker_tokens.as_ref(),
-        shared.pool_password.as_deref(),
-        &open.user_identity,
-        &setup.device_id,
-    ) {
-        let _ = session.send(&to_frame(&OpenMiningChannelError {
-            request_id: open.request_id,
-            error_code: "invalid credentials".to_string(),
-        }));
-        return;
-    }
-    let miner_id = worker_id(&open.user_identity);
-    shared.workers.lock().expect("workers").authorized(
-        miner_id,
-        &open.user_identity,
-        &format!("v2 {} {}", setup.vendor, setup.hardware_version),
-        now_secs(),
-    );
-    let channel_id = shared.job_counter.fetch_add(1, Ordering::SeqCst) as u32;
-    let (cur, _) = broadcast_job(&shared);
-    if session
-        .send(&to_frame(&OpenStandardMiningChannelSuccess {
-            request_id: open.request_id,
-            channel_id,
-            target: cur.pool_target,
-            extranonce_prefix: Vec::new(),
-            group_channel_id: 0,
-        }))
-        .is_err()
-    {
-        return;
-    }
-    // 16 jobs of registry window, matching the V1 connection lifetime.
+    // Open channels on this connection (usually one; a proxy may open
+    // several workers down one Noise session). The registry window (16
+    // jobs) is connection-wide and matches the V1 connection lifetime;
+    // job ids are unique per connection through the shared counter.
     let mut registry = JobRegistry::new(16);
-    let mut seen_version = 0u64;
-    let mut sent_height = 0u64;
-    // Per-channel vardiff (same controller and pacing as V1) plus the
-    // active target override (target, template height).
-    let mut vardiff = Vardiff::new();
-    let mut vd_target: Option<([u8; 32], u64)> = None;
-    // The broadcast always has a job (seeded at startup); a failed first
-    // send means a dead peer.
-    match send_lucky_job(
-        &mut session,
-        &shared,
-        &mut registry,
-        channel_id,
-        seen_version,
-        sent_height,
-        vd_target,
-    ) {
-        Some((v, h)) => {
-            seen_version = v;
-            sent_height = h;
-        }
-        None => return,
-    }
+    let mut channels: HashMap<u32, V2Channel> = HashMap::new();
 
     loop {
         if shared.shutdown.load(Ordering::Relaxed) {
             break;
         }
-        // Fresh jobs first: a rotation between the last recv and this
-        // submit must reach the miner before its ack does.
-        if let Some((v, h)) = send_lucky_job(
-            &mut session,
-            &shared,
-            &mut registry,
-            channel_id,
-            seen_version,
-            sent_height,
-            vd_target,
-        ) {
-            seen_version = v;
-            sent_height = h;
+        // Fresh jobs first, on every open channel: a rotation between the
+        // last recv and this submit must reach the miner before its ack.
+        for ch in channels.values_mut() {
+            send_lucky_job(&mut session, &shared, &mut registry, ch);
         }
         // Timeout ticks are the job-poll heartbeat (same 100 ms cadence as
         // V1's read tick). Sends are single write_all calls on both sides,
@@ -756,14 +698,81 @@ fn handle_v2_conn<P: TemplateProvider + 'static>(
             Err(_) => break,
         };
         match frame.msg_type {
+            MSG_OPEN_STANDARD_MINING_CHANNEL => {
+                let open = match from_frame::<OpenStandardMiningChannel>(&frame) {
+                    Ok(o) => o,
+                    Err(_) => continue,
+                };
+                if !auth_ok(
+                    shared.worker_tokens.as_ref(),
+                    shared.pool_password.as_deref(),
+                    &open.user_identity,
+                    &setup.device_id,
+                ) {
+                    // Refused, but the connection stays up: other channels
+                    // (or a corrected retry) are unaffected.
+                    let _ = session.send(&to_frame(&OpenMiningChannelError {
+                        request_id: open.request_id,
+                        error_code: "invalid credentials".to_string(),
+                    }));
+                    continue;
+                }
+                let miner_id = worker_id(&open.user_identity);
+                shared.workers.lock().expect("workers").authorized(
+                    miner_id,
+                    &open.user_identity,
+                    &format!("v2 {} {}", setup.vendor, setup.hardware_version),
+                    now_secs(),
+                );
+                let channel_id = shared.job_counter.fetch_add(1, Ordering::SeqCst) as u32;
+                let (cur, _) = broadcast_job(&shared);
+                if session
+                    .send(&to_frame(&OpenStandardMiningChannelSuccess {
+                        request_id: open.request_id,
+                        channel_id,
+                        target: cur.pool_target,
+                        extranonce_prefix: Vec::new(),
+                        group_channel_id: 0,
+                    }))
+                    .is_err()
+                {
+                    break;
+                }
+                let mut ch = V2Channel {
+                    channel_id,
+                    miner_id,
+                    vardiff: Vardiff::new(),
+                    vd_target: None,
+                    seen_version: 0,
+                    sent_height: 0,
+                };
+                // The broadcast always has a job (seeded at startup); a
+                // failed first send means a dead peer.
+                if !send_lucky_job(&mut session, &shared, &mut registry, &mut ch) {
+                    break;
+                }
+                channels.insert(channel_id, ch);
+            }
             MSG_LUCKY_SUBMIT => {
                 let sub = match from_frame::<LuckySubmit>(&frame) {
                     Ok(s) => s,
                     Err(_) => continue,
                 };
-                if sub.channel_id != channel_id {
+                let Some(ch) = channels.get_mut(&sub.channel_id) else {
+                    // Unknown (closed or never opened): say so explicitly
+                    // and keep the connection up.
+                    let nack = SubmitSharesError {
+                        channel_id: sub.channel_id,
+                        sequence_number: sub.sequence_number,
+                        error_code: "unknown channel".to_string(),
+                    };
+                    if session.send(&to_frame(&nack)).is_err() {
+                        break;
+                    }
                     continue;
-                }
+                };
+                let channel_id = ch.channel_id;
+                let miner_id = ch.miner_id;
                 let id = format!("v2-{:08x}", sub.job_id);
                 let nonce_hex = format!("{:016x}", sub.nonce);
                 let (verdict, submit) = {
@@ -799,9 +808,9 @@ fn handle_v2_conn<P: TemplateProvider + 'static>(
                         // Vardiff: adapt this channel's pool target on the
                         // same template (mirrors V1). The miner keeps its
                         // nonce cursor: same header, fresh job id.
-                        if let Some(new_work) = vardiff.record(now, work) {
+                        if let Some(new_work) = ch.vardiff.record(now, work) {
                             let new_target = target_for_work(new_work);
-                            vd_target = Some((new_target, s.job.height));
+                            ch.vd_target = Some((new_target, s.job.height));
                             if session
                                 .send(&to_frame(&SetTarget {
                                     channel_id,
@@ -846,7 +855,14 @@ fn handle_v2_conn<P: TemplateProvider + 'static>(
                     }
                 }
             }
-            MSG_CLOSE_CHANNEL => break,
+            MSG_CLOSE_CHANNEL => {
+                // Drop that one channel; the connection stays up — the
+                // client may open another.
+                if let Ok(close) = from_frame::<CloseChannel>(&frame) {
+                    channels.remove(&close.channel_id);
+                }
+                continue;
+            }
             // Ignore anything else (future extensions must not kill the
             // connection).
             _ => continue,
@@ -1491,6 +1507,143 @@ mod auth_tests {
         assert_eq!(job2.header, job.header, "same template, new target");
         assert_eq!(job2.pool_target, st.maximum_target);
         assert!(!job2.clean, "same height is not clean");
+        server.stop();
+    }
+
+    /// Several channels share one Noise session: two workers open, submit,
+    /// and accrue independently; closing one channel answers later submits
+    /// with "unknown channel" while the other keeps mining.
+    #[test]
+    fn v2_multi_channel_routing_and_close() {
+        use crate::v2::{
+            CloseChannel, LuckyJob, LuckySubmit, OpenStandardMiningChannel,
+            OpenStandardMiningChannelSuccess, SetupConnection, SubmitSharesError,
+            SubmitSharesSuccess, MSG_LUCKY_JOB, MSG_SUBMIT_SHARES_ERROR,
+            MSG_SUBMIT_SHARES_SUCCESS, PROTOCOL_MINING,
+        };
+        use std::net::TcpStream;
+        use std::time::Duration;
+
+        // Tight net target: shares accept, never blocks → height static, no
+        // rotation jobs interleave.
+        let provider =
+            crate::provider::MockProvider::new([0xffu8; 32], [0x00u8; 32], 1_000_000, 0);
+        let mut server = spawn_server(provider, "127.0.0.1:0", None, None, None).expect("spawn");
+        let authority = crate::v2_session::generate_authority();
+        let v2_addr = server
+            .spawn_v2_listener("127.0.0.1:0", authority, Duration::from_secs(3600))
+            .expect("v2 listen");
+        let stream = TcpStream::connect(v2_addr).expect("connect");
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .expect("timeout");
+        let mut session =
+            crate::v2_session::V2Session::connect(stream, Some(authority.0)).expect("handshake");
+        crate::v2_session::setup_connection(
+            &mut session,
+            &SetupConnection {
+                protocol: PROTOCOL_MINING,
+                min_version: 2,
+                max_version: 2,
+                flags: 0,
+                endpoint_host: "x".to_string(),
+                endpoint_port: 1,
+                vendor: "t".to_string(),
+                hardware_version: "cpu".to_string(),
+                firmware: "0.2".to_string(),
+                device_id: "x".to_string(),
+            },
+        )
+        .expect("negotiate");
+
+        // Open two channels (request ids keep the successes distinct).
+        for (req, worker) in [(1u32, "mchan-a"), (2, "mchan-b")] {
+            session
+                .send(&crate::v2::to_frame(&OpenStandardMiningChannel {
+                    request_id: req,
+                    user_identity: worker.to_string(),
+                    nominal_hash_rate: 0.0,
+                    max_target: [0xffu8; 32],
+                }))
+                .expect("open");
+        }
+        let mut chan_jobs = Vec::new();
+        for req in [1u32, 2] {
+            let success = crate::v2::from_frame::<OpenStandardMiningChannelSuccess>(
+                &session.recv().expect("open success"),
+            )
+            .expect("decode open");
+            assert_eq!(success.request_id, req);
+            let job_frame = session.recv().expect("job");
+            assert_eq!(job_frame.msg_type, MSG_LUCKY_JOB);
+            let job = LuckyJob::from_frame(&job_frame).expect("decode job");
+            assert_eq!(job.channel_id, success.channel_id);
+            chan_jobs.push((success.channel_id, job));
+        }
+        assert_ne!(
+            chan_jobs[0].0, chan_jobs[1].0,
+            "channels must be distinct"
+        );
+        let (chan_a, job_a) = chan_jobs[0].clone();
+        let (chan_b, job_b) = chan_jobs[1].clone();
+
+        // One share each (distinct nonces: the header is shared, so the
+        // same nonce twice would be one duplicate, not two shares).
+        for (ch, job, seq, nonce) in [
+            (chan_a, &job_a, 0u32, 0u64),
+            (chan_b, &job_b, 0u32, 5u64),
+        ] {
+            session
+                .send(&crate::v2::to_frame(&LuckySubmit {
+                    channel_id: ch,
+                    job_id: job.job_id,
+                    sequence_number: seq,
+                    nonce,
+                }))
+                .expect("submit");
+            let ack = session.recv().expect("ack");
+            assert_eq!(ack.msg_type, MSG_SUBMIT_SHARES_SUCCESS);
+            let ok = SubmitSharesSuccess::from_frame(&ack).expect("decode ack");
+            assert_eq!(ok.last_sequence_number, seq);
+        }
+        assert_eq!(server.stats().shares, 2);
+        let snap = server.workers(now_secs());
+        for worker in ["mchan-a", "mchan-b"] {
+            let w = snap.iter().find(|w| w.name == worker).expect("worker");
+            assert_eq!(w.shares, 1, "{worker} must own exactly its share");
+        }
+
+        // Close A: later submits there name the problem; B is unaffected.
+        session
+            .send(&crate::v2::to_frame(&CloseChannel {
+                channel_id: chan_a,
+                reason_code: "done".to_string(),
+            }))
+            .expect("close");
+        session
+            .send(&crate::v2::to_frame(&LuckySubmit {
+                channel_id: chan_a,
+                job_id: job_a.job_id,
+                sequence_number: 1,
+                nonce: 1,
+            }))
+            .expect("submit on closed");
+        let nack = session.recv().expect("nack");
+        assert_eq!(nack.msg_type, MSG_SUBMIT_SHARES_ERROR);
+        let err = SubmitSharesError::from_frame(&nack).expect("decode nack");
+        assert_eq!(err.error_code, "unknown channel");
+        session
+            .send(&crate::v2::to_frame(&LuckySubmit {
+                channel_id: chan_b,
+                job_id: job_b.job_id,
+                sequence_number: 1,
+                nonce: 6,
+            }))
+            .expect("submit on B");
+        let ack = session.recv().expect("ack B");
+        assert_eq!(ack.msg_type, MSG_SUBMIT_SHARES_SUCCESS);
+        assert_eq!(server.stats().shares, 3);
+        assert_eq!(server.stats().rejects, 0);
         server.stop();
     }
 }

@@ -4,7 +4,8 @@
 //! Mirrors [`crate::client::PoolClient`] semantics (strictly sequential; a
 //! pending-job queue so a rotation arriving between submit and ack is not
 //! lost), but over an encrypted [`V2Session`] and the Lucky extension
-//! messages. One standard channel per connection for this milestone.
+//! messages. This client opens a single standard channel; the pool accepts
+//! several per connection (proxy use) — open once and mine.
 //!
 //! Target tracking: the pool sends vardiff retargets as core `SetTarget`
 //! immediately followed by a [`LuckyJob`] carrying the same target, and
