@@ -3,6 +3,7 @@
 mod commands;
 mod config;
 mod draws;
+mod emission;
 mod luckynode;
 mod miner;
 mod node;
@@ -49,6 +50,7 @@ fn main() {
             commands::new_address,
             commands::send,
             commands::game_info,
+            commands::emission_info,
             commands::next_draw,
             commands::luckynodes,
             commands::pool_stats,

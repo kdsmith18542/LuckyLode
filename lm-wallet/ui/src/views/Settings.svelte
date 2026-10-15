@@ -1,9 +1,17 @@
 <script lang="ts">
   import * as api from "../lib/api";
+  import { getTheme, setTheme } from "../lib/theme";
   let cfg = $state<any>({ rpc_url: "", rpc_user: "", rpc_pass: "", pool_url: "" });
   let saved = $state("");
   let err = $state("");
   let test = $state("");
+  let theme = $state<"dark" | "light">(getTheme());
+
+  function onTheme(e: Event) {
+    const t = (e.currentTarget as HTMLSelectElement).value === "light" ? "light" : "dark";
+    theme = t;
+    setTheme(t);
+  }
 
   $effect(() => {
     api
@@ -52,6 +60,11 @@
   <input id="p" bind:value={cfg.rpc_pass} type="password" />
   <label for="pool">pool API URL</label>
   <input id="pool" bind:value={cfg.pool_url} spellcheck="false" />
+  <label for="th">theme</label>
+  <select id="th" value={theme} onchange={onTheme}>
+    <option value="dark">dark</option>
+    <option value="light">light</option>
+  </select>
   <div class="row" style="margin-top:14px">
     <button class="btn primary" onclick={save}>Save</button>
     <button class="btn" onclick={testConn}>Test connection</button>

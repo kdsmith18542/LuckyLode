@@ -66,6 +66,7 @@ CPU/OpenCL — GPU device picker, batch (MiB VRAM), NVIDIA power limit,
 duty + temperature guard, live hashrate/shares/temp/power/log — same
 engine as the reference `lm-miner`; live-verified CPU 846 H/s and GPU
 10.9 kH/s with accepted shares), luckynode list + register + embedded
-service, game stats, settings. Packaged: deb + AppImage (click-to-run
-verified). Next (M3–M5 in the spec): luckynode wizard, luck chart,
-notifications, themes, OS keyring.
+service, game stats (**live emission phase**, **luck chart**, draws,
+league read-only), settings (**dark/light theme**). Packaged: deb +
+AppImage (click-to-run verified). Next (M3–M5 in the spec): luckynode
+wizard, OS notifications, FAQ, OS keyring.

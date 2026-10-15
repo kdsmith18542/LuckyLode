@@ -7,12 +7,19 @@
   import Game from "./views/Game.svelte";
   import Settings from "./views/Settings.svelte";
   import * as api from "./lib/api";
+  import { getTheme, setTheme } from "./lib/theme";
 
   let view = $state("overview");
   let status = $state<any>(null);
   let draw = $state<any>(null);
   let svc = $state<any>(null);
   let err = $state("");
+  let theme = $state<"dark" | "light">(getTheme());
+
+  function toggleTheme() {
+    theme = theme === "dark" ? "light" : "dark";
+    setTheme(theme);
+  }
 
   const nav: [string, string][] = [
     ["overview", "Overview"],
@@ -74,6 +81,14 @@
             : "node offline"}
         </span>
       {/if}
+      <button
+        class="btn"
+        style="margin-left:auto"
+        title="switch theme"
+        onclick={toggleTheme}
+      >
+        {theme === "dark" ? "☀ light" : "☾ dark"}
+      </button>
     </div>
 
     {#if next?.jackpot}

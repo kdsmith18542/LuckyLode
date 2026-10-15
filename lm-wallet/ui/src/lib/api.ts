@@ -15,6 +15,7 @@ export const txDetail = (txid: string) => invoke<Json>("tx_detail", { txid });
 export const newAddress = () => invoke<string>("new_address");
 export const send = (to: string, amount: string) => invoke<string>("send", { to, amount });
 export const gameInfo = () => invoke<Json>("game_info");
+export const emission = () => invoke<Json>("emission_info");
 export const nextDraw = () => invoke<Json>("next_draw");
 export const luckynodes = () => invoke<Json>("luckynodes");
 export const poolStats = () => invoke<Json>("pool_stats");
