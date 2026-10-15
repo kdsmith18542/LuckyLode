@@ -3,6 +3,8 @@
 //! server, and a blocking client.
 //!
 //! - [`v1`]: protocol types, job registry, share evaluation, JSON-RPC shapes.
+//! - [`v2`]: Stratum V2 framing + core message codec (the framing
+//!   milestone; V1 remains the live wire until Noise/V2 negotiation lands).
 //! - [`provider`]: [`provider::TemplateProvider`] seam + [`provider::MockProvider`].
 //! - [`server`]: [`server::spawn_server`] — testnet-in-a-box reference pool.
 //! - [`client`]: blocking client for tooling and the e2e suite.
@@ -19,5 +21,6 @@ pub mod server;
 pub mod tls;
 pub mod tx;
 pub mod v1;
+pub mod v2;
 pub mod vardiff;
 pub mod workerstats;
