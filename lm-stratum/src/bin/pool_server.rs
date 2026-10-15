@@ -142,6 +142,7 @@ footer{margin-top:26px;color:var(--dim);font-size:12px;line-height:1.5}
 <script>
 const esc=v=>String(v??'-');
 const coin=v=>typeof v==='number'?(v/1e8).toLocaleString(undefined,{maximumFractionDigits:2}):'-';
+const coin8=v=>typeof v==='number'?(v/1e8).toLocaleString(undefined,{maximumFractionDigits:8}):'-';
  const hs=v=>{v=Number(v)||0;if(v>=1e6)return (v/1e6).toFixed(2)+' MH/s';if(v>=1e3)return (v/1e3).toFixed(1)+' kH/s';return v.toFixed(0)+' H/s';};
  const num=v=>{v=Number(v)||0;if(v>=1e6)return (v/1e6).toFixed(2)+'M';if(v>=1e3)return (v/1e3).toFixed(1)+'k';return v.toFixed(2);};
 const ago=s=>{if(!s)return '-';const d=Math.max(0,Math.floor(Date.now()/1000-s));if(d<60)return d+'s';if(d<3600)return Math.floor(d/60)+'m';return Math.floor(d/3600)+'h';};
@@ -193,13 +194,13 @@ async function tick(){
   if(j.luckynode){
     const L=j.luckynode;
     const draws=(L.recent_draws||[]).map(d=>
-      `<tr><td>${esc(d.epoch)}</td><td>${esc((d.winner||'').slice(0,12))}&hellip;</td><td>${coin(d.budget)}</td><td>${esc(d.txid)}</td></tr>`).join('')
-      || '<tr><td colspan="4">no draws yet</td></tr>';
+      `<tr><td>${esc(d.epoch)}</td><td>${esc((d.winner||'').slice(0,12))}&hellip;</td><td>${coin8(d.budget)}</td><td>${esc(d.cosigns||0)}</td><td>${esc(d.txid)}</td></tr>`).join('')
+      || '<tr><td colspan="5">no draws yet</td></tr>';
     document.getElementById('luckynodes').innerHTML=
       `<div class="grid"><div class="card"><div class="k">nodes</div><div class="v">${esc(L.nodes)}</div></div>`+
       `<div class="card"><div class="k">active</div><div class="v">${esc(L.active)}</div></div>`+
       `<div class="card"><div class="k">pending cosigns</div><div class="v">${esc(L.pending_cosigns)}</div></div></div>`+
-      `<table><thead><tr><th>epoch</th><th>winner</th><th>budget</th><th>txid</th></tr></thead><tbody>${draws}</tbody></table>`;
+      `<table><thead><tr><th>epoch</th><th>winner</th><th>budget</th><th>cosigns</th><th>txid</th></tr></thead><tbody>${draws}</tbody></table>`;
   }
   const mode=j.mode||'';
   const claimNote = (mode.includes('pot') || mode.includes('jackpot'))
@@ -366,11 +367,19 @@ fn stats_json<P: TemplateProvider + 'static>(
             .map(|d| {
                 serde_json::json!({
                     "epoch": d.epoch, "height": d.height, "winner": d.winner,
-                    "budget": d.budget, "txid": d.txid,
+                    "budget": d.budget, "txid": d.txid, "cosigns": d.cosigns,
                 })
             })
             .collect();
-        let pending: usize = shared.pending.lock().expect("pending").len();
+        // Only events still awaiting their first cosign count as pending;
+        // cosigned entries stay in the list as evidence.
+        let pending: usize = shared
+            .pending
+            .lock()
+            .expect("pending")
+            .iter()
+            .filter(|p| p.cosigns.is_empty())
+            .count();
         obj["luckynode"] = serde_json::json!({
             "enabled": true,
             "nodes": nodes.len(),
@@ -801,6 +810,10 @@ struct DrawRecord {
     budget: u64,
     txid: String,
     time: u64,
+    /// Cosigns received for this draw (notarization evidence; absent in
+    /// old state files → 0).
+    #[serde(default)]
+    cosigns: u32,
 }
 
 /// Pool-side luckynode state, shared by the HTTP thread and the draw loop.
@@ -912,6 +925,23 @@ fn luckynode_tick<P: TemplateProvider + 'static>(
                 cfg.slice_bps,
                 (cur_epoch + 1) * cfg.epoch
             );
+            // Reconcile state written before the `cosigns` field existed:
+            // stamp draw records from already-cosigned pending entries.
+            {
+                let pend = shared.pending.lock().expect("pending");
+                let mut draws = shared.recent_draws.lock().expect("draws");
+                for p in pend.iter() {
+                    if p.cosigns.is_empty() {
+                        continue;
+                    }
+                    if let Some(d) = draws
+                        .iter_mut()
+                        .find(|d| format!("draw-{}", d.epoch) == p.draw_id)
+                    {
+                        d.cosigns = p.cosigns.len() as u32;
+                    }
+                }
+            }
         }
     }
     // Draw every completable epoch past `last` (normally exactly one).
@@ -933,6 +963,78 @@ fn luckynode_tick<P: TemplateProvider + 'static>(
         // broke above, so highest_done >= 0 always holds here.
         run_draw(server, rpc, shared, history, next, height, now);
         *shared.last_epoch.lock().expect("last epoch") = Some(next);
+    }
+    // Held draw payments: the wallet was empty or the coinbases were
+    // immature when the draw fired (testnet ramp). Retry whenever there
+    // is spendable balance; update the record on success. Addresses come
+    // from the registry, so records predating any address field still pay.
+    if cfg.exec {
+        let spendable = rpc
+            .call("getbalance", serde_json::json!([]))
+            .ok()
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.0);
+        if spendable > 0.0 {
+            let held: Vec<(String, u64, u64)> = {
+                let draws = shared.recent_draws.lock().expect("draws");
+                draws
+                    .iter()
+                    .filter(|d| {
+                        d.txid.starts_with("held:") && d.budget > 0 && !d.winner.is_empty()
+                    })
+                    .map(|d| (d.winner.clone(), d.budget, d.epoch))
+                    .collect()
+            };
+            for (winner_id, budget, epoch) in held {
+                let addr = {
+                    let reg = shared.registry.lock().expect("registry");
+                    reg.all_nodes()
+                        .iter()
+                        .find(|n| n.id == winner_id)
+                        .map(|n| n.address.clone())
+                        .unwrap_or_default()
+                };
+                if addr.is_empty() {
+                    continue;
+                }
+                let coins = lm_pool::payout::format_coins(budget);
+                match rpc.call("sendtoaddress", serde_json::json!([addr, coins])) {
+                    Ok(v) => {
+                        let t = v.as_str().unwrap_or("").to_string();
+                        println!(
+                            "luckynode: held draw {epoch} for {winner_id} ({addr}) paid {coins} tx {t}"
+                        );
+                        {
+                            let mut h = history.lock().expect("payout history");
+                            h.push_back(PayoutRecord {
+                                time: now,
+                                miner: u64::MAX,
+                                name: format!("luckynode-draw:{addr}"),
+                                amount: budget,
+                                txid: t.clone(),
+                            });
+                            while h.len() > 100 {
+                                h.pop_front();
+                            }
+                        }
+                        let mut draws = shared.recent_draws.lock().expect("draws");
+                        for d in draws.iter_mut() {
+                            if d.epoch == epoch && d.txid.starts_with("held:") {
+                                d.txid = t.clone();
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        let mut draws = shared.recent_draws.lock().expect("draws");
+                        for d in draws.iter_mut() {
+                            if d.epoch == epoch && d.txid.starts_with("held:") {
+                                d.txid = format!("held: {e}");
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -1051,6 +1153,7 @@ fn run_draw<P: TemplateProvider + 'static>(
             budget,
             txid: txid.clone(),
             time: now,
+            cosigns: 0,
         });
         while draws.len() > 20 {
             draws.pop_front();
@@ -1257,6 +1360,19 @@ fn luckynode_notarize(ctx: &HttpCtx, body: &str) -> (bool, String) {
     }
     if !p.cosigns.iter().any(|(i, _)| i == id) {
         p.cosigns.push((id.to_string(), sig.to_string()));
+    }
+    // Stamp the draw record: the notarization count must outlive the
+    // pending list (which is capped) and show up in the draw table.
+    {
+        let want = p.draw_id.clone();
+        let n = p.cosigns.len() as u32;
+        let mut draws = shared.recent_draws.lock().expect("draws");
+        if let Some(d) = draws
+            .iter_mut()
+            .find(|d| format!("draw-{}", d.epoch) == want)
+        {
+            d.cosigns = n;
+        }
     }
     (
         true,
