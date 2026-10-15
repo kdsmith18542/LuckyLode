@@ -227,6 +227,21 @@ fn base58_decode(s: &str) -> Result<Vec<u8>, String> {
     Ok(out)
 }
 
+/// Derive a stable pool authority keypair from a 32-byte secret (the
+/// `--v2-authority-key` flag): `(x-only public, secret)`. The public key is
+/// what miners pin (or the pool publishes as a §4.7 URL key).
+///
+/// # Errors
+/// When the secret is not a valid secp256k1 scalar (all-zero or ≥ order).
+pub fn authority_from_secret(secret: &[u8; 32]) -> Result<([u8; 32], [u8; 32]), String> {
+    let secp = secp256k1::Secp256k1::new();
+    let sk = secp256k1::SecretKey::from_slice(secret)
+        .map_err(|e| format!("authority secret: {e}"))?;
+    let kp = secp256k1::Keypair::from_secret_key(&secp, &sk);
+    let (xonly, _parity) = kp.x_only_public_key();
+    Ok((xonly.serialize(), kp.secret_bytes()))
+}
+
 /// 32 random bytes for an authority secret (`/dev/urandom`; a hashed
 /// time/pid fallback keeps non-unix builds working — testnet-grade, the same
 /// posture as the casino's seed generator).
@@ -391,6 +406,17 @@ impl<S: Read + Write> V2Session<S> {
     }
 }
 
+impl V2Session<std::net::TcpStream> {
+    /// Read timeout control for the miner's poll loop (short timeouts make
+    /// `recv` return a timeout error the caller treats as "no job yet").
+    pub fn set_read_timeout(
+        &self,
+        dur: Option<std::time::Duration>,
+    ) -> std::io::Result<()> {
+        self.stream.set_read_timeout(dur)
+    }
+}
+
 /// Miner side of version negotiation: send `SetupConnection` and read the
 /// pool's reply.
 ///
@@ -536,6 +562,19 @@ mod tests {
             firmware: "0.2".to_string(),
             device_id: "rig-1".to_string(),
         }
+    }
+
+    #[test]
+    fn authority_from_secret_derives_the_pinned_key() {
+        let secret = [0x11u8; 32];
+        let (public, back) = authority_from_secret(&secret).expect("valid scalar");
+        assert_eq!(back, secret);
+        // The pool publishes the URL key; the miner parses it back.
+        let url = authority_url_key(&public);
+        assert_eq!(parse_authority_url_key(&url).expect("parse"), public);
+        // Degenerate secrets are refused, never silently mapped.
+        assert!(authority_from_secret(&[0u8; 32]).is_err());
+        assert!(authority_from_secret(&[0xffu8; 32]).is_err());
     }
 
     #[test]

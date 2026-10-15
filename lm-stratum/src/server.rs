@@ -18,12 +18,19 @@ use crate::v1::{
     error_response, notify, response, work_for_share, worker_id, Dedupe, Job, JobRegistry, Message,
     Verdict,
 };
+use crate::v2::{
+    from_frame, to_frame, LuckyJob, LuckySubmit, OpenMiningChannelError, OpenStandardMiningChannel,
+    OpenStandardMiningChannelSuccess, SetupConnectionSuccess, SubmitSharesError,
+    SubmitSharesSuccess, MSG_CLOSE_CHANNEL, MSG_LUCKY_SUBMIT, MSG_OPEN_STANDARD_MINING_CHANNEL,
+    PROTOCOL_MINING,
+};
+use crate::v2_session::{accept_setup_connection, SessionError, V2Session};
 use crate::vardiff::{target_for_work, Vardiff};
 use crate::workerstats::{WorkerSnapshot, WorkerStats};
 use lm_pool::ledger::{Ledger, MinerAgg, ShareRec, PPLNS_WINDOW_SECS as LEDGER_PPLNS};
 use lm_pool::payout::PayoutLedger;
 use std::collections::{HashMap, VecDeque};
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::sync::{
     atomic::{AtomicBool, AtomicU64, Ordering},
@@ -234,6 +241,74 @@ fn refresh_loop<P: TemplateProvider + 'static>(shared: Arc<Shared<P>>) {
     }
 }
 
+/// Shared money path for an accepted block-finding share (V1 and V2 call
+/// this — one code path mints money): chain submission is authoritative,
+/// then the league credit, the jackpot/pot PPLNS splits, per-miner value
+/// accounting, and the block record. A share the chain rejects (height
+/// raced) is still an accepted share — the pool's check is advisory, the
+/// chain's authoritative, and only the chain mints money.
+fn apply_block_found<P: TemplateProvider + 'static>(
+    shared: &Shared<P>,
+    miner_id: u64,
+    job: &Job,
+    nonce: u64,
+) {
+    let outcome = shared
+        .provider
+        .lock()
+        .expect("provider")
+        .submit_block(&job.header, job.height, nonce);
+    if outcome.accepted {
+        let now = now_secs();
+        let mut ledger = shared.ledger.lock().expect("ledger");
+        ledger.credit_league(outcome.league_overflow);
+        // Both claimed amounts split over the PPLNS window (each with the
+        // reference sqrt/cap rules); the combined list is what pays out.
+        let mut payouts = ledger.jackpot_payout(outcome.bonus, LEDGER_PPLNS, now);
+        payouts.extend(ledger.jackpot_payout(outcome.pot, LEDGER_PPLNS, now));
+        // Per-miner value accounting (internal/17 §17.4): the normal block
+        // value by PPLNS weight plus the block's own split payouts.
+        let weights: Vec<(u64, u64)> = ledger
+            .aggregate(LEDGER_PPLNS, now)
+            .iter()
+            .map(|a| (a.miner, a.eff_work))
+            .collect();
+        let mut balances = shared.balances.lock().expect("balances");
+        let fee = *shared.pool_fee.lock().expect("pool fee");
+        balances.credit_block(outcome.coinbase, &weights, fee);
+        balances.credit_split(&payouts);
+        if let Some((dev_id, pp)) = *shared.dev_fee.lock().expect("dev fee") {
+            let dev = outcome.coinbase as u128 * u64::from(pp) as u128
+                / lm_pool::payout::FEE_DENOM_PERMYRIAD as u128;
+            let moved = balances.allocate_dev(dev_id, dev as u64);
+            if moved > 0 {
+                eprintln!(
+                    "dev fee: {} -> miner {} ({} blocks paid)",
+                    moved,
+                    dev_id,
+                    shared.blocks.lock().expect("blocks").len()
+                );
+            }
+        }
+        drop(balances);
+        let mut blocks = shared.blocks.lock().expect("blocks");
+        blocks.push_back(BlockRecord {
+            height: job.height,
+            finder: miner_id,
+            value: outcome.coinbase,
+            bonus: outcome.bonus,
+            pot: outcome.pot,
+            league_overflow: outcome.league_overflow,
+            payouts,
+        });
+        while blocks.len() > BLOCK_HISTORY_CAP {
+            blocks.pop_front();
+        }
+        drop(blocks);
+        shared.stats.lock().expect("stats").blocks += 1;
+    }
+}
+
 fn handle_conn<P: TemplateProvider + 'static>(stream: TcpStream, shared: Arc<Shared<P>>) {
     let _ = stream.set_read_timeout(Some(Duration::from_millis(100)));
     let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
@@ -436,64 +511,7 @@ fn handle_conn<P: TemplateProvider + 'static>(stream: TcpStream, shared: Arc<Sha
                             let _ = writeln!(stream.get_mut(), "{}", notify(&derived, false));
                         }
                         if matches!(verdict, Verdict::Accept { block: true }) {
-                            let outcome = shared.provider.lock().expect("provider").submit_block(
-                                &s.job.header,
-                                s.job.height,
-                                s.nonce,
-                            );
-                            if outcome.accepted {
-                                let mut ledger = shared.ledger.lock().expect("ledger");
-                                ledger.credit_league(outcome.league_overflow);
-                                // Both claimed amounts split over the PPLNS
-                                // window (each with the reference sqrt/cap
-                                // rules); the combined list is what pays out.
-                                let mut payouts =
-                                    ledger.jackpot_payout(outcome.bonus, LEDGER_PPLNS, now);
-                                payouts.extend(ledger.jackpot_payout(
-                                    outcome.pot,
-                                    LEDGER_PPLNS,
-                                    now,
-                                ));
-                                // Per-miner value accounting (internal/17 §17.4):
-                                // the normal block value by PPLNS weight plus
-                                // the block's own split payouts.
-                                let weights: Vec<(u64, u64)> = ledger
-                                    .aggregate(LEDGER_PPLNS, now)
-                                    .iter()
-                                    .map(|a| (a.miner, a.eff_work))
-                                    .collect();
-                                let mut balances = shared.balances.lock().expect("balances");
-                                let fee = *shared.pool_fee.lock().expect("pool fee");
-                                balances.credit_block(outcome.coinbase, &weights, fee);
-                                balances.credit_split(&payouts);
-                                if let Some((dev_id, pp)) = *shared.dev_fee.lock().expect("dev fee") {
-                                    let dev = outcome.coinbase as u128 * u64::from(pp) as u128
-                                        / lm_pool::payout::FEE_DENOM_PERMYRIAD as u128;
-                                    let moved = balances.allocate_dev(dev_id, dev as u64);
-                                    if moved > 0 {
-                                        eprintln!(
-                                            "dev fee: {} -> miner {} ({} blocks paid)",
-                                            moved, dev_id, shared.blocks.lock().expect("blocks").len()
-                                        );
-                                    }
-                                }
-                                drop(balances);
-                                let mut blocks = shared.blocks.lock().expect("blocks");
-                                blocks.push_back(BlockRecord {
-                                    height: s.job.height,
-                                    finder: miner_id,
-                                    value: outcome.coinbase,
-                                    bonus: outcome.bonus,
-                                    pot: outcome.pot,
-                                    league_overflow: outcome.league_overflow,
-                                    payouts,
-                                });
-                                while blocks.len() > BLOCK_HISTORY_CAP {
-                                    blocks.pop_front();
-                                }
-                                drop(blocks);
-                                shared.stats.lock().expect("stats").blocks += 1;
-                            }
+                            apply_block_found(&shared, miner_id, &s.job, s.nonce);
                         }
                         let _ =
                             writeln!(stream.get_mut(), "{}", response(&id, serde_json::Value::Bool(true)));
@@ -524,12 +542,261 @@ fn handle_conn<P: TemplateProvider + 'static>(stream: TcpStream, shared: Arc<Sha
     }
 }
 
+/// Send the current broadcast template as a [`LuckyJob`] when it is newer
+/// than `seen_version`. Returns the new `(version, sent_height)` after a
+/// successful send; `None` when already current or the send failed. The V1
+/// [`JobRegistry`] is reused with `v2-{job_id:08x}` ids so staleness,
+/// cross-connection dupe rejection and PoW evaluation are the exact V1
+/// rules — one validation path for both wires.
+fn send_lucky_job<P: TemplateProvider + 'static, S: Read + Write>(
+    session: &mut V2Session<S>,
+    shared: &Shared<P>,
+    registry: &mut JobRegistry,
+    channel_id: u32,
+    seen_version: u64,
+    sent_height: u64,
+) -> Option<(u64, u64)> {
+    let (cur, cur_version) = broadcast_job(shared);
+    if cur_version == seen_version {
+        return None;
+    }
+    let job_id = shared.job_counter.fetch_add(1, Ordering::SeqCst) as u32;
+    let clean = cur.height != sent_height;
+    registry.issue(Job {
+        id: format!("v2-{job_id:08x}"),
+        header: cur.header.clone(),
+        height: cur.height,
+        pool_target: cur.pool_target,
+        net_target: cur.net_target,
+    });
+    session
+        .send(&to_frame(&LuckyJob {
+            channel_id,
+            job_id,
+            height: cur.height,
+            header: cur.header.clone(),
+            pool_target: cur.pool_target,
+            net_target: cur.net_target,
+            clean,
+        }))
+        .ok()?;
+    Some((cur_version, cur.height))
+}
+
+/// V2 connection handler (behind `--v2-bind`): Noise NX handshake, version
+/// negotiation, channel open, then [`LuckyJob`] dispatch and
+/// [`LuckySubmit`] validation. Auth mirrors V1 (`auth_ok`): the worker name
+/// is `OpenStandardMiningChannel.user_identity` and the pool password /
+/// worker token rides in `SetupConnection.device_id` (the only free-form
+/// client-chosen string in the V2 handshake). One standard channel per
+/// connection for this milestone; vardiff retargets are a follow-up (the
+/// channel keeps the template target).
+fn handle_v2_conn<P: TemplateProvider + 'static>(
+    stream: TcpStream,
+    shared: Arc<Shared<P>>,
+    authority: ([u8; 32], [u8; 32]),
+    cert_validity: Duration,
+) {
+    let _ = stream.set_nodelay(true);
+    // Handshake bound: a port scan that connects and says nothing must not
+    // park a thread forever.
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
+    let mut session = match V2Session::accept(stream, authority, cert_validity) {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+    let _ = session.set_read_timeout(Some(Duration::from_millis(100)));
+    // Version negotiation: mining protocol, must span version 2.
+    let setup = match accept_setup_connection(&mut session, |s| {
+        if s.protocol != PROTOCOL_MINING || s.max_version < 2 || s.min_version > 2 {
+            Err((0, "unsupported protocol/version (need mining v2)".to_string()))
+        } else {
+            Ok(SetupConnectionSuccess {
+                used_version: 2,
+                flags: 0,
+            })
+        }
+    }) {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+    // Channel open + auth.
+    let open_frame = match session.recv() {
+        Ok(f) => f,
+        Err(_) => return,
+    };
+    if open_frame.msg_type != MSG_OPEN_STANDARD_MINING_CHANNEL {
+        return;
+    }
+    let open = match from_frame::<OpenStandardMiningChannel>(&open_frame) {
+        Ok(o) => o,
+        Err(_) => return,
+    };
+    if !auth_ok(
+        shared.worker_tokens.as_ref(),
+        shared.pool_password.as_deref(),
+        &open.user_identity,
+        &setup.device_id,
+    ) {
+        let _ = session.send(&to_frame(&OpenMiningChannelError {
+            request_id: open.request_id,
+            error_code: "invalid credentials".to_string(),
+        }));
+        return;
+    }
+    let miner_id = worker_id(&open.user_identity);
+    shared.workers.lock().expect("workers").authorized(
+        miner_id,
+        &open.user_identity,
+        &format!("v2 {} {}", setup.vendor, setup.hardware_version),
+        now_secs(),
+    );
+    let channel_id = shared.job_counter.fetch_add(1, Ordering::SeqCst) as u32;
+    let (cur, _) = broadcast_job(&shared);
+    if session
+        .send(&to_frame(&OpenStandardMiningChannelSuccess {
+            request_id: open.request_id,
+            channel_id,
+            target: cur.pool_target,
+            extranonce_prefix: Vec::new(),
+            group_channel_id: 0,
+        }))
+        .is_err()
+    {
+        return;
+    }
+    // 16 jobs of registry window, matching the V1 connection lifetime.
+    let mut registry = JobRegistry::new(16);
+    let mut seen_version = 0u64;
+    let mut sent_height = 0u64;
+    // The broadcast always has a job (seeded at startup); a failed first
+    // send means a dead peer.
+    match send_lucky_job(
+        &mut session,
+        &shared,
+        &mut registry,
+        channel_id,
+        seen_version,
+        sent_height,
+    ) {
+        Some((v, h)) => {
+            seen_version = v;
+            sent_height = h;
+        }
+        None => return,
+    }
+
+    loop {
+        if shared.shutdown.load(Ordering::Relaxed) {
+            break;
+        }
+        // Fresh jobs first: a rotation between the last recv and this
+        // submit must reach the miner before its ack does.
+        if let Some((v, h)) = send_lucky_job(
+            &mut session,
+            &shared,
+            &mut registry,
+            channel_id,
+            seen_version,
+            sent_height,
+        ) {
+            seen_version = v;
+            sent_height = h;
+        }
+        // Timeout ticks are the job-poll heartbeat (same 100 ms cadence as
+        // V1's read tick). Sends are single write_all calls on both sides,
+        // so a timeout means silence, not a trickled frame — nothing
+        // partial is lost by continuing here.
+        let frame = match session.recv() {
+            Ok(f) => f,
+            Err(SessionError::Io(e))
+                if e.kind() == std::io::ErrorKind::WouldBlock
+                    || e.kind() == std::io::ErrorKind::TimedOut =>
+            {
+                continue
+            }
+            Err(_) => break,
+        };
+        match frame.msg_type {
+            MSG_LUCKY_SUBMIT => {
+                let sub = match from_frame::<LuckySubmit>(&frame) {
+                    Ok(s) => s,
+                    Err(_) => continue,
+                };
+                if sub.channel_id != channel_id {
+                    continue;
+                }
+                let id = format!("v2-{:08x}", sub.job_id);
+                let nonce_hex = format!("{:016x}", sub.nonce);
+                let (verdict, submit) = {
+                    let mut dedupe = shared.dedupe.lock().expect("dedupe");
+                    registry.evaluate(&id, &nonce_hex, &mut dedupe)
+                };
+                let (accept, err) = verdict.response();
+                match (accept, submit) {
+                    (true, Some(s)) => {
+                        let now = now_secs();
+                        let work = work_for_share(&s.job.pool_target);
+                        shared.ledger.lock().expect("ledger").submit(ShareRec {
+                            miner: miner_id,
+                            ts: now,
+                            work,
+                            overnight: false,
+                        });
+                        shared.stats.lock().expect("stats").shares += 1;
+                        shared
+                            .workers
+                            .lock()
+                            .expect("workers")
+                            .accepted(miner_id, work, now);
+                        let ack = SubmitSharesSuccess {
+                            channel_id,
+                            last_sequence_number: sub.sequence_number,
+                            new_submits_accepted_count: 1,
+                            new_shares_sum: work,
+                        };
+                        if session.send(&to_frame(&ack)).is_err() {
+                            break;
+                        }
+                        if matches!(verdict, Verdict::Accept { block: true }) {
+                            apply_block_found(&shared, miner_id, &s.job, s.nonce);
+                        }
+                    }
+                    _ => {
+                        shared.stats.lock().expect("stats").rejects += 1;
+                        shared
+                            .workers
+                            .lock()
+                            .expect("workers")
+                            .rejected(miner_id, now_secs());
+                        let (_, code) = err.unwrap_or((-32600, "invalid submit".to_string()));
+                        let nack = SubmitSharesError {
+                            channel_id,
+                            sequence_number: sub.sequence_number,
+                            error_code: code,
+                        };
+                        if session.send(&to_frame(&nack)).is_err() {
+                            break;
+                        }
+                    }
+                }
+            }
+            MSG_CLOSE_CHANNEL => break,
+            // Ignore anything else (future extensions must not kill the
+            // connection).
+            _ => continue,
+        }
+    }
+}
+
 /// A running reference pool.
 pub struct RunningServer<P: TemplateProvider + 'static> {
     addr: SocketAddr,
     shared: Arc<Shared<P>>,
     accept: Option<JoinHandle<()>>,
     refresh: Option<JoinHandle<()>>,
+    /// V2 (Noise) accept loop; `None` until [`RunningServer::spawn_v2_listener`].
+    v2_accept: Option<JoinHandle<()>>,
 }
 
 impl<P: TemplateProvider + 'static> RunningServer<P> {
@@ -741,9 +1008,52 @@ impl<P: TemplateProvider + 'static> RunningServer<P> {
         if let Some(h) = self.accept.take() {
             let _ = h.join();
         }
+        if let Some(h) = self.v2_accept.take() {
+            let _ = h.join();
+        }
         if let Some(h) = self.refresh.take() {
             let _ = h.join();
         }
+    }
+
+    /// Serve Stratum V2 (Noise NX + Lucky jobs) on `addr`, sharing this
+    /// server's provider, ledger, broadcast, dedupe and balances — one
+    /// money path for V1 and V2 miners. Behind the pool's `--v2-bind`
+    /// flag; V1 stays the default wire.
+    ///
+    /// # Errors
+    /// When `addr` cannot be bound.
+    pub fn spawn_v2_listener(
+        &mut self,
+        addr: &str,
+        authority: ([u8; 32], [u8; 32]),
+        cert_validity: Duration,
+    ) -> std::io::Result<SocketAddr> {
+        let listener = TcpListener::bind(addr)?;
+        listener.set_nonblocking(true)?;
+        let local = listener.local_addr()?;
+        let shared = Arc::clone(&self.shared);
+        let handle = std::thread::spawn(move || {
+            while !shared.shutdown.load(Ordering::Relaxed) {
+                match listener.accept() {
+                    Ok((stream, _)) => {
+                        let s = shared.clone();
+                        std::thread::spawn(move || {
+                            handle_v2_conn(stream, s, authority, cert_validity)
+                        });
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(Duration::from_millis(20));
+                    }
+                    Err(e) => {
+                        eprintln!("pool(v2): accept error (continuing): {e}");
+                        std::thread::sleep(Duration::from_millis(20));
+                    }
+                }
+            }
+        });
+        self.v2_accept = Some(handle);
+        Ok(local)
     }
 }
 
@@ -830,6 +1140,7 @@ pub fn spawn_server<P: TemplateProvider + 'static>(
         shared,
         accept: Some(accept),
         refresh: Some(refresh),
+        v2_accept: None,
     })
 }
 

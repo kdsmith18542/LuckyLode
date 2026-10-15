@@ -54,6 +54,18 @@ pub const MSG_SUBMIT_SHARES_ERROR: u8 = 0x1d;
 pub const MSG_SET_NEW_PREV_HASH: u8 = 0x20;
 pub const MSG_SET_TARGET: u8 = 0x21;
 
+/// Lucky Lode extension type (`"LL"`): core messages carry the Noise
+/// handshake and channel open/acks, but the core `NewMiningJob` (merkle +
+/// version + ntime) cannot express a LuckyHash template (opaque 109-byte
+/// header, height-bound salt, u64 nonce domain). Extension jobs carry the
+/// full template; shares carry the u64 nonce. Acks reuse the core
+/// `SubmitShares.Success/Error` types.
+pub const EXTENSION_LUCKY: u16 = 0x4C4C;
+/// Lucky job: full header template for a channel (extension message).
+pub const MSG_LUCKY_JOB: u8 = 0x00;
+/// Lucky share submit with the u64 grind nonce (extension message).
+pub const MSG_LUCKY_SUBMIT: u8 = 0x01;
+
 /// Protocol discriminant for `SetupConnection.protocol` (mining).
 pub const PROTOCOL_MINING: u8 = 0;
 
@@ -290,6 +302,11 @@ impl Writer {
         self.u8(b.len().min(255) as u8);
         self.buf.extend_from_slice(&b[..b.len().min(255)]);
     }
+    fn bytes_u16(&mut self, b: &[u8]) {
+        assert!(b.len() <= u16::MAX as usize, "bytes_u16 too long");
+        self.u16(b.len() as u16);
+        self.buf.extend_from_slice(b);
+    }
     fn option_u32(&mut self, v: Option<u32>) {
         match v {
             Some(x) => {
@@ -362,6 +379,10 @@ impl<'a> Reader<'a> {
         }
         Ok(self.take(n, field)?.to_vec())
     }
+    fn bytes_u16(&mut self, field: &'static str) -> Result<Vec<u8>, CodecError> {
+        let n = self.u16(field)? as usize;
+        Ok(self.take(n, field)?.to_vec())
+    }
     fn option_u32(&mut self, field: &'static str) -> Result<Option<u32>, CodecError> {
         match self.u8(field)? {
             0 => Ok(None),
@@ -378,8 +399,10 @@ impl<'a> Reader<'a> {
     }
 }
 
-/// A typed core-protocol message.
+/// A typed protocol message. `EXTENSION` selects the namespace (core spec
+/// vs Lucky extension); `CHANNEL_MSG` sets the channel bit.
 pub(crate) trait Message: Sized {
+    const EXTENSION: u16;
     const MSG_TYPE: u8;
     const CHANNEL_MSG: bool;
     fn encode_payload(&self, w: &mut Writer);
@@ -389,11 +412,11 @@ pub(crate) trait Message: Sized {
 pub(crate) fn to_frame<M: Message>(m: &M) -> Frame {
     let mut w = Writer::new();
     m.encode_payload(&mut w);
-    Frame::new(EXTENSION_TYPE_CORE, M::MSG_TYPE, M::CHANNEL_MSG, w.buf)
+    Frame::new(M::EXTENSION, M::MSG_TYPE, M::CHANNEL_MSG, w.buf)
 }
 
 pub(crate) fn from_frame<M: Message>(f: &Frame) -> Result<M, CodecError> {
-    if f.extension() != EXTENSION_TYPE_CORE {
+    if f.extension() != M::EXTENSION {
         return Err(CodecError::WrongExtension(f.extension()));
     }
     if f.msg_type != M::MSG_TYPE {
@@ -423,6 +446,7 @@ pub struct SetupConnection {
 }
 
 impl Message for SetupConnection {
+    const EXTENSION: u16 = EXTENSION_TYPE_CORE;
     const MSG_TYPE: u8 = MSG_SETUP_CONNECTION;
     const CHANNEL_MSG: bool = false;
     fn encode_payload(&self, w: &mut Writer) {
@@ -461,6 +485,7 @@ pub struct SetupConnectionSuccess {
 }
 
 impl Message for SetupConnectionSuccess {
+    const EXTENSION: u16 = EXTENSION_TYPE_CORE;
     const MSG_TYPE: u8 = MSG_SETUP_CONNECTION_SUCCESS;
     const CHANNEL_MSG: bool = false;
     fn encode_payload(&self, w: &mut Writer) {
@@ -483,6 +508,7 @@ pub struct SetupConnectionError {
 }
 
 impl Message for SetupConnectionError {
+    const EXTENSION: u16 = EXTENSION_TYPE_CORE;
     const MSG_TYPE: u8 = MSG_SETUP_CONNECTION_ERROR;
     const CHANNEL_MSG: bool = false;
     fn encode_payload(&self, w: &mut Writer) {
@@ -509,6 +535,7 @@ pub struct OpenStandardMiningChannel {
 }
 
 impl Message for OpenStandardMiningChannel {
+    const EXTENSION: u16 = EXTENSION_TYPE_CORE;
     const MSG_TYPE: u8 = MSG_OPEN_STANDARD_MINING_CHANNEL;
     const CHANNEL_MSG: bool = false;
     fn encode_payload(&self, w: &mut Writer) {
@@ -544,6 +571,7 @@ pub struct OpenStandardMiningChannelSuccess {
 }
 
 impl Message for OpenStandardMiningChannelSuccess {
+    const EXTENSION: u16 = EXTENSION_TYPE_CORE;
     const MSG_TYPE: u8 = MSG_OPEN_STANDARD_MINING_CHANNEL_SUCCESS;
     const CHANNEL_MSG: bool = false;
     fn encode_payload(&self, w: &mut Writer) {
@@ -576,6 +604,7 @@ pub struct SubmitSharesStandard {
 }
 
 impl Message for SubmitSharesStandard {
+    const EXTENSION: u16 = EXTENSION_TYPE_CORE;
     const MSG_TYPE: u8 = MSG_SUBMIT_SHARES_STANDARD;
     const CHANNEL_MSG: bool = true;
     fn encode_payload(&self, w: &mut Writer) {
@@ -608,6 +637,7 @@ pub struct SubmitSharesSuccess {
 }
 
 impl Message for SubmitSharesSuccess {
+    const EXTENSION: u16 = EXTENSION_TYPE_CORE;
     const MSG_TYPE: u8 = MSG_SUBMIT_SHARES_SUCCESS;
     const CHANNEL_MSG: bool = true;
     fn encode_payload(&self, w: &mut Writer) {
@@ -635,6 +665,7 @@ pub struct SubmitSharesError {
 }
 
 impl Message for SubmitSharesError {
+    const EXTENSION: u16 = EXTENSION_TYPE_CORE;
     const MSG_TYPE: u8 = MSG_SUBMIT_SHARES_ERROR;
     const CHANNEL_MSG: bool = true;
     fn encode_payload(&self, w: &mut Writer) {
@@ -663,6 +694,7 @@ pub struct NewMiningJob {
 }
 
 impl Message for NewMiningJob {
+    const EXTENSION: u16 = EXTENSION_TYPE_CORE;
     const MSG_TYPE: u8 = MSG_NEW_MINING_JOB;
     const CHANNEL_MSG: bool = true;
     fn encode_payload(&self, w: &mut Writer) {
@@ -693,6 +725,7 @@ pub struct SetNewPrevHash {
 }
 
 impl Message for SetNewPrevHash {
+    const EXTENSION: u16 = EXTENSION_TYPE_CORE;
     const MSG_TYPE: u8 = MSG_SET_NEW_PREV_HASH;
     const CHANNEL_MSG: bool = true;
     fn encode_payload(&self, w: &mut Writer) {
@@ -719,6 +752,7 @@ pub struct SetTarget {
 }
 
 impl Message for SetTarget {
+    const EXTENSION: u16 = EXTENSION_TYPE_CORE;
     const MSG_TYPE: u8 = MSG_SET_TARGET;
     const CHANNEL_MSG: bool = true;
     fn encode_payload(&self, w: &mut Writer) {
@@ -741,6 +775,7 @@ pub struct CloseChannel {
 }
 
 impl Message for CloseChannel {
+    const EXTENSION: u16 = EXTENSION_TYPE_CORE;
     const MSG_TYPE: u8 = MSG_CLOSE_CHANNEL;
     const CHANNEL_MSG: bool = true;
     fn encode_payload(&self, w: &mut Writer) {
@@ -751,6 +786,122 @@ impl Message for CloseChannel {
         Ok(Self {
             channel_id: r.u32("channel_id")?,
             reason_code: r.str0_255("reason_code")?,
+        })
+    }
+}
+
+/// §5.3.4 — channel open refused (request-scoped, not channel-scoped).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpenMiningChannelError {
+    pub request_id: u32,
+    pub error_code: String,
+}
+
+impl Message for OpenMiningChannelError {
+    const EXTENSION: u16 = EXTENSION_TYPE_CORE;
+    const MSG_TYPE: u8 = MSG_OPEN_MINING_CHANNEL_ERROR;
+    const CHANNEL_MSG: bool = false;
+    fn encode_payload(&self, w: &mut Writer) {
+        w.u32(self.request_id);
+        w.str0_255(&self.error_code);
+    }
+    fn decode_payload(r: &mut Reader<'_>) -> Result<Self, CodecError> {
+        Ok(Self {
+            request_id: r.u32("request_id")?,
+            error_code: r.str0_255("error_code")?,
+        })
+    }
+}
+
+// ---- Lucky Lode extension messages (EXTENSION_LUCKY) ----
+//
+// The core `NewMiningJob` (merkle root + version + ntime) assumes a
+// Bitcoin header the miner reconstructs. LuckyHash grinds an opaque
+// template header (doc 05 Addendum A, 109 bytes) with a u64 nonce domain
+// and a height-bound salt, so the pool ships the whole template and the
+// miner submits the u64 nonce. Acks reuse the core
+// `SubmitShares.Success/Error` types unchanged.
+
+/// Lucky job: full header template for one channel.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LuckyJob {
+    pub channel_id: u32,
+    pub job_id: u32,
+    /// Chain height the template is for (the LuckyHash salt binds it).
+    pub height: u64,
+    /// Opaque header template bytes (the grind domain appends the nonce).
+    pub header: Vec<u8>,
+    pub pool_target: [u8; 32],
+    pub net_target: [u8; 32],
+    /// True when the height changed (miner resets its nonce cursor).
+    pub clean: bool,
+}
+
+impl Message for LuckyJob {
+    const EXTENSION: u16 = EXTENSION_LUCKY;
+    const MSG_TYPE: u8 = MSG_LUCKY_JOB;
+    const CHANNEL_MSG: bool = true;
+    fn encode_payload(&self, w: &mut Writer) {
+        w.u32(self.channel_id);
+        w.u32(self.job_id);
+        w.u64(self.height);
+        w.bytes_u16(&self.header);
+        w.u256(&self.pool_target);
+        w.u256(&self.net_target);
+        w.u8(u8::from(self.clean));
+    }
+    fn decode_payload(r: &mut Reader<'_>) -> Result<Self, CodecError> {
+        let channel_id = r.u32("channel_id")?;
+        let job_id = r.u32("job_id")?;
+        let height = r.u64("height")?;
+        let header = r.bytes_u16("header")?;
+        if header.is_empty() {
+            return Err(CodecError::InvalidValue("header"));
+        }
+        let pool_target = r.u256("pool_target")?;
+        let net_target = r.u256("net_target")?;
+        let clean = match r.u8("clean")? {
+            0 => false,
+            1 => true,
+            _ => return Err(CodecError::InvalidValue("clean")),
+        };
+        Ok(Self {
+            channel_id,
+            job_id,
+            height,
+            header,
+            pool_target,
+            net_target,
+            clean,
+        })
+    }
+}
+
+/// Lucky share submit: the u64 grind nonce for a job.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LuckySubmit {
+    pub channel_id: u32,
+    pub job_id: u32,
+    pub sequence_number: u32,
+    pub nonce: u64,
+}
+
+impl Message for LuckySubmit {
+    const EXTENSION: u16 = EXTENSION_LUCKY;
+    const MSG_TYPE: u8 = MSG_LUCKY_SUBMIT;
+    const CHANNEL_MSG: bool = true;
+    fn encode_payload(&self, w: &mut Writer) {
+        w.u32(self.channel_id);
+        w.u32(self.job_id);
+        w.u32(self.sequence_number);
+        w.u64(self.nonce);
+    }
+    fn decode_payload(r: &mut Reader<'_>) -> Result<Self, CodecError> {
+        Ok(Self {
+            channel_id: r.u32("channel_id")?,
+            job_id: r.u32("job_id")?,
+            sequence_number: r.u32("sequence_number")?,
+            nonce: r.u64("nonce")?,
         })
     }
 }
@@ -782,6 +933,7 @@ typed_api!(
     SetupConnectionError,
     OpenStandardMiningChannel,
     OpenStandardMiningChannelSuccess,
+    OpenMiningChannelError,
     SubmitSharesStandard,
     SubmitSharesSuccess,
     SubmitSharesError,
@@ -789,6 +941,8 @@ typed_api!(
     SetNewPrevHash,
     SetTarget,
     CloseChannel,
+    LuckyJob,
+    LuckySubmit,
 );
 
 #[cfg(test)]
@@ -1045,6 +1199,88 @@ mod tests {
                 Err(CodecError::InvalidValue("nominal_hash_rate"))
             );
         }
+    }
+
+    #[test]
+    fn lucky_job_and_submit_roundtrip_with_kat() {
+        let job = LuckyJob {
+            channel_id: 1,
+            job_id: 9,
+            height: 1234,
+            header: vec![0xabu8; 109],
+            pool_target: [0x01; 32],
+            net_target: [0x00; 32],
+            clean: true,
+        };
+        let f = job.to_frame();
+        assert_eq!(f.extension_type, EXTENSION_LUCKY | CHANNEL_MSG_BIT);
+        assert_eq!(f.msg_type, MSG_LUCKY_JOB);
+        // Layout: channel(4) job(4) height(8) header_len(2)+109 pool(32)
+        // net(32) clean(1).
+        assert_eq!(f.payload.len(), 4 + 4 + 8 + 2 + 109 + 32 + 32 + 1);
+        assert_eq!(&f.payload[..4], &1u32.to_le_bytes());
+        assert_eq!(&f.payload[4..8], &9u32.to_le_bytes());
+        assert_eq!(&f.payload[8..16], &1234u64.to_le_bytes());
+        assert_eq!(&f.payload[16..18], &109u16.to_le_bytes());
+        assert_eq!(f.payload[16 + 2 + 109 + 64], 0x01);
+        assert_eq!(LuckyJob::from_frame(&f).expect("decode"), job);
+        // Empty header is refused (nothing to grind).
+        let mut bad = f.clone();
+        bad.payload[16..18].copy_from_slice(&0u16.to_le_bytes());
+        bad.payload.drain(18..18 + 109);
+        // Fix the length in a rebuilt frame (payload shrank by 109).
+        let short = Frame::new(EXTENSION_LUCKY, MSG_LUCKY_JOB, true, bad.payload);
+        assert_eq!(
+            LuckyJob::from_frame(&short),
+            Err(CodecError::InvalidValue("header"))
+        );
+        // Bad clean discriminant is refused.
+        let mut bad_clean = job.to_frame();
+        let at = bad_clean.payload.len() - 1;
+        bad_clean.payload[at] = 2;
+        assert_eq!(
+            LuckyJob::from_frame(&bad_clean),
+            Err(CodecError::InvalidValue("clean"))
+        );
+        // Core decoders reject the Lucky extension and vice versa.
+        assert_eq!(
+            SetupConnectionSuccess::from_frame(&job.to_frame()),
+            Err(CodecError::WrongExtension(EXTENSION_LUCKY))
+        );
+
+        let sub = LuckySubmit {
+            channel_id: 1,
+            job_id: 9,
+            sequence_number: 3,
+            nonce: 0xdead_beef_1234_5678,
+        };
+        let sf = sub.to_frame();
+        assert_eq!(sf.extension_type, EXTENSION_LUCKY | CHANNEL_MSG_BIT);
+        assert_eq!(sf.msg_type, MSG_LUCKY_SUBMIT);
+        assert_eq!(sf.payload.len(), 4 + 4 + 4 + 8);
+        assert_eq!(&sf.payload[..4], &1u32.to_le_bytes());
+        assert_eq!(&sf.payload[4..8], &9u32.to_le_bytes());
+        assert_eq!(&sf.payload[8..12], &3u32.to_le_bytes());
+        assert_eq!(
+            &sf.payload[12..20],
+            &0xdead_beef_1234_5678u64.to_le_bytes()
+        );
+        assert_eq!(LuckySubmit::from_frame(&sf).expect("decode"), sub);
+    }
+
+    #[test]
+    fn open_channel_error_roundtrip() {
+        let e = OpenMiningChannelError {
+            request_id: 42,
+            error_code: "invalid credentials".to_string(),
+        };
+        let f = e.to_frame();
+        assert_eq!(f.msg_type, MSG_OPEN_MINING_CHANNEL_ERROR);
+        assert!(!f.channel_msg());
+        assert_eq!(
+            OpenMiningChannelError::from_frame(&f).expect("decode"),
+            e
+        );
     }
 
     #[test]

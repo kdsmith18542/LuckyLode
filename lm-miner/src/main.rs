@@ -25,7 +25,7 @@ use std::time::Duration;
 const USAGE: &str = "usage:
   lm-miner bench [--threads N] [--hashes N] [--height H] [--header HEX] [--json] [--device auto|cpu|opencl] [--gpu-platform N] [--gpu-device N] [--gpu-batch N]
   lm-miner mine --header HEX --height H --target (HEX64 | nbits:XXXXXXXX | max) [--threads N] [--start N] [--count N] [--max-temp C] [--duty N] [--device auto|cpu|opencl] [--gpu-platform N] [--gpu-device N] [--gpu-batch N]
-  lm-miner pool --pool HOST:PORT --worker NAME [--agent STR] [--threads N] [--start N] [--count N] [--max-shares N] [--job-timeout SECS] [--max-temp C] [--duty N] [--device auto|cpu|opencl] [--gpu-platform N] [--gpu-device N] [--gpu-batch N] [--password PASS] [--dev-fee-pct N] [--dev-address ADDR] [--tls [--tls-ca PEM] [--tls-server-name NAME] | --tls-insecure]
+  lm-miner pool --pool HOST:PORT --worker NAME [--agent STR] [--threads N] [--start N] [--count N] [--max-shares N] [--job-timeout SECS] [--max-temp C] [--duty N] [--device auto|cpu|opencl] [--gpu-platform N] [--gpu-device N] [--gpu-batch N] [--password PASS] [--dev-fee-pct N] [--dev-address ADDR] [--tls [--tls-ca PEM] [--tls-server-name NAME] | --tls-insecure] [--v2 [--v2-authority URLKEY|HEX]]
   lm-miner gpu-test [--platform N] [--device N]
 
 bench defaults: threads=auto, hashes=3/thread, height=1, 80-byte 0x00..0x4F header.
@@ -525,6 +525,13 @@ struct PoolOpts {
     tls_server_name: Option<String>,
     /// Pool password sent in `mining.authorize` (see pool `--pool-password`).
     password: String,
+    /// Speak Stratum V2 (Noise NX + Lucky jobs) instead of V1. The pool
+    /// must serve it (`--v2-bind`); the password/token rides as the V2
+    /// device id.
+    v2: bool,
+    /// Pool authority key to pin (§4.7 URL key or 64 hex chars). Unset =
+    /// encrypted but unauthenticated (local testing only).
+    v2_authority: Option<String>,
     /// Dev-fee percent of hash time (0-100, default 1.0; 0 opts out).
     dev_fee_pct: f64,
     /// Dev address the fee time mines to (required for the fee to apply).
@@ -550,6 +557,8 @@ fn parse_pool(args: &[String]) -> Result<PoolOpts, String> {
     let mut tls_insecure = false;
     let mut tls_server_name: Option<String> = None;
     let mut password = "x".to_string();
+    let mut v2 = false;
+    let mut v2_authority: Option<String> = None;
     let mut dev_fee_pct = 1.0f64;
     let mut dev_address: Option<String> = None;
     let mut i = 0;
@@ -592,6 +601,15 @@ fn parse_pool(args: &[String]) -> Result<PoolOpts, String> {
             "--password" => {
                 i += 1;
                 password = args.get(i).ok_or("--password needs a value")?.to_string();
+            }
+            "--v2" => v2 = true,
+            "--v2-authority" => {
+                i += 1;
+                v2_authority = Some(
+                    args.get(i)
+                        .ok_or("--v2-authority needs a value")?
+                        .to_string(),
+                );
             }
             "--dev-fee-pct" => {
                 i += 1;
@@ -686,6 +704,8 @@ fn parse_pool(args: &[String]) -> Result<PoolOpts, String> {
         tls_insecure,
         tls_server_name,
         password,
+        v2,
+        v2_authority,
         dev_fee_pct,
         dev_address,
     })
@@ -761,6 +781,24 @@ fn run_pool(o: &PoolOpts) -> ExitCode {
         };
         format!("{} {}", o.agent, device)
     };
+    if o.v2 {
+        let authority = match &o.v2_authority {
+            Some(s) => match parse_v2_authority(s) {
+                Ok(k) => Some(k),
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    return ExitCode::from(2);
+                }
+            },
+            None => {
+                eprintln!(
+                    "warning: no --v2-authority: encrypted but unauthenticated (local testing only)"
+                );
+                None
+            }
+        };
+        return run_pool_v2(o, backend, policy, agent, pool_host, addr, authority);
+    }
     let mut submitted = 0u64;
     let mut accepted = 0u64;
     // Grind each job in CHUNKS and adopt newer jobs as they arrive: one
@@ -992,6 +1030,269 @@ fn run_pool(o: &PoolOpts) -> ExitCode {
     }
 }
 
+/// V2 pool session (behind `--v2`): Noise handshake, version negotiation,
+/// channel open, then the same chunked grind as V1 over [`LuckyJob`]
+/// templates with u64 submits. Dev-fee rotation, backoff reconnects,
+/// thermal policy and counters mirror [`run_pool`] — the wire is the only
+/// difference.
+fn run_pool_v2(
+    o: &PoolOpts,
+    backend: Backend,
+    policy: MiningPolicy,
+    agent: String,
+    pool_host: String,
+    addr: SocketAddr,
+    authority: Option<[u8; 32]>,
+) -> ExitCode {
+    use lm_stratum::v2::{SetupConnection, PROTOCOL_MINING};
+    use lm_stratum::v2_client::V2Client;
+    let device = match &backend {
+        Backend::Gpu(_) => "opencl",
+        Backend::Cpu { .. } => "cpu",
+    };
+    let setup = SetupConnection {
+        protocol: PROTOCOL_MINING,
+        min_version: 2,
+        max_version: 2,
+        flags: 0,
+        endpoint_host: pool_host.clone(),
+        endpoint_port: addr.port(),
+        vendor: "lm-miner".to_string(),
+        hardware_version: device.to_string(),
+        firmware: "0.2".to_string(),
+        // The pool authenticates the worker against the same password /
+        // worker-token map as V1; V2 has no password field, so the token
+        // rides in the free-form device id.
+        device_id: o.password.clone(),
+    };
+    let _ = &agent;
+    let mut submitted = 0u64;
+    let mut accepted = 0u64;
+    const CHUNK: u64 = 65_536;
+    let chunk = CHUNK.min(o.count);
+    let mut hashed: u64 = 0;
+    let mut report_at = std::time::Instant::now() + Duration::from_secs(30);
+    let mut backoff = Duration::from_secs(1);
+    let t0 = std::time::Instant::now();
+    'session: loop {
+        let mut client = match V2Client::connect(addr, authority, &setup) {
+            Ok(c) => c,
+            Err(e) => {
+                if o.fail_fast {
+                    eprintln!("error: cannot reach pool (v2): {e}");
+                    return ExitCode::from(1);
+                }
+                eprintln!("pool(v2) connect failed: {e}; retrying in {}s", backoff.as_secs());
+                std::thread::sleep(backoff);
+                backoff = (backoff * 2).min(Duration::from_secs(30));
+                continue 'session;
+            }
+        };
+        backoff = Duration::from_secs(1);
+        let session_worker = dev_worker(o, t0).to_string();
+        if session_worker != o.worker {
+            eprintln!("dev fee: mining as '{session_worker}' (rotating back shortly)");
+        }
+        let opened = match client.open_channel(1, &session_worker, 0.0, [0xffu8; 32]) {
+            Ok(opened) => opened,
+            Err(e) => {
+                if o.fail_fast {
+                    eprintln!("error: pool refused V2 channel: {e}");
+                    return ExitCode::from(1);
+                }
+                eprintln!("pool(v2) channel open failed: {e}; reconnecting");
+                continue 'session;
+            }
+        };
+        let channel_id = opened.channel_id;
+        match &backend {
+            Backend::Cpu { threads } => {
+                println!("pool(v2) {} as '{}' ({} threads)", o.pool, session_worker, threads)
+            }
+            Backend::Gpu(g) => println!(
+                "pool(v2) {} as '{}' (gpu: {}, batch {})",
+                o.pool,
+                session_worker,
+                g.name(),
+                g.batch()
+            ),
+        }
+        let mut current: Option<lm_stratum::v2::LuckyJob> = None;
+        let mut pos = o.start;
+        loop {
+            if dev_worker(o, t0) != session_worker {
+                eprintln!("dev fee: rotating worker (reconnecting)");
+                continue 'session;
+            }
+            if submitted >= o.max_shares {
+                println!("session complete: {accepted}/{submitted} shares accepted");
+                return ExitCode::SUCCESS;
+            }
+            if std::time::Instant::now() >= report_at {
+                let secs = 30.0;
+                let gpu_note = match &backend {
+                    Backend::Gpu(_) => match gpu::gpu_status() {
+                        (t, Some(w)) => format!(" (gpu {t}C {w}W)"),
+                        (t, None) if t >= 0 => format!(" (gpu {t}C)"),
+                        _ => String::new(),
+                    },
+                    Backend::Cpu { .. } => String::new(),
+                };
+                println!(
+                    "rate: {:.0} H/s ({} hashes/{}s window){}",
+                    hashed as f64 / secs,
+                    hashed,
+                    secs,
+                    gpu_note
+                );
+                hashed = 0;
+                report_at = std::time::Instant::now() + Duration::from_secs(30);
+            }
+            // Non-blocking: adopt newer jobs; a same-header rotation keeps
+            // the nonce cursor (V1's duplicate-re-find lesson applies to
+            // both wires).
+            loop {
+                match client.poll_job() {
+                    Ok(Some(j)) => {
+                        if current.as_ref().map(|c| c.job_id != j.job_id).unwrap_or(true) {
+                            let same_header = current
+                                .as_ref()
+                                .map(|c| c.header == j.header)
+                                .unwrap_or(false);
+                            current = Some(j);
+                            if !same_header {
+                                pos = o.start;
+                            }
+                        }
+                    }
+                    Ok(None) => break,
+                    Err(e) => {
+                        if o.fail_fast {
+                            eprintln!("error: pool connection lost: {e}");
+                            return ExitCode::from(1);
+                        }
+                        eprintln!("pool connection lost: {e}; reconnecting");
+                        continue 'session;
+                    }
+                }
+            }
+            if current.is_none() {
+                match client.read_job(Duration::from_secs(o.job_timeout_secs)) {
+                    Ok(Some(j)) => {
+                        current = Some(j);
+                        pos = o.start;
+                    }
+                    Ok(None) => {
+                        if o.fail_fast {
+                            eprintln!(
+                                "error: idle: no job within {}s ({accepted}/{submitted} accepted)",
+                                o.job_timeout_secs
+                            );
+                            return ExitCode::from(1);
+                        }
+                        eprintln!(
+                            "idle: no job within {}s ({accepted}/{submitted} accepted); reconnecting",
+                            o.job_timeout_secs
+                        );
+                        continue 'session;
+                    }
+                    Err(e) => {
+                        if o.fail_fast {
+                            eprintln!("error: pool connection lost: {e}");
+                            return ExitCode::from(1);
+                        }
+                        eprintln!("pool connection lost: {e}; reconnecting");
+                        continue 'session;
+                    }
+                }
+            }
+            let job = current.clone().expect("job set above");
+            let job_end = o.start.saturating_add(o.count);
+            if pos >= job_end {
+                println!("job {} exhausted, waiting for new template", job.job_id);
+                current = None;
+                pos = o.start;
+                continue;
+            }
+            let take = chunk.min(job_end - pos);
+            match backend.search(
+                &job.header,
+                job.height,
+                &job.pool_target,
+                pos,
+                take,
+                &policy,
+            ) {
+                Ok(Some(sol)) => {
+                    hashed += sol.nonce.saturating_sub(pos).saturating_add(1);
+                    match client.submit(channel_id, job.job_id, sol.nonce) {
+                        Ok((true, _)) => {
+                            submitted += 1;
+                            accepted += 1;
+                            println!("share accepted: job={} nonce={}", job.job_id, sol.nonce);
+                        }
+                        Ok((false, err)) => {
+                            submitted += 1;
+                            eprintln!("share rejected: job={} {:?}", job.job_id, err);
+                        }
+                        Err(e) => {
+                            if o.fail_fast {
+                                eprintln!("error: pool connection lost: {e}");
+                                return ExitCode::from(1);
+                            }
+                            eprintln!("pool connection lost: {e}; reconnecting");
+                            continue 'session;
+                        }
+                    }
+                    // Post-submit settle: poll briefly for a rotation before
+                    // carrying on (same stale-job avoidance as V1).
+                    let mut rotated = false;
+                    let settle = std::time::Instant::now() + Duration::from_millis(300);
+                    while std::time::Instant::now() < settle {
+                        match client.poll_job() {
+                            Ok(Some(j)) => {
+                                if current.as_ref().map(|c| c.job_id != j.job_id).unwrap_or(true) {
+                                    let same_header = current
+                                        .as_ref()
+                                        .map(|c| c.header == j.header)
+                                        .unwrap_or(false);
+                                    current = Some(j);
+                                    if !same_header {
+                                        rotated = true;
+                                    }
+                                }
+                                break;
+                            }
+                            Ok(None) => std::thread::sleep(Duration::from_millis(20)),
+                            Err(e) => {
+                                if o.fail_fast {
+                                    eprintln!("error: pool connection lost: {e}");
+                                    return ExitCode::from(1);
+                                }
+                                eprintln!("pool connection lost: {e}; reconnecting");
+                                continue 'session;
+                            }
+                        }
+                    }
+                    pos = if rotated {
+                        o.start
+                    } else {
+                        sol.nonce.saturating_add(1)
+                    };
+                }
+                Ok(None) => {
+                    hashed += take;
+                    pos += take;
+                }
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    return ExitCode::from(1);
+                }
+            }
+        }
+    }
+}
+
 /// Resolve `HOST:PORT` to (host, socket addr). Hostnames are supported so
 /// TLS can verify the certificate against the pool name.
 fn resolve_pool(pool: &str) -> Result<(String, SocketAddr), String> {
@@ -1006,6 +1307,23 @@ fn resolve_pool(pool: &str) -> Result<(String, SocketAddr), String> {
         .next()
         .ok_or_else(|| format!("no addresses for '{pool}'"))?;
     Ok((host, addr))
+}
+
+/// Parse `--v2-authority`: a §4.7 base58check URL key first, else 64 hex
+/// chars of x-only public key.
+fn parse_v2_authority(s: &str) -> Result<[u8; 32], String> {
+    if let Ok(k) = lm_stratum::v2_session::parse_authority_url_key(s) {
+        return Ok(k);
+    }
+    let b = parse_hex(s, "v2-authority")?;
+    if b.len() != 32 {
+        return Err(format!(
+            "--v2-authority expects a §4.7 URL key or 64 hex chars, got '{s}'"
+        ));
+    }
+    let mut k = [0u8; 32];
+    k.copy_from_slice(&b);
+    Ok(k)
 }
 
 /// Connect + subscribe + authorize in one step so the session loop can
