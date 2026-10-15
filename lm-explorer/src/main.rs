@@ -18,12 +18,14 @@ use index::Indexer;
 use lm_stratum::rpc::RpcClient;
 
 const USAGE: &str = "usage:
-  explorer --node-rpc HOST:PORT --rpc-user U --rpc-pass P --bind HOST:PORT --db PATH [--resync] [--sync-interval SECS]
+  explorer --node-rpc HOST:PORT --rpc-user U --rpc-pass P --bind HOST:PORT --db PATH [--pool-api URL] [--resync] [--sync-interval SECS]
 
 indexes the node's chain into SQLite (./explorer.db style path) and serves
 a read-only UI + JSON API: /block/<height|hash> /tx/<txid> /address/<addr>
-/search?q= /api/tip /api/stats. Reorg-safe (rolls back to the fork point).
-defaults: bind=127.0.0.1:8888; sync-interval=5s.";
+/game /search?q= /api/tip /api/stats /api/game. Reorg-safe (rolls back to
+the fork point). Game events (jackpot/pot/league per block, Luckynode
+Draws) come from the pool's dashboard API (best-effort).
+defaults: bind=127.0.0.1:8888; sync-interval=5s; pool-api=http://127.0.0.1:8081.";
 
 fn arg_value(args: &[String], i: &mut usize, flag: &str) -> Result<String, String> {
     *i += 1;
@@ -45,6 +47,7 @@ fn main() -> std::process::ExitCode {
     let mut db = String::new();
     let mut resync = false;
     let mut interval = 5u64;
+    let mut pool_api = "http://127.0.0.1:8081".to_string();
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
@@ -53,6 +56,7 @@ fn main() -> std::process::ExitCode {
             "--rpc-pass" => pass = arg_value(&args, &mut i, "rpc-pass").unwrap_or_else(|e| fatal(e)),
             "--bind" => bind = arg_value(&args, &mut i, "bind").unwrap_or_else(|e| fatal(e)),
             "--db" => db = arg_value(&args, &mut i, "db").unwrap_or_else(|e| fatal(e)),
+            "--pool-api" => pool_api = arg_value(&args, &mut i, "pool-api").unwrap_or_else(|e| fatal(e)),
             "--sync-interval" => {
                 interval = arg_value(&args, &mut i, "sync-interval")
                     .unwrap_or_else(|e| fatal(e))
@@ -85,20 +89,39 @@ fn main() -> std::process::ExitCode {
     let idx = Arc::new(Mutex::new(idx));
     {
         let idx = Arc::clone(&idx);
-        std::thread::spawn(move || loop {
-            match idx.lock().map(|mut i| i.sync()) {
-                Ok(Ok(r)) => {
-                    if r.indexed > 0 || r.rolled_back > 0 {
-                        println!(
-                            "sync: tip {} (+{} blocks, -{} reorg)",
-                            r.tip, r.indexed, r.rolled_back
-                        );
+        let pool_api = pool_api.clone();
+        std::thread::spawn(move || {
+            let mut last_pool_err: Option<String> = None;
+            loop {
+                match idx.lock().map(|mut i| i.sync()) {
+                    Ok(Ok(r)) => {
+                        if r.indexed > 0 || r.rolled_back > 0 {
+                            println!(
+                                "sync: tip {} (+{} blocks, -{} reorg)",
+                                r.tip, r.indexed, r.rolled_back
+                            );
+                        }
                     }
+                    Ok(Err(e)) => eprintln!("sync error: {e} (retrying)"),
+                    Err(_) => eprintln!("sync error: lock poisoned"),
                 }
-                Ok(Err(e)) => eprintln!("sync error: {e} (retrying)"),
-                Err(_) => eprintln!("sync error: lock poisoned"),
+                // Game events from the pool's dashboard API (best-effort;
+                // the chain index works without it). Log on state change
+                // only, so a pool outage does not spam every tick.
+                let perr = idx
+                    .lock()
+                    .map_err(|_| "lock poisoned".to_string())
+                    .and_then(|mut i| i.sync_pool(&pool_api).map(|_| ()))
+                    .err();
+                if perr != last_pool_err {
+                    match &perr {
+                        Some(e) => eprintln!("pool sync: {e} (game data may be stale)"),
+                        None => println!("pool sync: ok"),
+                    }
+                    last_pool_err = perr;
+                }
+                std::thread::sleep(Duration::from_secs(interval.max(1)));
             }
-            std::thread::sleep(Duration::from_secs(interval.max(1)));
         });
     }
     let listener = match TcpListener::bind(&bind) {
