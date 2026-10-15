@@ -64,8 +64,10 @@ This is the reference implementation; run it on testnet knowing:
 - **Stratum V1 is the default wire; V2 serves alongside it** behind flags
   (pool `--v2-bind [--v2-authority-key HEX --v2-cert-validity SECS]`,
   miner `pool --v2 --v2-authority URLKEY|HEX`): Noise NX handshake with
-  authority pinning, `SetupConnection` negotiation, one standard channel
-  per connection, `LuckyJob` full-template dispatch and `LuckySubmit`
+  authority pinning, `SetupConnection` negotiation, any number of
+  standard channels per encrypted session (per-channel payer/vardiff;
+  `CloseChannel` drops one, the connection serves on), `LuckyJob`
+  full-template dispatch and `LuckySubmit`
   (u64 nonce) validation through the same registry/dedupe/ledger as V1.
   V2 auth reuses the V1 password/token map (token rides as device id);
   vardiff mirrors V1 per channel (core `SetTarget` + same-header retarget
