@@ -127,6 +127,106 @@ pub fn generate_authority() -> ([u8; 32], [u8; 32]) {
     }
 }
 
+/// Base58 alphabet (Bitcoin order).
+const B58: &[u8; 58] = b"123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+
+/// Encode a pool authority public key for the mining URL (spec §4.7):
+/// base58check over the little-endian `[1, 0]` version prefix followed by
+/// the 32-byte x-only key. The pool publishes this; miners paste it into
+/// `stratum2+tcp://host:port/<key>`.
+#[must_use]
+pub fn authority_url_key(public: &[u8; 32]) -> String {
+    let mut payload = Vec::with_capacity(34);
+    payload.extend_from_slice(&[1, 0]);
+    payload.extend_from_slice(public);
+    base58check_encode(&payload)
+}
+
+/// Decode and validate an authority key from a URL path (spec §4.7):
+/// base58check, `[1, 0]` version prefix, 32-byte key, correct checksum.
+///
+/// # Errors
+/// A reason string when the encoding, length, prefix or checksum is bad.
+pub fn parse_authority_url_key(s: &str) -> Result<[u8; 32], String> {
+    let data = base58_decode(s)?;
+    if data.len() != 38 {
+        return Err(format!("expected 38 bytes, got {}", data.len()));
+    }
+    let (payload, checksum) = data.split_at(34);
+    let expected = sha256d(payload);
+    if checksum != &expected[..4] {
+        return Err("bad checksum".to_string());
+    }
+    if payload[0] != 1 || payload[1] != 0 {
+        return Err("unsupported version prefix (expected [1, 0])".to_string());
+    }
+    let mut key = [0u8; 32];
+    key.copy_from_slice(&payload[2..]);
+    Ok(key)
+}
+
+fn sha256d(data: &[u8]) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+    let first = Sha256::digest(data);
+    Sha256::digest(first).into()
+}
+
+fn base58check_encode(payload: &[u8]) -> String {
+    let mut data = payload.to_vec();
+    let checksum = sha256d(payload);
+    data.extend_from_slice(&checksum[..4]);
+    base58_encode(&data)
+}
+
+fn base58_encode(data: &[u8]) -> String {
+    let zeros = data.iter().take_while(|&&b| b == 0).count();
+    let mut digits: Vec<u8> = Vec::new(); // little-endian base58 digits
+    for &byte in data {
+        let mut carry = u32::from(byte);
+        for d in &mut digits {
+            let v = u32::from(*d) * 256 + carry;
+            *d = (v % 58) as u8;
+            carry = v / 58;
+        }
+        while carry > 0 {
+            digits.push((carry % 58) as u8);
+            carry /= 58;
+        }
+    }
+    let mut out = String::with_capacity(zeros + digits.len());
+    for _ in 0..zeros {
+        out.push('1');
+    }
+    for &d in digits.iter().rev() {
+        out.push(B58[d as usize] as char);
+    }
+    out
+}
+
+fn base58_decode(s: &str) -> Result<Vec<u8>, String> {
+    let zeros = s.chars().take_while(|&c| c == '1').count();
+    let mut bytes: Vec<u8> = Vec::new(); // little-endian
+    for ch in s.chars() {
+        let idx = B58
+            .iter()
+            .position(|&c| c as char == ch)
+            .ok_or_else(|| format!("bad base58 character '{ch}'"))? as u32;
+        let mut carry = idx;
+        for b in &mut bytes {
+            let v = u32::from(*b) * 58 + carry;
+            *b = (v % 256) as u8;
+            carry = v / 256;
+        }
+        while carry > 0 {
+            bytes.push((carry % 256) as u8);
+            carry /= 256;
+        }
+    }
+    let mut out = vec![0u8; zeros];
+    out.extend(bytes.iter().rev());
+    Ok(out)
+}
+
 /// 32 random bytes for an authority secret (`/dev/urandom`; a hashed
 /// time/pid fallback keeps non-unix builds working — testnet-grade, the same
 /// posture as the casino's seed generator).
@@ -436,6 +536,32 @@ mod tests {
             firmware: "0.2".to_string(),
             device_id: "rig-1".to_string(),
         }
+    }
+
+    #[test]
+    fn authority_url_key_matches_the_spec_vector() {
+        // sv2-spec §4.7.1 test vector.
+        let raw: [u8; 32] = [
+            118, 99, 112, 0, 151, 156, 28, 17, 175, 12, 48, 11, 205, 140, 127, 228, 134, 16, 252,
+            233, 185, 193, 30, 61, 174, 227, 90, 224, 176, 138, 116, 85,
+        ];
+        let encoded = authority_url_key(&raw);
+        assert_eq!(
+            encoded, "9bXiEd8boQVhq7WddEcERUL5tyyJVFYdU8th3HfbNXK3Yw6GRXh",
+            "must match the spec vector"
+        );
+        // Round trip.
+        assert_eq!(parse_authority_url_key(&encoded).unwrap(), raw);
+        // A tampered last character breaks the checksum.
+        let mut bad = encoded.clone();
+        bad.pop();
+        bad.push('2');
+        assert!(parse_authority_url_key(&bad).is_err());
+        assert!(parse_authority_url_key("not!base58").is_err());
+        // Generated keys round trip too.
+        let (pubkey, _secret) = generate_authority();
+        let url = authority_url_key(&pubkey);
+        assert_eq!(parse_authority_url_key(&url).unwrap(), pubkey);
     }
 
     #[test]
