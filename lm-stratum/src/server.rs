@@ -20,7 +20,7 @@ use crate::v1::{
 };
 use crate::v2::{
     from_frame, to_frame, LuckyJob, LuckySubmit, OpenMiningChannelError, OpenStandardMiningChannel,
-    OpenStandardMiningChannelSuccess, SetupConnectionSuccess, SubmitSharesError,
+    OpenStandardMiningChannelSuccess, SetTarget, SetupConnectionSuccess, SubmitSharesError,
     SubmitSharesSuccess, MSG_CLOSE_CHANNEL, MSG_LUCKY_SUBMIT, MSG_OPEN_STANDARD_MINING_CHANNEL,
     PROTOCOL_MINING,
 };
@@ -542,12 +542,47 @@ fn handle_conn<P: TemplateProvider + 'static>(stream: TcpStream, shared: Arc<Sha
     }
 }
 
+/// Issue a LuckyJob for a V1 template (fresh job id, shared registry
+/// window) with an explicit pool target override, and return it. The
+/// broadcast path passes the template target (or the vardiff override for
+/// the current height); retargets pass the new target with `clean: false`.
+/// Job ids stay unique per connection through the shared counter.
+fn issue_lucky_job(
+    counter: &AtomicU64,
+    registry: &mut JobRegistry,
+    channel_id: u32,
+    template: &Job,
+    pool_target: [u8; 32],
+    clean: bool,
+) -> LuckyJob {
+    let job_id = counter.fetch_add(1, Ordering::SeqCst) as u32;
+    registry.issue(Job {
+        id: format!("v2-{job_id:08x}"),
+        header: template.header.clone(),
+        height: template.height,
+        pool_target,
+        net_target: template.net_target,
+    });
+    LuckyJob {
+        channel_id,
+        job_id,
+        height: template.height,
+        header: template.header.clone(),
+        pool_target,
+        net_target: template.net_target,
+        clean,
+    }
+}
+
 /// Send the current broadcast template as a [`LuckyJob`] when it is newer
-/// than `seen_version`. Returns the new `(version, sent_height)` after a
-/// successful send; `None` when already current or the send failed. The V1
-/// [`JobRegistry`] is reused with `v2-{job_id:08x}` ids so staleness,
-/// cross-connection dupe rejection and PoW evaluation are the exact V1
-/// rules — one validation path for both wires.
+/// than `seen_version`. `vd_target` is the vardiff override, honored only
+/// while it names the current height (a new template resets the channel
+/// to the template target, mirroring V1). Returns the new
+/// `(version, sent_height)` after a successful send; `None` when already
+/// current or the send failed. The V1 [`JobRegistry`] is reused with
+/// `v2-{job_id:08x}` ids so staleness, cross-connection dupe rejection
+/// and PoW evaluation are the exact V1 rules — one validation path for
+/// both wires.
 fn send_lucky_job<P: TemplateProvider + 'static, S: Read + Write>(
     session: &mut V2Session<S>,
     shared: &Shared<P>,
@@ -555,31 +590,26 @@ fn send_lucky_job<P: TemplateProvider + 'static, S: Read + Write>(
     channel_id: u32,
     seen_version: u64,
     sent_height: u64,
+    vd_target: Option<([u8; 32], u64)>,
 ) -> Option<(u64, u64)> {
     let (cur, cur_version) = broadcast_job(shared);
     if cur_version == seen_version {
         return None;
     }
-    let job_id = shared.job_counter.fetch_add(1, Ordering::SeqCst) as u32;
     let clean = cur.height != sent_height;
-    registry.issue(Job {
-        id: format!("v2-{job_id:08x}"),
-        header: cur.header.clone(),
-        height: cur.height,
-        pool_target: cur.pool_target,
-        net_target: cur.net_target,
-    });
-    session
-        .send(&to_frame(&LuckyJob {
-            channel_id,
-            job_id,
-            height: cur.height,
-            header: cur.header.clone(),
-            pool_target: cur.pool_target,
-            net_target: cur.net_target,
-            clean,
-        }))
-        .ok()?;
+    let target = match vd_target {
+        Some((t, h)) if h == cur.height => t,
+        _ => cur.pool_target,
+    };
+    let job = issue_lucky_job(
+        &shared.job_counter,
+        registry,
+        channel_id,
+        &cur,
+        target,
+        clean,
+    );
+    session.send(&to_frame(&job)).ok()?;
     Some((cur_version, cur.height))
 }
 
@@ -589,8 +619,10 @@ fn send_lucky_job<P: TemplateProvider + 'static, S: Read + Write>(
 /// is `OpenStandardMiningChannel.user_identity` and the pool password /
 /// worker token rides in `SetupConnection.device_id` (the only free-form
 /// client-chosen string in the V2 handshake). One standard channel per
-/// connection for this milestone; vardiff retargets are a follow-up (the
-/// channel keeps the template target).
+/// connection for this milestone. Vardiff mirrors V1 (same controller,
+/// same 20 s/share target): retargets send core `SetTarget` plus a fresh
+/// same-header job, and a new template resets the channel to the template
+/// target.
 fn handle_v2_conn<P: TemplateProvider + 'static>(
     stream: TcpStream,
     shared: Arc<Shared<P>>,
@@ -669,6 +701,10 @@ fn handle_v2_conn<P: TemplateProvider + 'static>(
     let mut registry = JobRegistry::new(16);
     let mut seen_version = 0u64;
     let mut sent_height = 0u64;
+    // Per-channel vardiff (same controller and pacing as V1) plus the
+    // active target override (target, template height).
+    let mut vardiff = Vardiff::new();
+    let mut vd_target: Option<([u8; 32], u64)> = None;
     // The broadcast always has a job (seeded at startup); a failed first
     // send means a dead peer.
     match send_lucky_job(
@@ -678,6 +714,7 @@ fn handle_v2_conn<P: TemplateProvider + 'static>(
         channel_id,
         seen_version,
         sent_height,
+        vd_target,
     ) {
         Some((v, h)) => {
             seen_version = v;
@@ -699,6 +736,7 @@ fn handle_v2_conn<P: TemplateProvider + 'static>(
             channel_id,
             seen_version,
             sent_height,
+            vd_target,
         ) {
             seen_version = v;
             sent_height = h;
@@ -757,6 +795,33 @@ fn handle_v2_conn<P: TemplateProvider + 'static>(
                         };
                         if session.send(&to_frame(&ack)).is_err() {
                             break;
+                        }
+                        // Vardiff: adapt this channel's pool target on the
+                        // same template (mirrors V1). The miner keeps its
+                        // nonce cursor: same header, fresh job id.
+                        if let Some(new_work) = vardiff.record(now, work) {
+                            let new_target = target_for_work(new_work);
+                            vd_target = Some((new_target, s.job.height));
+                            if session
+                                .send(&to_frame(&SetTarget {
+                                    channel_id,
+                                    maximum_target: new_target,
+                                }))
+                                .is_err()
+                            {
+                                break;
+                            }
+                            let job = issue_lucky_job(
+                                &shared.job_counter,
+                                &mut registry,
+                                channel_id,
+                                &s.job,
+                                new_target,
+                                false,
+                            );
+                            if session.send(&to_frame(&job)).is_err() {
+                                break;
+                            }
                         }
                         if matches!(verdict, Verdict::Accept { block: true }) {
                             apply_block_found(&shared, miner_id, &s.job, s.nonce);
@@ -1331,6 +1396,101 @@ mod auth_tests {
         assert_eq!(row.shares, 0);
         assert_eq!(row.owed, 0);
         assert_eq!(row.paid, 0);
+        server.stop();
+    }
+
+    /// V2 vardiff (mirrors V1 pacing): 8 fast shares on a static template
+    /// retarget the channel harder via core `SetTarget` plus a fresh
+    /// same-header job carrying the new target.
+    #[test]
+    fn v2_vardiff_retargets_with_set_target_and_job() {
+        use crate::v2::{
+            LuckyJob, LuckySubmit, OpenStandardMiningChannel,
+            OpenStandardMiningChannelSuccess, SetTarget, SetupConnection, SubmitSharesSuccess,
+            MSG_LUCKY_JOB, MSG_SET_TARGET, MSG_SUBMIT_SHARES_SUCCESS, PROTOCOL_MINING,
+        };
+        use std::net::TcpStream;
+        use std::time::Duration;
+
+        // Tight net target: shares accept, never blocks → height static.
+        let provider =
+            crate::provider::MockProvider::new([0xffu8; 32], [0x00u8; 32], 1_000_000, 0);
+        let mut server = spawn_server(provider, "127.0.0.1:0", None, None, None).expect("spawn");
+        let authority = crate::v2_session::generate_authority();
+        let v2_addr = server
+            .spawn_v2_listener("127.0.0.1:0", authority, Duration::from_secs(3600))
+            .expect("v2 listen");
+        let stream = TcpStream::connect(v2_addr).expect("connect");
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .expect("timeout");
+        let mut session =
+            crate::v2_session::V2Session::connect(stream, Some(authority.0)).expect("handshake");
+        crate::v2_session::setup_connection(
+            &mut session,
+            &SetupConnection {
+                protocol: PROTOCOL_MINING,
+                min_version: 2,
+                max_version: 2,
+                flags: 0,
+                endpoint_host: "x".to_string(),
+                endpoint_port: 1,
+                vendor: "t".to_string(),
+                hardware_version: "cpu".to_string(),
+                firmware: "0.2".to_string(),
+                device_id: "x".to_string(),
+            },
+        )
+        .expect("negotiate");
+        session
+            .send(&crate::v2::to_frame(&OpenStandardMiningChannel {
+                request_id: 1,
+                user_identity: "vd-miner".to_string(),
+                nominal_hash_rate: 0.0,
+                max_target: [0xffu8; 32],
+            }))
+            .expect("open");
+        let opened = crate::v2::from_frame::<OpenStandardMiningChannelSuccess>(
+            &session.recv().expect("open success"),
+        )
+        .expect("decode open");
+        let channel_id = opened.channel_id;
+        let first_target = opened.target;
+        let job_frame = session.recv().expect("job");
+        assert_eq!(job_frame.msg_type, MSG_LUCKY_JOB);
+        let job = LuckyJob::from_frame(&job_frame).expect("decode job");
+        assert_eq!(job.pool_target, first_target);
+        // 8 fast shares, distinct nonces; the ack always arrives before
+        // any retarget message (the server sends it first).
+        for i in 0..8u64 {
+            session
+                .send(&crate::v2::to_frame(&LuckySubmit {
+                    channel_id,
+                    job_id: job.job_id,
+                    sequence_number: i as u32,
+                    nonce: i,
+                }))
+                .expect("submit");
+            let ack_frame = session.recv().expect("ack");
+            assert_eq!(ack_frame.msg_type, MSG_SUBMIT_SHARES_SUCCESS, "submit {i}");
+            let ack = SubmitSharesSuccess::from_frame(&ack_frame).expect("decode ack");
+            assert_eq!(ack.last_sequence_number, i as u32);
+        }
+        // Retarget: SetTarget first, then a same-header job with the target.
+        let st_frame = session.recv().expect("settarget");
+        assert_eq!(st_frame.msg_type, MSG_SET_TARGET);
+        let st = SetTarget::from_frame(&st_frame).expect("decode target");
+        assert_eq!(st.channel_id, channel_id);
+        assert!(
+            st.maximum_target < first_target,
+            "8 instant shares must step harder"
+        );
+        let job2_frame = session.recv().expect("job2");
+        assert_eq!(job2_frame.msg_type, MSG_LUCKY_JOB);
+        let job2 = LuckyJob::from_frame(&job2_frame).expect("decode job2");
+        assert_eq!(job2.header, job.header, "same template, new target");
+        assert_eq!(job2.pool_target, st.maximum_target);
+        assert!(!job2.clean, "same height is not clean");
         server.stop();
     }
 }
