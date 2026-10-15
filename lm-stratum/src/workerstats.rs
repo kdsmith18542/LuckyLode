@@ -107,6 +107,16 @@ impl WorkerStats {
         }
     }
 
+    /// Miner id currently registered under `name` (worker names double as
+    /// payout addresses and are unique per live worker).
+    #[must_use]
+    pub fn miner_for_name(&self, name: &str) -> Option<u64> {
+        self.workers
+            .iter()
+            .find(|(_, w)| w.name == name)
+            .map(|(&id, _)| id)
+    }
+
     /// Record a rejected share (duplicate/stale/bad): keeps liveness.
     pub fn rejected(&mut self, miner: u64, now: u64) {
         let w = self.workers.entry(miner).or_default();
