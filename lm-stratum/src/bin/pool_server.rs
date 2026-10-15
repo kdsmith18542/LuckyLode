@@ -62,6 +62,9 @@ dt{color:var(--gold);margin-top:12px}
 dd{margin:4px 0 0 0}
 p{line-height:1.6}
 input[type=search]{background:var(--card);border:1px solid var(--line);border-radius:8px;color:var(--fg);font:inherit;padding:6px 10px;width:min(320px,100%);margin-bottom:8px}
+input[type=password],input[type=text]{background:var(--card);border:1px solid var(--line);border-radius:8px;color:var(--fg);font:inherit;padding:6px 10px}
+.tabbtn{background:none;border:1px solid var(--line);border-radius:8px;color:var(--fg);padding:6px 12px;font:inherit;font-size:13px;cursor:pointer}
+.tabbtn:hover{border-color:var(--gold);color:var(--gold)}
 footer{margin-top:26px;color:var(--dim);font-size:12px;line-height:1.5}
 </style></head><body>
 <header>
@@ -75,6 +78,7 @@ footer{margin-top:26px;color:var(--dim);font-size:12px;line-height:1.5}
   <button data-tab="start">Getting started</button>
   <button data-tab="faq">FAQ</button>
   <button data-tab="api">API</button>
+  <button data-tab="miner">My miner</button>
   <a class="badge" href="https://luckylode.cc/" target="_blank" rel="noopener">luckylode.cc</a>
   <a class="badge" href="https://luckylode.cc/explorer/" target="_blank" rel="noopener">explorer</a>
   <a class="badge" href="https://luckylode.cc/casino/" target="_blank" rel="noopener">casino · free FUN</a>
@@ -135,8 +139,29 @@ footer{margin-top:26px;color:var(--dim);font-size:12px;line-height:1.5}
 <tr><td><code>POST api/luckynode/register</code></td><td>register a luckynode: <code>{id,address,pubkey}</code></td></tr>
 <tr><td><code>POST api/luckynode/heartbeat</code></td><td>signed liveness: <code>{id,timestamp,sig}</code></td></tr>
 <tr><td><code>POST api/luckynode/notarize</code></td><td>cosign a draw: <code>{draw_id,id,sig}</code></td></tr>
+<tr><td><code>GET api/miner?token=…</code></td><td>your own row + payout settings (worker-token auth)</td></tr>
+<tr><td><code>POST api/payout/settings</code></td><td>set/clear your payout address + threshold: <code>{token,address,threshold}</code></td></tr>
 </tbody></table>
 <p>The dashboard polls <code>api/stats</code> every 5 s; miners, bots and dashboards are welcome to do the same.</p>
+</section>
+<section id="tab-miner">
+<h2>My miner</h2>
+<p>Paste your worker token (the token from your pool password / the operator's <code>--workers-file</code>) to see your own stats and set where and when you get paid. The token never leaves this page except to this pool's own API.</p>
+<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:10px 0">
+  <input id="mtoken" type="password" placeholder="worker token" style="max-width:280px">
+  <button class="tabbtn" id="mload">Load my miner</button>
+  <span id="mmsg" style="color:var(--dim)"></span>
+</div>
+<div id="mstats"></div>
+<div id="msettings" style="display:none;margin-top:12px">
+  <h3 style="margin:6px 0">Payout settings</h3>
+  <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+    <label>payout address <input id="maddr" placeholder="default: your worker name" style="max-width:300px"></label>
+    <label>threshold (tLKYL) <input id="mthr" placeholder="pool default" style="max-width:130px"></label>
+    <button class="tabbtn" id="msave">Save</button>
+  </div>
+  <p style="color:var(--dim);font-size:12px">Payouts send automatically once your balance reaches the threshold. Leave the address empty (or the threshold at 0) to use the defaults.</p>
+</div>
 </section>
 <footer id="note"></footer>
 <div class="err" id="err"></div>
@@ -213,6 +238,45 @@ async function tick(){
   document.getElementById('err').textContent='';
  }catch(e){document.getElementById('err').textContent='stats fetch failed: '+e;}
 }
+// My miner: token-authenticated stats + payout settings (internal/17).
+let mtok='';
+async function loadMiner(){
+  mtok=document.getElementById('mtoken').value.trim();
+  const msg=document.getElementById('mmsg');
+  if(!mtok){msg.textContent='enter your worker token';return;}
+  try{
+    const r=await fetch('api/miner?token='+encodeURIComponent(mtok),{cache:'no-store'});
+    const j=await r.json();
+    if(!r.ok||j.error)throw new Error(j.error||r.statusText);
+    const m=j.miner;
+    document.getElementById('mstats').innerHTML='<div class="grid">'+
+      '<div class="card"><div class="k">worker</div><div class="v">'+esc(m.name)+'</div></div>'+
+      '<div class="card"><div class="k">device</div><div class="v">'+esc(device(m.agent))+'</div></div>'+
+      '<div class="card"><div class="k">60s / 10m</div><div class="v">'+hs(m.rates[0])+' · '+hs(m.rates[1])+'</div></div>'+
+      '<div class="card"><div class="k">shares / rejects</div><div class="v">'+esc(m.shares)+' / '+esc(m.rejects)+'</div></div>'+
+      '<div class="card"><div class="k">owed</div><div class="v gold">'+coin8(m.owed)+'</div></div>'+
+      '<div class="card"><div class="k">paid</div><div class="v">'+coin8(m.paid)+'</div></div></div>';
+    document.getElementById('maddr').value=j.settings.address||'';
+    document.getElementById('mthr').value=j.settings.threshold_coins||'';
+    document.getElementById('msettings').style.display='block';
+    msg.textContent='loaded · pool default threshold '+j.defaults.threshold_coins+' tLKYL';
+  }catch(e){msg.textContent=e.message;
+    document.getElementById('mstats').innerHTML='';
+    document.getElementById('msettings').style.display='none';}
+}
+async function saveMinerSettings(){
+  const msg=document.getElementById('mmsg');
+  try{
+    const r=await fetch('api/payout/settings',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({token:mtok,address:document.getElementById('maddr').value.trim(),threshold:document.getElementById('mthr').value.trim()})});
+    const j=await r.json();
+    if(!r.ok||j.error)throw new Error(j.error||r.statusText);
+    msg.textContent=j.cleared?'settings cleared — defaults apply':'saved';
+    await loadMiner();
+  }catch(e){msg.textContent=e.message;}
+}
+document.getElementById('mload').onclick=loadMiner;
+document.getElementById('msave').onclick=saveMinerSettings;
 tick(); setInterval(tick,5000);
 </script></body></html>
 "#;
@@ -433,6 +497,11 @@ fn http_reply<P: TemplateProvider + 'static>(
     let mut parts = line.split_whitespace();
     let method = parts.next().unwrap_or("GET");
     let path = parts.next().unwrap_or("/");
+    // Split any query string off; routes match on the bare path.
+    let (path, query) = match path.split_once('?') {
+        Some((p, q)) => (p, q),
+        None => (path, ""),
+    };
     let node = ctx.node.as_ref();
     let (status, ctype, resp) = match (method, path) {
         ("GET", "/") | ("GET", "/index.html") => (
@@ -473,6 +542,14 @@ fn http_reply<P: TemplateProvider + 'static>(
                 msg,
             )
         }
+        ("GET", "/api/miner") => {
+            let (status, json) = miner_api(server, ctx, query);
+            (status, "application/json", json)
+        }
+        ("POST", "/api/payout/settings") => {
+            let (status, json) = payout_settings_api(server, &body);
+            (status, "application/json", json)
+        }
         _ => (
             "404 Not Found",
             "text/plain; charset=utf-8",
@@ -485,6 +562,166 @@ fn http_reply<P: TemplateProvider + 'static>(
         resp.len()
     )?;
     stream.flush()
+}
+
+/// Percent-decode a query value (`%XX` escapes and `+`).
+fn urldecode(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        match b[i] {
+            b'%' if i + 2 < b.len() => {
+                let hex = std::str::from_utf8(&b[i + 1..i + 3]).unwrap_or("");
+                match u8::from_str_radix(hex, 16) {
+                    Ok(v) => {
+                        out.push(v);
+                        i += 3;
+                    }
+                    Err(_) => {
+                        out.push(b[i]);
+                        i += 1;
+                    }
+                }
+            }
+            b'+' => {
+                out.push(b' ');
+                i += 1;
+            }
+            c => {
+                out.push(c);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// Value of `key` in a raw query string.
+fn query_param(query: &str, key: &str) -> Option<String> {
+    query.split('&').find_map(|kv| {
+        let (k, v) = kv.split_once('=')?;
+        (k == key).then(|| urldecode(v))
+    })
+}
+
+/// `GET /api/miner?token=…` — the token owner's row + payout settings
+/// (internal/17). Tokens come from `--workers-file`; without one the route
+/// is closed.
+fn miner_api<P: TemplateProvider + 'static>(
+    server: &RunningServer<P>,
+    ctx: &HttpCtx,
+    query: &str,
+) -> (&'static str, String) {
+    let Some(token) = query_param(query, "token") else {
+        return (
+            "400 Bad Request",
+            serde_json::json!({"error": "missing token"}).to_string(),
+        );
+    };
+    let Some(miner) = server.miner_for_token(&token) else {
+        return (
+            "403 Forbidden",
+            serde_json::json!({"error": "unknown token"}).to_string(),
+        );
+    };
+    let Some(row) = server.miner_row(miner, now_secs()) else {
+        return (
+            "404 Not Found",
+            serde_json::json!({"error": "miner has not connected yet"}).to_string(),
+        );
+    };
+    let s = server
+        .payout_settings()
+        .get(&miner)
+        .cloned()
+        .unwrap_or_default();
+    (
+        "200 OK",
+        serde_json::json!({
+            "miner": row,
+            "settings": {
+                "address": s.address,
+                "threshold": s.threshold,
+                "threshold_coins": s.threshold.map(lm_pool::payout::format_coins),
+            },
+            "defaults": {
+                "threshold": ctx.threshold,
+                "threshold_coins": lm_pool::payout::format_coins(ctx.threshold),
+            },
+        })
+        .to_string(),
+    )
+}
+
+/// `POST /api/payout/settings` — set or clear the caller's payout address
+/// and threshold. Body: `{token, address?, threshold?}`; an empty address
+/// or a zero/absent threshold clears that override.
+fn payout_settings_api<P: TemplateProvider + 'static>(
+    server: &RunningServer<P>,
+    body: &str,
+) -> (&'static str, String) {
+    let req: serde_json::Value = match serde_json::from_str(body) {
+        Ok(v) => v,
+        Err(e) => {
+            return (
+                "400 Bad Request",
+                serde_json::json!({"error": format!("bad json: {e}")}).to_string(),
+            )
+        }
+    };
+    let token = req.get("token").and_then(|v| v.as_str()).unwrap_or("");
+    let Some(miner) = server.miner_for_token(token) else {
+        return (
+            "403 Forbidden",
+            serde_json::json!({"error": "unknown token"}).to_string(),
+        );
+    };
+    let current = server
+        .payout_settings()
+        .get(&miner)
+        .cloned()
+        .unwrap_or_default();
+    let address = match req.get("address").and_then(|v| v.as_str()) {
+        Some("") => None,
+        Some(a) => {
+            if !lm_pool::payout::valid_payout_address(a) {
+                return (
+                    "400 Bad Request",
+                    serde_json::json!({"error": "not a valid payout address"}).to_string(),
+                );
+            }
+            Some(a.to_string())
+        }
+        None => current.address,
+    };
+    let threshold = match req.get("threshold") {
+        Some(v) => {
+            let t = coins_to_base(v);
+            (t > 0).then_some(t)
+        }
+        None => current.threshold,
+    };
+    let settings = lm_stratum::server::MinerSettings { address, threshold };
+    let cleared = settings == lm_stratum::server::MinerSettings::default();
+    if cleared {
+        server.clear_payout_settings(miner);
+    } else {
+        server.set_payout_settings(miner, settings.clone());
+    }
+    (
+        "200 OK",
+        serde_json::json!({
+            "miner": miner,
+            "cleared": cleared,
+            "settings": {
+                "address": settings.address,
+                "threshold": settings.threshold,
+                "threshold_coins": settings.threshold.map(lm_pool::payout::format_coins),
+            },
+        })
+        .to_string(),
+    )
 }
 
 /// Minimal read-only HTTP server for the dashboard (one request at a time —
@@ -589,6 +826,9 @@ struct PoolState {
     /// Draws/events awaiting cosigns (node mode; empty otherwise).
     #[serde(default)]
     pending: Vec<PendingCosign>,
+    /// Per-miner payout settings (address/threshold overrides, internal/17).
+    #[serde(default)]
+    payout_settings: lm_stratum::server::PayoutSettings,
 }
 
 /// Load `--state-file` into a freshly spawned server (missing file = a
@@ -608,6 +848,8 @@ fn load_state<P: TemplateProvider + 'static>(
         Ok(st) => {
             server.restore_ledger(st.ledger);
             server.restore_names(&st.names);
+            let settings = st.payout_settings.len();
+            server.restore_payout_settings(st.payout_settings);
             let n = st.blocks.len();
             server.restore_blocks(st.blocks);
             let (owed, paid, fees) = server.payout_totals();
@@ -619,8 +861,13 @@ fn load_state<P: TemplateProvider + 'static>(
                 *ln.pending.lock().expect("pending") = st.pending;
             }
             println!(
-                "state loaded from {}: {n} blocks, owed {owed}, paid {paid}, fees {fees}{}",
+                "state loaded from {}: {n} blocks, owed {owed}, paid {paid}, fees {fees}{}{}",
                 path.display(),
+                if settings > 0 {
+                    format!(", {settings} payout setting(s)")
+                } else {
+                    String::new()
+                },
                 if luckynode.is_some() {
                     format!(", {draws} draws, {pend} pending cosigns")
                 } else {
@@ -656,6 +903,7 @@ fn save_state<P: TemplateProvider + 'static>(
         blocks: server.blocks(),
         recent_draws,
         pending,
+        payout_settings: server.payout_settings(),
     };
     let bytes = match serde_json::to_vec(&st) {
         Ok(b) => b,
@@ -689,6 +937,39 @@ fn state_saver<P: TemplateProvider + 'static>(
 /// the RPC reports success; anything else (invalid name, RPC error) keeps
 /// accruing for a later round. In dry-run mode nothing is sent and
 /// nothing debits — the log shows what would have moved.
+/// Miners due for a payout: balance at or above their own threshold, else
+/// the pool's global one (internal/17 payout settings).
+fn due_miners(
+    balances: Vec<(u64, u64)>,
+    settings: &lm_stratum::server::PayoutSettings,
+    global_threshold: u64,
+) -> Vec<(u64, u64)> {
+    balances
+        .into_iter()
+        .filter(|(miner, v)| {
+            let t = settings
+                .get(miner)
+                .and_then(|s| s.threshold)
+                .unwrap_or(global_threshold);
+            *v >= t
+        })
+        .collect()
+}
+
+/// Payout destination for one miner: their own address override, else the
+/// worker name (which doubles as an address).
+fn payout_destination(
+    miner: u64,
+    settings: &lm_stratum::server::PayoutSettings,
+    names: &HashMap<u64, String>,
+) -> String {
+    settings
+        .get(&miner)
+        .and_then(|s| s.address.clone())
+        .filter(|a| !a.is_empty())
+        .unwrap_or_else(|| names.get(&miner).cloned().unwrap_or_default())
+}
+
 fn payout_loop<P: TemplateProvider + 'static>(
     server: Arc<RunningServer<P>>,
     node: (String, String, String),
@@ -700,11 +981,9 @@ fn payout_loop<P: TemplateProvider + 'static>(
     let rpc = RpcClient::new(&node.0, &node.1, &node.2);
     loop {
         std::thread::sleep(std::time::Duration::from_secs(cfg.interval_secs.max(10)));
-        let due: Vec<(u64, u64)> = server
-            .balances()
-            .into_iter()
-            .filter(|(_, v)| *v >= cfg.threshold)
-            .collect();
+        let settings = server.payout_settings();
+        let due: Vec<(u64, u64)> =
+            due_miners(server.balances(), &settings, cfg.threshold);
         if due.is_empty() {
             continue;
         }
@@ -724,7 +1003,9 @@ fn payout_loop<P: TemplateProvider + 'static>(
             .map(|w| (w.miner, w.name))
             .collect();
         for (miner, amount) in due {
-            let name = names.get(&miner).cloned().unwrap_or_default();
+            // Payout destination: the miner's own override, else the worker
+            // name (which doubles as an address).
+            let name = payout_destination(miner, &settings, &names);
             if !lm_pool::payout::valid_payout_address(&name) {
                 println!(
                     "payout: miner {miner} owed {} but '{name}' is not a payout address; holding",
@@ -2187,5 +2468,78 @@ mod tests {
         assert_eq!(coins_to_base(&serde_json::json!("1.99047620")), 199_047_620);
         assert_eq!(coins_to_base(&serde_json::json!(-1.0)), 0);
         assert_eq!(coins_to_base(&serde_json::json!(null)), 0);
+    }
+
+    #[test]
+    fn query_parsing_and_decoding() {
+        assert_eq!(query_param("token=abc", "token").as_deref(), Some("abc"));
+        assert_eq!(
+            query_param("a=1&token=xyz&b=2", "token").as_deref(),
+            Some("xyz")
+        );
+        assert_eq!(
+            query_param("token=a%3Ab%20c", "token").as_deref(),
+            Some("a:b c")
+        );
+        assert_eq!(query_param("token=a+b", "token").as_deref(), Some("a b"));
+        assert_eq!(query_param("other=1", "token"), None);
+        assert_eq!(query_param("", "token"), None);
+        assert_eq!(urldecode("plain"), "plain");
+        assert_eq!(urldecode("%zz"), "%zz");
+    }
+
+    #[test]
+    fn due_selection_honours_per_miner_thresholds() {
+        use lm_stratum::server::{MinerSettings, PayoutSettings};
+        let mut settings = PayoutSettings::new();
+        settings.insert(
+            2,
+            MinerSettings {
+                address: None,
+                threshold: Some(1_000),
+            },
+        );
+        let bals = vec![(1u64, 500u64), (2, 500), (3, 500)];
+        // Global 100: 1 and 3 are due; 2's own threshold (1000) holds it.
+        assert_eq!(
+            due_miners(bals.clone(), &settings, 100),
+            vec![(1, 500), (3, 500)]
+        );
+        // Global 600: nobody reaches their effective threshold.
+        assert!(due_miners(bals, &settings, 600).is_empty());
+        // A per-miner threshold below the global one pays earlier.
+        settings.insert(
+            2,
+            MinerSettings {
+                address: None,
+                threshold: Some(50),
+            },
+        );
+        assert_eq!(
+            due_miners(vec![(2, 60)], &settings, 100),
+            vec![(2, 60)]
+        );
+    }
+
+    #[test]
+    fn payout_destination_prefers_the_override() {
+        use lm_stratum::server::{MinerSettings, PayoutSettings};
+        let mut settings = PayoutSettings::new();
+        settings.insert(
+            1,
+            MinerSettings {
+                address: Some("override-addr".to_string()),
+                threshold: None,
+            },
+        );
+        let names: HashMap<u64, String> = [
+            (1u64, "worker-name".to_string()),
+            (2, "worker-2".to_string()),
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(payout_destination(1, &settings, &names), "override-addr");
+        assert_eq!(payout_destination(2, &settings, &names), "worker-2");
+        assert_eq!(payout_destination(9, &settings, &names), "");
     }
 }

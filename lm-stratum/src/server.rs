@@ -86,6 +86,8 @@ struct Shared<P> {
     /// Per-miner value accounting (internal/17 §17.4): what each miner
     /// earned from blocks (pro-rata) and splits, minus what paid out.
     balances: Mutex<PayoutLedger>,
+    /// Per-miner payout settings (address/threshold overrides, internal/17).
+    payout_settings: Mutex<PayoutSettings>,
     /// Pool fee in per-myriad, applied when blocks credit balances.
     pool_fee: Mutex<u16>,
     /// Dev-fee slice (miner id, per-myriad of the block), taken from the
@@ -100,6 +102,42 @@ struct Shared<P> {
     tls: Option<Arc<rustls::ServerConfig>>,
     job_counter: AtomicU64,
     shutdown: AtomicBool,
+}
+
+/// Per-miner payout settings (internal/17): an optional payout address
+/// override (the default is the worker name, which doubles as an address)
+/// and an optional payout threshold override (the default is the pool's
+/// global threshold).
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct MinerSettings {
+    /// Payout address override (validated before storing).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub address: Option<String>,
+    /// Payout threshold override, base units.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub threshold: Option<u64>,
+}
+
+/// Per-miner payout settings keyed by miner id (persisted with the pool
+/// state file).
+pub type PayoutSettings = std::collections::BTreeMap<u64, MinerSettings>;
+
+/// One miner's dashboard row + value totals (internal/17).
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct MinerRow {
+    pub miner: u64,
+    pub name: String,
+    pub agent: String,
+    pub shares: u64,
+    pub rejects: u64,
+    pub online: bool,
+    pub last_seen: u64,
+    /// Rolling hashrate over 60s/10m/1h/24h (H/s).
+    pub rates: [f64; 4],
+    /// Value owed but not yet paid (base units).
+    pub owed: u64,
+    /// Lifetime paid (base units).
+    pub paid: u64,
 }
 
 fn now_secs() -> u64 {
@@ -597,6 +635,82 @@ impl<P: TemplateProvider + 'static> RunningServer<P> {
         self.shared.balances.lock().expect("balances").paid(miner)
     }
 
+    /// One miner's row (worker stats + owed/paid). `None` when unknown.
+    #[must_use]
+    pub fn miner_row(&self, miner: u64, now: u64) -> Option<MinerRow> {
+        let snap = self
+            .shared
+            .workers
+            .lock()
+            .expect("workers")
+            .snapshot(now)
+            .into_iter()
+            .find(|w| w.miner == miner)?;
+        let bal = self.shared.balances.lock().expect("balances");
+        Some(MinerRow {
+            miner,
+            name: snap.name,
+            agent: snap.agent,
+            shares: snap.shares,
+            rejects: snap.rejects,
+            online: snap.online,
+            last_seen: snap.last_seen,
+            rates: snap.rates,
+            owed: bal.owed(miner),
+            paid: bal.paid(miner),
+        })
+    }
+
+    /// Per-miner payout settings snapshot (persisted with the state file).
+    #[must_use]
+    pub fn payout_settings(&self) -> PayoutSettings {
+        self.shared.payout_settings.lock().expect("settings").clone()
+    }
+
+    /// Replace the payout settings (state restore).
+    pub fn restore_payout_settings(&self, settings: PayoutSettings) {
+        *self.shared.payout_settings.lock().expect("settings") = settings;
+    }
+
+    /// Set one miner's payout settings (replaces the whole entry).
+    pub fn set_payout_settings(&self, miner: u64, settings: MinerSettings) {
+        self.shared
+            .payout_settings
+            .lock()
+            .expect("settings")
+            .insert(miner, settings);
+    }
+
+    /// Remove one miner's settings entirely. Returns whether one existed.
+    pub fn clear_payout_settings(&self, miner: u64) -> bool {
+        self.shared
+            .payout_settings
+            .lock()
+            .expect("settings")
+            .remove(&miner)
+            .is_some()
+    }
+
+    /// Miner id owning a worker token (`--workers-file`), for the
+    /// miner-facing HTTP endpoints. `None` when auth is off or the token is
+    /// unknown.
+    #[must_use]
+    pub fn miner_for_token(&self, token: &str) -> Option<u64> {
+        if token.is_empty() {
+            return None;
+        }
+        let tokens = self.shared.worker_tokens.as_ref()?;
+        let worker = tokens
+            .iter()
+            .find(|(_, t)| t.as_str() == token)
+            .map(|(w, _)| w.as_str())?;
+        self.shared
+            .workers
+            .lock()
+            .expect("workers")
+            .miner_for_name(worker)
+    }
+
     /// `(owed_total, paid_total, fees)` — the payout reconciliation triple.
     pub fn payout_totals(&self) -> (u64, u64, u64) {
         self.shared.balances.lock().expect("balances").totals()
@@ -675,6 +789,7 @@ pub fn spawn_server<P: TemplateProvider + 'static>(
         dedupe: Mutex::new(Dedupe::default()),
         workers: Mutex::new(WorkerStats::default()),
         balances: Mutex::new(PayoutLedger::default()),
+        payout_settings: Mutex::new(PayoutSettings::new()),
         pool_fee: Mutex::new(0),
         dev_fee: Mutex::new(None),
         pool_password: password,
@@ -831,5 +946,80 @@ mod auth_tests {
             }
         }
         panic!("split submit got no response within 3 s (partial line discarded)");
+    }
+
+    /// Miner-facing auth + payout settings (internal/17): a worker token
+    /// resolves to the miner id only after authorize, and settings
+    /// round-trip through the server.
+    #[test]
+    fn miner_token_maps_to_the_worker_and_settings_round_trip() {
+        use std::io::{BufRead, BufReader, Write};
+        use std::net::TcpStream;
+        use std::time::Duration;
+
+        let provider = crate::provider::MockProvider::new(
+            [0xffu8; 32],
+            [0x00u8; 32],
+            1_000_000,
+            0,
+        );
+        let mut toks = HashMap::new();
+        toks.insert("worker-a".to_string(), "tok-a".to_string());
+        let server = spawn_server(provider, "127.0.0.1:0", None, Some(toks), None)
+            .expect("spawn");
+        // No worker has connected: the token cannot resolve yet.
+        assert_eq!(server.miner_for_token("tok-a"), None);
+        assert_eq!(server.miner_for_token(""), None);
+
+        let stream = TcpStream::connect(server.addr).expect("connect");
+        stream
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .expect("timeout");
+        let mut r = BufReader::new(stream.try_clone().expect("clone"));
+        let mut w = stream;
+        w.write_all(b"{\"id\":1,\"method\":\"mining.subscribe\",\"params\":[]}\n")
+            .expect("subscribe");
+        w.write_all(
+            b"{\"id\":2,\"method\":\"mining.authorize\",\"params\":[\"worker-a\",\"tok-a\"]}\n",
+        )
+        .expect("authorize");
+        let mut saw_authorize = false;
+        let mut line = String::new();
+        while !saw_authorize {
+            line.clear();
+            let n = r.read_line(&mut line).expect("read");
+            assert!(n > 0, "server closed before authorize response");
+            saw_authorize = line.contains("\"id\":2");
+        }
+        let miner = server
+            .miner_for_token("tok-a")
+            .expect("token resolves to the miner");
+        assert!(server.miner_for_token("wrong").is_none());
+
+        // Settings round-trip + clear.
+        server.set_payout_settings(
+            miner,
+            MinerSettings {
+                address: Some("addr-x".to_string()),
+                threshold: Some(42),
+            },
+        );
+        let s = server.payout_settings();
+        assert_eq!(
+            s.get(&miner).and_then(|s| s.address.as_deref()),
+            Some("addr-x")
+        );
+        assert_eq!(s.get(&miner).and_then(|s| s.threshold), Some(42));
+        assert!(server.clear_payout_settings(miner));
+        assert!(!server.clear_payout_settings(miner));
+        assert!(server.payout_settings().is_empty());
+
+        // The miner row is visible once connected.
+        let row = server.miner_row(miner, now_secs()).expect("row");
+        assert_eq!(row.name, "worker-a");
+        assert_eq!(row.shares, 0);
+        assert_eq!(row.owed, 0);
+        assert_eq!(row.paid, 0);
+        server.stop();
     }
 }
