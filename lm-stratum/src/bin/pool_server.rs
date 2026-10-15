@@ -1692,6 +1692,13 @@ const USAGE: &str = "usage:
   both modes accept [--workers-file PATH]: one `worker:token` per line;
   when set, only listed workers with a matching token may authorize
   (takes precedence over --pool-password)
+  both modes accept [--v2-bind HOST:PORT] to serve Stratum V2 (Noise NX +
+  Lucky jobs) alongside V1; [--v2-authority-key HEX64] pins a stable pool
+  authority secret (default: an ephemeral one, printed at startup —
+  miners pinning it must re-pin after every restart);
+  [--v2-cert-validity SECS] sets the responder certificate lifetime
+  (default 2592000 = 30 days); miners pass the pool's §4.7 URL key and
+  their pool password/token as the V2 device id
   both modes accept [--tls-cert PATH --tls-key PATH] to serve TLS (stratum
   over TLS on the bound port; miners connect with --tls)
   both modes accept [--state-file PATH]: owed/paid ledger, worker names and
@@ -1735,6 +1742,54 @@ fn parse_target(s: &str, flag: &str) -> Result<[u8; 32], String> {
     Ok(t)
 }
 
+/// Start the V2 listener when `--v2-bind` was given (both modes). A stable
+/// `--v2-authority-key` keeps miner pins valid across restarts; without one
+/// an ephemeral authority is generated and its URL key printed (miners must
+/// re-pin after every restart). Flag errors exit the process, the same
+/// posture as the other bind paths.
+fn maybe_spawn_v2<P: TemplateProvider + 'static>(
+    server: &mut RunningServer<P>,
+    v2_bind: &Option<String>,
+    v2_authority_key: &Option<String>,
+    v2_cert_validity: u64,
+) {
+    use lm_stratum::v2_session::{authority_from_secret, authority_url_key, generate_authority};
+    let Some(bind) = v2_bind else {
+        return;
+    };
+    let authority = match v2_authority_key {
+        Some(hex) => {
+            let secret = parse_target(hex, "v2-authority-key").unwrap_or_else(|e| {
+                eprintln!("error: {e}");
+                std::process::exit(2);
+            });
+            authority_from_secret(&secret).unwrap_or_else(|e| {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            })
+        }
+        None => {
+            let authority = generate_authority();
+            println!("v2: no --v2-authority-key: ephemeral authority (pins die on restart)");
+            authority
+        }
+    };
+    match server.spawn_v2_listener(
+        bind,
+        authority,
+        std::time::Duration::from_secs(v2_cert_validity),
+    ) {
+        Ok(addr) => println!(
+            "v2: Stratum V2 (Noise NX + Lucky jobs) on {addr}; authority URL key: {}",
+            authority_url_key(&authority.0)
+        ),
+        Err(e) => {
+            eprintln!("error: cannot bind V2 {bind}: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
 fn main() -> std::process::ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.iter().any(|a| a == "-h" || a == "--help") {
@@ -1767,6 +1822,9 @@ fn main() -> std::process::ExitCode {
     let mut dev_fee_pp: u16 = 0;
     let mut tls_cert: Option<String> = None;
     let mut tls_key: Option<String> = None;
+    let mut v2_bind: Option<String> = None;
+    let mut v2_authority_key: Option<String> = None;
+    let mut v2_cert_validity = 2592000u64; // 30 days
     let mut luckynode = false;
     let mut luckynode_bond = 40_000_000_000u64; // 400 LKYL (spec ~25xR)
     let mut luckynode_epoch = 2880u64; // spec ~48h; tests override shorter
@@ -2097,6 +2155,35 @@ fn main() -> std::process::ExitCode {
                     std::process::exit(2);
                 }));
             }
+            "--v2-bind" => {
+                v2_bind = Some(next("v2-bind").unwrap_or_else(|e| {
+                    eprintln!("error: {e}");
+                    std::process::exit(2);
+                }));
+            }
+            "--v2-authority-key" => {
+                v2_authority_key = Some(next("v2-authority-key").unwrap_or_else(|e| {
+                    eprintln!("error: {e}");
+                    std::process::exit(2);
+                }));
+            }
+            "--v2-cert-validity" => {
+                v2_cert_validity = parse_u64(
+                    &next("v2-cert-validity").unwrap_or_else(|e| {
+                        eprintln!("error: {e}");
+                        std::process::exit(2);
+                    }),
+                    "v2-cert-validity",
+                )
+                .unwrap_or_else(|e| {
+                    eprintln!("error: {e}");
+                    std::process::exit(2);
+                });
+                if v2_cert_validity == 0 {
+                    eprintln!("error: --v2-cert-validity must be >= 1");
+                    return std::process::ExitCode::from(2);
+                }
+            }
             "--net-target" => {
                 net_target = parse_target(
                     &next("net-target").unwrap_or_else(|e| {
@@ -2219,7 +2306,7 @@ fn main() -> std::process::ExitCode {
                 return std::process::ExitCode::from(2);
             }
         };
-        let server = match spawn_server(
+        let mut server = match spawn_server(
             provider,
             &addr.to_string(),
             pool_password.clone(),
@@ -2310,6 +2397,12 @@ fn main() -> std::process::ExitCode {
             server.set_dev_fee(addr, dev_fee_pp);
             println!("dev fee: {dev_fee_pp} per-myriad of each block to {addr}");
         }
+        maybe_spawn_v2(
+            &mut server,
+            &v2_bind,
+            &v2_authority_key,
+            v2_cert_validity,
+        );
         let server = Arc::new(server);
         if let Some(path) = &state_file {
             let srv = Arc::clone(&server);
@@ -2393,7 +2486,7 @@ fn main() -> std::process::ExitCode {
             },
             None => None,
         };
-        let server = match spawn_server(
+        let mut server = match spawn_server(
             MockProvider::new(pool_target, net_target, reward, fees),
             &addr.to_string(),
             pool_password.clone(),
@@ -2422,6 +2515,12 @@ fn main() -> std::process::ExitCode {
         if let Some(addr) = &dev_fee_addr {
             server.set_dev_fee(addr, dev_fee_pp);
         }
+        maybe_spawn_v2(
+            &mut server,
+            &v2_bind,
+            &v2_authority_key,
+            v2_cert_validity,
+        );
         let server = Arc::new(server);
         if let Some(path) = &state_file {
             let srv = Arc::clone(&server);
