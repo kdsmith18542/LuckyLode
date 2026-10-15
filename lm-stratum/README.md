@@ -71,6 +71,9 @@ This is the reference implementation; run it on testnet knowing:
   vardiff mirrors V1 per channel (core `SetTarget` + same-header retarget
   jobs; templates reset to the template target). The provider
   seam and money rules carry over. No `set_difficulty` — targets ride in `mining.notify`.
+  Wire compatibility is proven by an interop test against `codec_sv2`
+  7.0.0 (dev-dependency): a reference handshake against our session,
+  both transport directions byte-identical, length tables agreeing.
 
 Tracked follow-ups: persistence + payout processor + auth
 (`internal/17`), V2 multi-channel + interop test against
