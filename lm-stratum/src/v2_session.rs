@@ -753,6 +753,118 @@ mod tests {
     }
 
     #[test]
+    fn interop_with_reference_codec_both_directions() {
+        use codec_sv2::{Decrypted, Handshake, NoiseDecoder, NoiseEncoder};
+        use framing_sv2::framing::SerializedFrame as RefFrame;
+        use framing_sv2::header::Header as RefHeader;
+        use noise_sv2::Initiator;
+        use std::io::{Read, Write};
+
+        // Our pool side accepts; a reference-initiator drives the handshake
+        // (both speak noise_sv2 2.0.0, so the transcript must agree).
+        let authority = generate_authority();
+        let (mut io, server) = Duplex::pair();
+        let xonly =
+            secp256k1::XOnlyPublicKey::from_slice(&authority.0).expect("authority xonly");
+        let (msg0, hs) = Handshake::initiator(Initiator::new(Some(xonly)))
+            .step_0()
+            .expect("ref step_0");
+        // No threads needed: the duplex buffers decouple the two sides.
+        io.write_all(msg0.payload()).expect("write msg0");
+        let mut ours =
+            V2Session::accept(server, authority, Duration::from_secs(3600)).expect("our accept");
+        let mut reply = [0u8; HANDSHAKE_RESPONDER_LEN];
+        io.read_exact(&mut reply).expect("read reply");
+        let transport = hs.step_2(reply).expect("ref step_2");
+        let (mut ref_enc, ref_dec) = transport.split();
+
+        // Real Lucky messages, plus a multi-chunk payload and an empty one.
+        let frames = vec![
+            to_frame(&crate::v2::LuckyJob {
+                channel_id: 1,
+                job_id: 9,
+                height: 1234,
+                header: vec![0xabu8; 109],
+                pool_target: [0x01; 32],
+                net_target: [0x00; 32],
+                clean: true,
+            }),
+            to_frame(&crate::v2::LuckySubmit {
+                channel_id: 1,
+                job_id: 9,
+                sequence_number: 3,
+                nonce: 0xdead_beef_1234_5678,
+            }),
+            Frame::new(0, 0x21, true, (0..70_000).map(|i| (i % 251) as u8).collect()),
+            Frame::new(0, 0x04, false, Vec::new()),
+        ];
+
+        // Length-table equivalence against THEIR function, per frame.
+        for f in &frames {
+            let rh = RefHeader::from_bytes(&f.header()).expect("their header parses ours");
+            assert_eq!(
+                ciphertext_len(f.payload.len()),
+                codec_sv2::encrypted_payload_length(&rh),
+                "length table must agree"
+            );
+        }
+
+        // Ours -> reference decoder.
+        let mut decoder = NoiseDecoder::new();
+        let mut dec_state = ref_dec;
+        for f in &frames {
+            ours.send(f).expect("our send");
+            loop {
+                match decoder.next_transport_frame(dec_state) {
+                    Ok(Decrypted::Frame(sf, s)) => {
+                        dec_state = s;
+                        assert_eq!(sf.as_bytes(), &f.encode());
+                        break;
+                    }
+                    Ok(Decrypted::Incomplete(_, s)) => {
+                        dec_state = s;
+                        let want = decoder.writable_len();
+                        let mut buf = vec![0u8; want];
+                        io.read_exact(&mut buf).expect("read more ct");
+                        decoder.writable()[..want].copy_from_slice(&buf);
+                    }
+                    Err(e) => panic!("reference failed to decode ours: {e:?}"),
+                }
+            }
+        }
+
+        // Reference encoder -> ours.
+        let mut encoder = NoiseEncoder::new();
+        for f in &frames {
+            let plain = RefFrame::from_bytes(f.encode()).expect("their frame from our bytes");
+            let slice = encoder
+                .encode_transport(plain, &mut ref_enc)
+                .expect("ref encode");
+            io.write_all(slice.as_ref()).expect("write ref ct");
+            let got = ours.recv().expect("our recv of theirs");
+            assert_eq!(got, *f);
+        }
+
+        // Tampered bytes fail reference-side authentication (last, since a
+        // failed round consumes the state).
+        io.flip.store(true, Ordering::SeqCst);
+        ours.send(&frames[0]).expect("send for tamper");
+        loop {
+            match decoder.next_transport_frame(dec_state) {
+                Ok(Decrypted::Frame(..)) => panic!("tampered bytes must not decode"),
+                Ok(Decrypted::Incomplete(_, s)) => {
+                    dec_state = s;
+                    let want = decoder.writable_len();
+                    let mut buf = vec![0u8; want];
+                    io.read_exact(&mut buf).expect("read tampered ct");
+                    decoder.writable()[..want].copy_from_slice(&buf);
+                }
+                Err(_) => break,
+            }
+        }
+    }
+
+    #[test]
     fn oversized_frames_are_refused_before_encryption() {
         let authority = generate_authority();
         let (client, server) = Duplex::pair();
