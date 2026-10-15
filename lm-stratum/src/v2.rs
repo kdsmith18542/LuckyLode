@@ -62,12 +62,15 @@ pub const PROTOCOL_MINING: u8 = 0;
 pub enum FrameError {
     /// A frame header claimed a payload larger than [`MAX_FRAME_LEN`].
     PayloadTooLarge(usize),
+    /// Fewer than [`Frame::HEADER_LEN`] bytes were available for a header.
+    ShortHeader,
 }
 
 impl fmt::Display for FrameError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             FrameError::PayloadTooLarge(n) => write!(f, "frame payload {n} exceeds cap"),
+            FrameError::ShortHeader => write!(f, "short frame header"),
         }
     }
 }
@@ -81,6 +84,10 @@ pub struct Frame {
 }
 
 impl Frame {
+    /// Frame header length: extension `U16` LE, message type `U8`, payload
+    /// length `U24` LE.
+    pub const HEADER_LEN: usize = 6;
+
     #[must_use]
     pub fn new(extension_type: u16, msg_type: u8, channel_msg: bool, payload: Vec<u8>) -> Self {
         let extension_type = if channel_msg {
@@ -107,16 +114,43 @@ impl Frame {
         self.extension_type & !CHANNEL_MSG_BIT
     }
 
+    /// The 6-byte header (extension with the channel bit, type, `U24`
+    /// payload length).
+    #[must_use]
+    pub fn header(&self) -> [u8; Self::HEADER_LEN] {
+        let n = self.payload.len() as u32;
+        [
+            (self.extension_type & 0xff) as u8,
+            (self.extension_type >> 8) as u8,
+            self.msg_type,
+            (n & 0xff) as u8,
+            ((n >> 8) & 0xff) as u8,
+            ((n >> 16) & 0xff) as u8,
+        ]
+    }
+
+    /// Parse a 6-byte header into `(extension_type, msg_type, payload_len)`.
+    ///
+    /// # Errors
+    /// [`FrameError::ShortHeader`] / [`FrameError::PayloadTooLarge`].
+    pub fn parse_header(bytes: &[u8]) -> Result<(u16, u8, usize), FrameError> {
+        if bytes.len() < Self::HEADER_LEN {
+            return Err(FrameError::ShortHeader);
+        }
+        let extension_type = u16::from_le_bytes([bytes[0], bytes[1]]);
+        let msg_type = bytes[2];
+        let len = (bytes[3] as usize) | ((bytes[4] as usize) << 8) | ((bytes[5] as usize) << 16);
+        if len > MAX_FRAME_LEN {
+            return Err(FrameError::PayloadTooLarge(len));
+        }
+        Ok((extension_type, msg_type, len))
+    }
+
     /// Header + payload bytes.
     #[must_use]
     pub fn encode(&self) -> Vec<u8> {
-        let mut out = Vec::with_capacity(6 + self.payload.len());
-        out.extend_from_slice(&self.extension_type.to_le_bytes());
-        out.push(self.msg_type);
-        let n = self.payload.len() as u32;
-        out.push((n & 0xff) as u8);
-        out.push(((n >> 8) & 0xff) as u8);
-        out.push(((n >> 16) & 0xff) as u8);
+        let mut out = Vec::with_capacity(Self::HEADER_LEN + self.payload.len());
+        out.extend_from_slice(&self.header());
         out.extend_from_slice(&self.payload);
         out
     }
@@ -124,26 +158,21 @@ impl Frame {
     /// Decode one frame from the front of `buf`. `Ok(None)` = the buffer
     /// does not yet hold a complete frame (streaming-friendly).
     pub fn decode(buf: &[u8]) -> Result<Option<(Self, usize)>, FrameError> {
-        if buf.len() < 6 {
+        if buf.len() < Self::HEADER_LEN {
             return Ok(None);
         }
-        let extension_type = u16::from_le_bytes([buf[0], buf[1]]);
-        let msg_type = buf[2];
-        let len = (buf[3] as usize) | ((buf[4] as usize) << 8) | ((buf[5] as usize) << 16);
-        if len > MAX_FRAME_LEN {
-            return Err(FrameError::PayloadTooLarge(len));
-        }
-        if buf.len() < 6 + len {
+        let (extension_type, msg_type, len) = Self::parse_header(buf)?;
+        if buf.len() < Self::HEADER_LEN + len {
             return Ok(None);
         }
-        let payload = buf[6..6 + len].to_vec();
+        let payload = buf[Self::HEADER_LEN..Self::HEADER_LEN + len].to_vec();
         Ok(Some((
             Self {
                 extension_type,
                 msg_type,
                 payload,
             },
-            6 + len,
+            Self::HEADER_LEN + len,
         )))
     }
 }
@@ -226,7 +255,7 @@ impl fmt::Display for CodecError {
 // ---- little-endian primitive writer/reader (sv2-spec §3.1) ----
 
 #[derive(Debug, Default)]
-struct Writer {
+pub(crate) struct Writer {
     buf: Vec<u8>,
 }
 
@@ -273,7 +302,7 @@ impl Writer {
 }
 
 #[derive(Debug)]
-struct Reader<'a> {
+pub(crate) struct Reader<'a> {
     buf: &'a [u8],
     pos: usize,
 }
@@ -350,20 +379,20 @@ impl<'a> Reader<'a> {
 }
 
 /// A typed core-protocol message.
-trait Message: Sized {
+pub(crate) trait Message: Sized {
     const MSG_TYPE: u8;
     const CHANNEL_MSG: bool;
     fn encode_payload(&self, w: &mut Writer);
     fn decode_payload(r: &mut Reader<'_>) -> Result<Self, CodecError>;
 }
 
-fn to_frame<M: Message>(m: &M) -> Frame {
+pub(crate) fn to_frame<M: Message>(m: &M) -> Frame {
     let mut w = Writer::new();
     m.encode_payload(&mut w);
     Frame::new(EXTENSION_TYPE_CORE, M::MSG_TYPE, M::CHANNEL_MSG, w.buf)
 }
 
-fn from_frame<M: Message>(f: &Frame) -> Result<M, CodecError> {
+pub(crate) fn from_frame<M: Message>(f: &Frame) -> Result<M, CodecError> {
     if f.extension() != EXTENSION_TYPE_CORE {
         return Err(CodecError::WrongExtension(f.extension()));
     }
