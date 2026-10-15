@@ -925,6 +925,12 @@ pre{background:#0d0f14;border:1px solid var(--line);border-radius:8px;padding:10
   </section>
 
   <div id="status" class="dim"></div>
+  <footer class="dim" style="margin:20px 0 8px;text-align:center;font-size:12px">
+    FUN is free play money — no value, never on-chain, not withdrawable ·
+    <a href="https://luckylode.cc/pool/" style="color:var(--dim)">pool</a> ·
+    <a href="https://luckylode.cc/explorer/" style="color:var(--dim)">explorer</a> ·
+    <a href="https://luckylode.cc/" style="color:var(--dim)">luckylode.cc</a>
+  </footer>
 </main>
 <script>
 const SYMS=["spark","glint","flare","ember","cinder","bonfire","beacon","comet","aurora","mythic","lodestone 📍","almanac 📖"];
@@ -1014,7 +1020,7 @@ $("award").onclick=async()=>{try{const j=await adminPost("/api/admin/award",{pla
 $("awardtop").onclick=async()=>{try{const j=await adminPost("/api/admin/award-top",{kind:$("atop").value,n:parseInt($("an").value,10),amount:$("aeach").value});status("awarded "+j.awarded.length+" bonuses",true);}catch(e){status(e.message,false);}};
 $("map").onclick=async()=>{try{await adminPost("/api/admin/map",{player:parseInt($("mp").value,10),worker:$("mw").value,stake:$("ms").value,luckynode:$("ml").value||undefined});status("mapped player "+$("mp").value,true);}catch(e){status(e.message,false);}};
 fetch("api/stats").then(r=>r.json()).then(s=>{$("net").textContent=s.network+" · RTP "+(s.rtp*100).toFixed(0)+"% · bankroll "+s.bankroll_lkyl+" LKYL";
-  const e=s.edge;$("house-stats").innerHTML="edge → dev "+e.dev+" · pot "+e.pot+" · airdrop "+e.airdrop+" · services "+e.services+" µLKYL · spins "+s.total_spins+" · max bet "+s.max_bet_lkyl+" LKYL";}).catch(()=>{});
+  const e=s.edge;$("house-stats").innerHTML="edge → dev "+e.dev+" · pot "+e.pot+" · airdrop "+e.airdrop+" · services "+e.services+" µLKYL · spins "+s.total_spins+" · max bet "+s.max_bet_lkyl+" LKYL · <b>FUN</b> "+s.fun.total_spins+" spins / "+s.fun.wagered_fun+" wagered (free play, outside GGR)";}).catch(()=>{});
 loadPlayer().catch(()=>{});
 </script></body></html>
 "#;
