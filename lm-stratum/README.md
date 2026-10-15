@@ -68,11 +68,12 @@ This is the reference implementation; run it on testnet knowing:
   per connection, `LuckyJob` full-template dispatch and `LuckySubmit`
   (u64 nonce) validation through the same registry/dedupe/ledger as V1.
   V2 auth reuses the V1 password/token map (token rides as device id);
-  no V2 vardiff yet (channel keeps the template target). The provider
+  vardiff mirrors V1 per channel (core `SetTarget` + same-header retarget
+  jobs; templates reset to the template target). The provider
   seam and money rules carry over. No `set_difficulty` — targets ride in `mining.notify`.
 
 Tracked follow-ups: persistence + payout processor + auth
-(`internal/17`), V2 vardiff + multi-channel + interop test against
+(`internal/17`), V2 multi-channel + interop test against
 `codec_sv2`'s Encoder/Decoder,
 `lm-miner pool` subcommand speaking
 `client`, attestation-gated league entry.
