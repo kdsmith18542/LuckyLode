@@ -368,6 +368,7 @@ fn stats_json<P: TemplateProvider + 'static>(
                 serde_json::json!({
                     "epoch": d.epoch, "height": d.height, "winner": d.winner,
                     "budget": d.budget, "txid": d.txid, "cosigns": d.cosigns,
+                    "seed": d.seed_hash, "time": d.time,
                 })
             })
             .collect();

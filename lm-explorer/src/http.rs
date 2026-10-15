@@ -17,12 +17,32 @@ const CSS: &str = "body{background:#0d1117;color:#e6edf3;font:14px ui-monospace,
 
 fn page(title: &str, body: String) -> String {
     format!(
-        "<!doctype html><html><head><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>{title} — Lucky Lode explorer</title><style>{CSS}</style></head><body><h1><a href=/ style=\"color:#ffd166;text-decoration:none\">Lucky Lode explorer</a></h1>{body}</body></html>"
+        "<!doctype html><html><head><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>{title} — Lucky Lode explorer</title><style>{CSS}</style></head><body><h1><a href=/ style=\"color:#ffd166;text-decoration:none\">Lucky Lode explorer</a></h1><div class=dim style=\"margin:-4px 0 12px;font-size:13px\"><a href=/>blocks</a> · <a href=/game>game</a></div>{body}</body></html>"
     )
 }
 
 fn coins(v: i64) -> String {
     format!("{}.{:08}", v / 100_000_000, (v % 100_000_000).abs())
+}
+
+/// Like [`coins`] but trims trailing zeros — ramp-era game amounts are
+/// sub-0.01 LKYL and 2-decimal formatting would round them to "0".
+fn coins_trim(v: i64) -> String {
+    let s = coins(v);
+    let t = s.trim_end_matches('0').trim_end_matches('.');
+    if t.is_empty() || t == "-" {
+        "0".to_string()
+    } else {
+        t.to_string()
+    }
+}
+
+fn tx_or_note(t: &str) -> String {
+    if t.len() == 64 && t.chars().all(|c| c.is_ascii_hexdigit()) {
+        link_tx(t)
+    } else {
+        format!("<span class=dim>{}</span>", esc(t))
+    }
 }
 
 fn esc(s: &str) -> String {
@@ -77,6 +97,86 @@ fn home(idx: &Indexer) -> String {
     )
 }
 
+/// Game layer: live jackpot/pot state, Luckynode Draws, jackpot hits and
+/// pot splashes (pool-reported per block).
+fn game_page(idx: &Indexer) -> String {
+    let state = idx.game_state().unwrap_or(serde_json::json!({}));
+    let reserve = state.get("reserve").and_then(|v| v.as_i64()).unwrap_or(0);
+    let pot = state.get("pot").and_then(|v| v.as_i64()).unwrap_or(0);
+    let drought = state.get("drought").and_then(|v| v.as_i64()).unwrap_or(0);
+    let jd = state.get("jackpotdivisor").and_then(|v| v.as_i64()).unwrap_or(100);
+    let pd = state.get("potdivisor").and_then(|v| v.as_i64()).unwrap_or(1000);
+    let dl = state.get("potdrought").and_then(|v| v.as_i64()).unwrap_or(4320);
+    let blocks = idx.game_blocks_recent(100).unwrap_or_default();
+
+    let mut hits = String::new();
+    let mut splashes = String::new();
+    for b in &blocks {
+        let h = b["height"].as_i64().unwrap_or(0);
+        let finder = esc(b["finder"].as_str().unwrap_or(""));
+        if b["bonus"].as_i64().unwrap_or(0) > 0 {
+            hits += &format!(
+                "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
+                link_block(h),
+                finder,
+                coins_trim(b["bonus"].as_i64().unwrap_or(0)),
+                coins_trim(b["league"].as_i64().unwrap_or(0)),
+            );
+        }
+        if b["pot"].as_i64().unwrap_or(0) > 0 {
+            splashes += &format!(
+                "<tr><td>{}</td><td>{}</td><td>{}</td></tr>",
+                link_block(h),
+                finder,
+                coins_trim(b["pot"].as_i64().unwrap_or(0)),
+            );
+        }
+    }
+    if hits.is_empty() {
+        hits = "<tr><td colspan=4 class=dim>no jackpot hits yet</td></tr>".to_string();
+    }
+    if splashes.is_empty() {
+        splashes = "<tr><td colspan=3 class=dim>no pot splashes yet</td></tr>".to_string();
+    }
+
+    let mut draws = String::new();
+    for d in idx.draws_recent(20).unwrap_or_default() {
+        let seed = d["seed"].as_str().unwrap_or("");
+        let seed_cell = if seed.len() == 64 {
+            format!("<a href=/block/{seed}>{}</a>", &seed[..12])
+        } else {
+            esc(seed)
+        };
+        let winner = d["winner"].as_str().unwrap_or("");
+        draws += &format!(
+            "<tr><td>{}</td><td>{}</td><td><span class=dim>{}</span></td><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
+            d["epoch"].as_i64().unwrap_or(0),
+            link_block(d["height"].as_i64().unwrap_or(0)),
+            esc(&winner[..winner.len().min(12)]),
+            coins_trim(d["budget"].as_i64().unwrap_or(0)),
+            d["cosigns"].as_i64().unwrap_or(0),
+            tx_or_note(d["txid"].as_str().unwrap_or("")),
+            seed_cell,
+        );
+    }
+    if draws.is_empty() {
+        draws = "<tr><td colspan=7 class=dim>no draws yet</td></tr>".to_string();
+    }
+    page(
+        "game",
+        format!(
+            "{}<div class=card>jackpot reserve <b>{}</b> · pot <b>{}</b> · pot drought <b>{}/{}</b> · odds: jackpot 1-in-{} blocks, pot 1-in-{} (pity splash forced at the drought limit)</div><h2>Luckynode Draws</h2><table><tr><th>epoch</th><th>height</th><th>winner</th><th>budget</th><th>cosigns</th><th>txid</th><th>seed</th></tr>{draws}</table><h2>Jackpot hits</h2><table><tr><th>height</th><th>finder</th><th>bonus</th><th>league inflow</th></tr>{hits}</table><h2>Pot splashes</h2><table><tr><th>height</th><th>finder</th><th>splash</th></tr>{splashes}</table>",
+            search_box(),
+            coins(reserve),
+            coins(pot),
+            drought,
+            dl,
+            jd,
+            pd,
+        ),
+    )
+}
+
 fn block_page(idx: &Indexer, b: &serde_json::Value) -> String {
     let h = b["height"].as_i64().unwrap_or(0);
     let txs = idx.block_txs(h).unwrap_or_default();
@@ -84,10 +184,20 @@ fn block_page(idx: &Indexer, b: &serde_json::Value) -> String {
     for t in &txs {
         rows += &format!("<tr><td>{}</td></tr>", link_tx(t));
     }
+    let game_rows = match idx.game_block(h).unwrap_or(None) {
+        Some(g) => format!(
+            "<tr><th>jackpot bonus</th><td>{}</td></tr><tr><th>pot splash</th><td>{}</td></tr><tr><th>league inflow</th><td>{}</td></tr><tr><th>finder</th><td>{}</td></tr>",
+            coins(g["bonus"].as_i64().unwrap_or(0)),
+            coins(g["pot"].as_i64().unwrap_or(0)),
+            coins(g["league"].as_i64().unwrap_or(0)),
+            esc(g["finder"].as_str().unwrap_or("")),
+        ),
+        None => String::new(),
+    };
     page(
         &format!("block {h}"),
         format!(
-            "<table><tr><th>height</th><td>{}</td></tr><tr><th>hash</th><td>{}</td></tr><tr><th>time</th><td>{}</td></tr><tr><th>confirmations</th><td>{}</td></tr><tr><th>txs</th><td>{}</td></tr><tr><th>difficulty</th><td>{:.2}</td></tr><tr><th>jackpot reserve</th><td>{}</td></tr><tr><th>pot</th><td>{}</td></tr><tr><th>drought</th><td>{}</td></tr></table><h2>Transactions</h2><table>{rows}</table>",
+            "<table><tr><th>height</th><td>{}</td></tr><tr><th>hash</th><td>{}</td></tr><tr><th>time</th><td>{}</td></tr><tr><th>confirmations</th><td>{}</td></tr><tr><th>txs</th><td>{}</td></tr><tr><th>difficulty</th><td>{:.2}</td></tr><tr><th>jackpot reserve</th><td>{}</td></tr><tr><th>pot</th><td>{}</td></tr><tr><th>drought</th><td>{}</td></tr>{game_rows}</table><h2>Transactions</h2><table>{rows}</table>",
             link_block(h),
             b["hash"].as_str().unwrap_or(""),
             b["time"],
@@ -226,9 +336,20 @@ fn handle(idx: &Indexer, method: &str, path: &str) -> String {
     if route == "/api/tip" || route == "/api/stats" {
         return json_resp(&idx.stats().unwrap_or(serde_json::json!({"height": -1})));
     }
+    if route == "/api/game" {
+        let out = serde_json::json!({
+            "state": idx.game_state().unwrap_or(serde_json::json!({})),
+            "draws": idx.draws_recent(50).unwrap_or_default(),
+            "blocks": idx.game_blocks_recent(100).unwrap_or_default(),
+        });
+        return json_resp(&out);
+    }
     // HTML routes
     if route == "/" {
         return html_resp(&home(idx));
+    }
+    if route == "/game" {
+        return html_resp(&game_page(idx));
     }
     if let Some(key) = route.strip_prefix("/block/") {
         return match resolve_block(idx, key) {

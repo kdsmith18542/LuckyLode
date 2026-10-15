@@ -11,6 +11,9 @@
 use lm_stratum::rpc::RpcClient;
 use rusqlite::{params, Connection};
 
+use std::io::{Read, Write};
+use std::net::TcpStream;
+
 pub struct Indexer {
     db: Connection,
     rpc: RpcClient,
@@ -21,6 +24,41 @@ pub struct SyncReport {
     pub rolled_back: u64,
     pub indexed: u64,
     pub tip: u64,
+}
+
+/// Minimal HTTP GET (std only) → parsed JSON. The explorer reads the
+/// pool's dashboard API for game events; everything else is node RPC.
+fn http_get_json(url: &str) -> Result<serde_json::Value, String> {
+    let rest = url
+        .strip_prefix("http://")
+        .ok_or_else(|| format!("only http:// supported: {url}"))?;
+    let (host_port, path) = match rest.split_once('/') {
+        Some((hp, p)) => (hp, format!("/{p}")),
+        None => (rest, "/".to_string()),
+    };
+    let addr = if host_port.contains(':') {
+        host_port.to_string()
+    } else {
+        format!("{host_port}:80")
+    };
+    let stream = TcpStream::connect(&addr).map_err(|e| format!("connect {addr}: {e}"))?;
+    stream
+        .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+        .ok();
+    stream
+        .set_write_timeout(Some(std::time::Duration::from_secs(5)))
+        .ok();
+    let req = format!("GET {path} HTTP/1.0\r\nHost: {host_port}\r\nConnection: close\r\n\r\n");
+    (&stream)
+        .write_all(req.as_bytes())
+        .map_err(|e| format!("write: {e}"))?;
+    let mut raw = Vec::new();
+    (&stream)
+        .read_to_end(&mut raw)
+        .map_err(|e| format!("read: {e}"))?;
+    let text = String::from_utf8_lossy(&raw);
+    let body = text.split_once("\r\n\r\n").map(|(_, b)| b).unwrap_or("");
+    serde_json::from_str(body).map_err(|e| format!("json: {e}"))
 }
 
 fn schema(db: &Connection) -> rusqlite::Result<()> {
@@ -39,7 +77,14 @@ fn schema(db: &Connection) -> rusqlite::Result<()> {
            spent_by TEXT, spent_n INTEGER,
            PRIMARY KEY(txid, n));
          CREATE INDEX IF NOT EXISTS idx_outs_address ON outs(address);
-         CREATE INDEX IF NOT EXISTS idx_outs_spent ON outs(spent_by);",
+         CREATE INDEX IF NOT EXISTS idx_outs_spent ON outs(spent_by);
+         CREATE TABLE IF NOT EXISTS game_blocks(
+           height INTEGER PRIMARY KEY, bonus INTEGER NOT NULL,
+           pot INTEGER NOT NULL, league INTEGER NOT NULL, finder TEXT NOT NULL);
+         CREATE TABLE IF NOT EXISTS draws(
+           epoch INTEGER PRIMARY KEY, height INTEGER NOT NULL, seed TEXT NOT NULL,
+           winner TEXT NOT NULL, budget INTEGER NOT NULL, txid TEXT NOT NULL,
+           cosigns INTEGER NOT NULL, time INTEGER NOT NULL);",
     )
 }
 
@@ -213,6 +258,68 @@ impl Indexer {
         Ok(SyncReport { rolled_back, indexed, tip })
     }
 
+    /// Pull game events (per-block jackpot/pot/league, Luckynode Draws)
+    /// from the pool's dashboard API into the index. Best-effort: the
+    /// chain index works without it; a pool outage just leaves these
+    /// tables stale (the caller decides how loudly to report that).
+    pub fn sync_pool(&mut self, pool_api: &str) -> Result<u64, String> {
+        let v = http_get_json(&format!("{}/api/stats", pool_api.trim_end_matches('/')))?;
+        let mut n = 0u64;
+        if let Some(blocks) = v.get("last_blocks").and_then(|b| b.as_array()) {
+            for b in blocks {
+                let h = b.get("height").and_then(|x| x.as_i64()).unwrap_or(-1);
+                if h < 0 {
+                    continue;
+                }
+                let bonus = b.get("bonus").and_then(|x| x.as_i64()).unwrap_or(0);
+                let pot = b.get("pot").and_then(|x| x.as_i64()).unwrap_or(0);
+                let league = b.get("league_overflow").and_then(|x| x.as_i64()).unwrap_or(0);
+                let finder = b.get("finder_name").and_then(|x| x.as_str()).unwrap_or("");
+                self.db
+                    .execute(
+                        "INSERT INTO game_blocks(height, bonus, pot, league, finder)
+                         VALUES (?1, ?2, ?3, ?4, ?5)
+                         ON CONFLICT(height) DO UPDATE SET
+                           bonus=?2, pot=?3, league=?4, finder=?5",
+                        params![h, bonus, pot, league, finder],
+                    )
+                    .map_err(|e| format!("game block {h}: {e}"))?;
+                n += 1;
+            }
+        }
+        if let Some(draws) = v
+            .get("luckynode")
+            .and_then(|l| l.get("recent_draws"))
+            .and_then(|d| d.as_array())
+        {
+            for d in draws {
+                let epoch = d.get("epoch").and_then(|x| x.as_i64()).unwrap_or(-1);
+                if epoch < 0 {
+                    continue;
+                }
+                let height = d.get("height").and_then(|x| x.as_i64()).unwrap_or(0);
+                let seed = d.get("seed").and_then(|x| x.as_str()).unwrap_or("");
+                let winner = d.get("winner").and_then(|x| x.as_str()).unwrap_or("");
+                let budget = d.get("budget").and_then(|x| x.as_i64()).unwrap_or(0);
+                let txid = d.get("txid").and_then(|x| x.as_str()).unwrap_or("");
+                let cosigns = d.get("cosigns").and_then(|x| x.as_i64()).unwrap_or(0);
+                let time = d.get("time").and_then(|x| x.as_i64()).unwrap_or(0);
+                self.db
+                    .execute(
+                        "INSERT INTO draws(epoch, height, seed, winner, budget, txid, cosigns, time)
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                         ON CONFLICT(epoch) DO UPDATE SET
+                           height=?2, seed=?3, winner=?4, budget=?5, txid=?6,
+                           cosigns=?7, time=?8",
+                        params![epoch, height, seed, winner, budget, txid, cosigns, time],
+                    )
+                    .map_err(|e| format!("draw {epoch}: {e}"))?;
+                n += 1;
+            }
+        }
+        Ok(n)
+    }
+
     // ---- query surface for the HTTP layer ----
 
     pub fn block_by_height(&self, height: i64) -> Result<Option<serde_json::Value>, String> {
@@ -380,6 +487,86 @@ impl Indexer {
             "supply": supply,
         }))
     }
+
+    /// Per-block game columns for one height (bonus/pot/league/finder).
+    pub fn game_block(&self, height: i64) -> Result<Option<serde_json::Value>, String> {
+        let row: Option<(i64, i64, i64, String)> = self
+            .db
+            .query_row(
+                "SELECT bonus, pot, league, finder FROM game_blocks WHERE height = ?1",
+                [height],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .map(Some)
+            .unwrap_or(None);
+        Ok(row.map(|(bonus, pot, league, finder)| {
+            serde_json::json!({
+                "height": height, "bonus": bonus, "pot": pot,
+                "league": league, "finder": finder,
+            })
+        }))
+    }
+
+    /// Recent game blocks (newest first): every row the pool reported.
+    pub fn game_blocks_recent(&self, limit: i64) -> Result<Vec<serde_json::Value>, String> {
+        let mut st = self
+            .db
+            .prepare(
+                "SELECT height, bonus, pot, league, finder FROM game_blocks
+                 ORDER BY height DESC LIMIT ?1",
+            )
+            .map_err(|e| format!("game list: {e}"))?;
+        let rows = st
+            .query_map([limit], |r| {
+                Ok(serde_json::json!({
+                    "height": r.get::<_, i64>(0)?, "bonus": r.get::<_, i64>(1)?,
+                    "pot": r.get::<_, i64>(2)?, "league": r.get::<_, i64>(3)?,
+                    "finder": r.get::<_, String>(4)?,
+                }))
+            })
+            .map_err(|e| format!("game list: {e}"))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| format!("game list: {e}"))?;
+        Ok(rows)
+    }
+
+    /// Luckynode Draws (newest first).
+    pub fn draws_recent(&self, limit: i64) -> Result<Vec<serde_json::Value>, String> {
+        let mut st = self
+            .db
+            .prepare(
+                "SELECT epoch, height, seed, winner, budget, txid, cosigns, time
+                 FROM draws ORDER BY epoch DESC LIMIT ?1",
+            )
+            .map_err(|e| format!("draw list: {e}"))?;
+        let rows = st
+            .query_map([limit], |r| {
+                Ok(serde_json::json!({
+                    "epoch": r.get::<_, i64>(0)?, "height": r.get::<_, i64>(1)?,
+                    "seed": r.get::<_, String>(2)?, "winner": r.get::<_, String>(3)?,
+                    "budget": r.get::<_, i64>(4)?, "txid": r.get::<_, String>(5)?,
+                    "cosigns": r.get::<_, i64>(6)?, "time": r.get::<_, i64>(7)?,
+                }))
+            })
+            .map_err(|e| format!("draw list: {e}"))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| format!("draw list: {e}"))?;
+        Ok(rows)
+    }
+
+    /// Live game state from the node (reserve/pot/drought/divisors).
+    pub fn game_state(&self) -> Result<serde_json::Value, String> {
+        let ji = self.rpc.call("getjackpotinfo", serde_json::json!([]))?;
+        Ok(serde_json::json!({
+            "height": ji.get("height").and_then(|v| v.as_i64()).unwrap_or(-1),
+            "reserve": ji.get("reserve").and_then(|v| v.as_i64()).unwrap_or(0),
+            "pot": ji.get("pot").and_then(|v| v.as_i64()).unwrap_or(0),
+            "drought": ji.get("drought").and_then(|v| v.as_i64()).unwrap_or(0),
+            "potdivisor": ji.get("potdivisor").and_then(|v| v.as_i64()).unwrap_or(1000),
+            "jackpotdivisor": ji.get("jackpotdivisor").and_then(|v| v.as_i64()).unwrap_or(100),
+            "potdrought": ji.get("potdrought").and_then(|v| v.as_i64()).unwrap_or(4320),
+        }))
+    }
 }
 
 #[cfg(test)]
@@ -407,6 +594,33 @@ mod tests {
         assert_eq!(a["balance"], 0);
         assert_eq!(a["received"], 100);
         assert_eq!(a["txs"].as_array().map(|v| v.len()).unwrap_or(0), 2);
+        let _ = std::fs::remove_file(&dir);
+    }
+
+    #[test]
+    fn game_tables_roundtrip() {
+        let rpc = RpcClient::new("127.0.0.1:1", "u", "p");
+        let dir = std::env::temp_dir().join("explorer-game-test.db");
+        let _ = std::fs::remove_file(&dir);
+        let idx = Indexer::open(dir.to_str().expect("path"), rpc).expect("open");
+        idx.db
+            .execute_batch(
+                "INSERT INTO game_blocks(height, bonus, pot, league, finder)
+                 VALUES (8, 6349205, 0, 0, 'dbg5'), (9, 0, 0, 57143, 'dbg5'),
+                        (10, 0, 0, 63492, 'dbg5');
+                 INSERT INTO draws(epoch, height, seed, winner, budget, txid, cosigns, time)
+                 VALUES (2, 9, '000000da', '925505b0', 2857, 'held: x', 1, 1792023245);",
+            )
+            .expect("fixture");
+        let b = idx.game_block(8).expect("game block").expect("row");
+        assert_eq!(b["bonus"], 6349205);
+        let list = idx.game_blocks_recent(10).expect("list");
+        assert_eq!(list.len(), 3);
+        assert_eq!(list[0]["height"], 10); // newest first
+        let draws = idx.draws_recent(5).expect("draws");
+        assert_eq!(draws[0]["epoch"], 2);
+        assert_eq!(draws[0]["cosigns"], 1);
+        assert_eq!(draws[0]["budget"], 2857);
         let _ = std::fs::remove_file(&dir);
     }
 }
