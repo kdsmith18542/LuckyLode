@@ -206,5 +206,5 @@ mem  = d68a955d887a8e4d4c40d34ec2bc4fbdf8e8f4135e0e856dd6d6a2f957b8110d
 out  = e491f172e0d0adcb161fb264413292bfca631fff8c390218b6cabdac6f452131
 ```
 
-Any C++ `ember_hash` port disagreeing on any byte fails the KAT gate
+Any C++ `lucky_hash` port disagreeing on any byte fails the KAT gate
 before review.
