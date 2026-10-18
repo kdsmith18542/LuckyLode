@@ -1,0 +1,21 @@
+[package]
+name = "lm-keys"
+version = "0.1.0"
+edition = "2021"
+description = "Lucky Lode wallet keys: BIP39/BIP32 HD wallet, addresses, transparent transaction builder and signer (self-custody core)"
+license = "GPL-3.0-only"
+
+[dependencies]
+secp256k1 = { version = "0.28", features = ["recovery"] }
+sha2 = "0.10"
+ripemd = "0.1"
+bs58 = "0.5"
+hmac = "0.12"
+bip39 = { version = "3", features = ["rand", "unicode-normalization"] }
+blake2b_simd = "1.0"
+hex = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]
+lm-stratum = { path = "../lm-stratum" }
