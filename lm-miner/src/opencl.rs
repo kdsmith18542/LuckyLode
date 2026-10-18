@@ -121,6 +121,8 @@ extern "C" {
         event: *mut *mut c_void,
     ) -> i32;
     fn clFinish(queue: *mut c_void) -> i32;
+    fn clWaitForEvents(num_events: u32, event_list: *const *mut c_void) -> i32;
+    fn clReleaseEvent(event: *mut c_void) -> i32;
     fn clReleaseMemObject(m: *mut c_void) -> i32;
     fn clReleaseKernel(k: *mut c_void) -> i32;
     fn clReleaseProgram(p: *mut c_void) -> i32;
@@ -152,6 +154,7 @@ const CL_MEM_READ_WRITE: u64 = 1 << 2;
 const CL_DEVICE_NAME: u32 = 0x102B;
 const CL_PROGRAM_BUILD_LOG: u32 = 0x1183;
 const CL_TRUE: u32 = 1;
+const CL_FALSE: u32 = 0;
 
 fn ck(code: i32, what: &str) -> Result<(), String> {
     if code == CL_SUCCESS {
@@ -582,6 +585,109 @@ pub fn list_devices() -> Vec<(usize, usize, String)> {
         Ok(out)
     }
 
+    /// Enqueue a batch WITHOUT waiting (the pipelined hot path): async
+    /// init write, async fill, async result read, all on the one in-order
+    /// queue. Returns a [`PendingBatch`]; the caller typically enqueues
+    /// the NEXT batch before waiting on this one, so the GPU never idles
+    /// between fills while the CPU preps and finalizes.
+    ///
+    /// In-order-queue safety: every buffer is touched in submission order
+    /// (write N, fill N, read N, write N+1, fill N+1, ...), so a single
+    /// [`BatchBuffers`] set needs no double buffering on the device side.
+    /// Kernel args are captured at enqueue time per the OpenCL spec, so
+    /// re-argging the shared kernel while a fill is in flight is safe.
+    pub fn submit_batch(
+        &self,
+        bufs: &BatchBuffers,
+        inits: &[[[u64; 128]; 2]],
+    ) -> Result<PendingBatch, String> {
+        let n = inits.len();
+        if n == 0 {
+            return Err("empty batch".to_string());
+        }
+        if n > bufs.capacity {
+            return Err(format!("batch {n} exceeds buffer capacity {}", bufs.capacity));
+        }
+        const LOCAL: usize = 32; // 4 instances x 8 items
+        let n_pad = bufs.capacity.div_ceil(4) * 4;
+        let mut init_flat = Vec::with_capacity(n_pad * 2 * 128);
+        for pair in inits {
+            init_flat.extend_from_slice(&pair[0]);
+            init_flat.extend_from_slice(&pair[1]);
+        }
+        init_flat.resize(n_pad * 2 * 128, 0);
+        let mut out_flat = vec![0u64; n_pad * 128];
+        // Host pointers must stay valid until the commands execute: both
+        // vectors are moved into the PendingBatch and freed only after
+        // its event is waited on (Drop).
+        let init_ptr = init_flat.as_ptr() as *const c_void;
+        let out_ptr = out_flat.as_mut_ptr() as *mut c_void;
+        ck(
+            unsafe {
+                clEnqueueWriteBuffer(
+                    self.queue,
+                    bufs.init,
+                    CL_FALSE,
+                    0,
+                    init_flat.len() * 8,
+                    init_ptr,
+                    0,
+                    ptr::null(),
+                    ptr::null_mut(),
+                )
+            },
+            "clEnqueueWriteBuffer(init)",
+        )?;
+        for (i, buf) in [bufs.init, bufs.mem, bufs.out, bufs.scratch].iter().enumerate() {
+            let mut b = *buf;
+            ck(
+                unsafe { clSetKernelArg(self.kernel, i as u32, 8, &mut b as *mut _ as *const c_void) },
+                "clSetKernelArg",
+            )?;
+        }
+        let global = n_pad * 8;
+        let local = LOCAL;
+        ck(
+            unsafe {
+                clEnqueueNDRangeKernel(
+                    self.queue,
+                    self.kernel,
+                    1,
+                    ptr::null(),
+                    &global as *const usize,
+                    &local as *const usize,
+                    0,
+                    ptr::null(),
+                    ptr::null_mut(),
+                )
+            },
+            "clEnqueueNDRangeKernel",
+        )?;
+        let mut event: *mut c_void = ptr::null_mut();
+        ck(
+            unsafe {
+                clEnqueueReadBuffer(
+                    self.queue,
+                    bufs.out,
+                    CL_FALSE,
+                    0,
+                    out_flat.len() * 8,
+                    out_ptr,
+                    0,
+                    ptr::null(),
+                    &mut event as *mut *mut c_void,
+                )
+            },
+            "clEnqueueReadBuffer(out)",
+        )?;
+        Ok(PendingBatch {
+            event,
+            n,
+            init_flat,
+            out_flat,
+        })
+    }
+
     /// Run the fill for a batch of instances. `inits[i]` = the two initial
     /// 128-word blocks for instance i (from `argon2_prep::initial_blocks`).
     /// Returns the 128-word final block per instance. Batch sizing is the
@@ -742,6 +848,48 @@ pub fn list_devices() -> Vec<(usize, usize, String)> {
             clReleaseMemObject(scratch_buf);
         }
         result
+    }
+}
+
+/// One asynchronously-submitted batch (see [`GpuDevice::submit_batch`]).
+/// Owns the host staging buffers (the queue's write/read pointers must
+/// stay valid until execution) and the completion event.
+pub struct PendingBatch {
+    event: *mut c_void,
+    n: usize,
+    #[allow(dead_code)]
+    init_flat: Vec<u64>,
+    out_flat: Vec<u64>,
+}
+
+impl PendingBatch {
+    /// Wait for the batch and take the per-instance final blocks. The
+    /// host buffers free here (after the event), the event releases on
+    /// Drop.
+    pub fn wait_and_take(self) -> Result<Vec<[u64; 128]>, String> {
+        ck(unsafe { clWaitForEvents(1, &self.event as *const *mut c_void) }, "clWaitForEvents")?;
+        let n = self.n;
+        let mut out = Vec::with_capacity(n);
+        for chunk in self.out_flat.chunks_exact(128).take(n) {
+            let mut block = [0u64; 128];
+            block.copy_from_slice(chunk);
+            out.push(block);
+        }
+        Ok(out)
+    }
+}
+
+impl Drop for PendingBatch {
+    fn drop(&mut self) {
+        // The queue's async write/read may still reference this batch's
+        // host buffers: WAIT before they free (early-stop and panic paths
+        // come through here), then release the event.
+        if !self.event.is_null() {
+            unsafe {
+                let _ = clWaitForEvents(1, &self.event as *const *mut c_void);
+                clReleaseEvent(self.event);
+            }
+        }
     }
 }
 

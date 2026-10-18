@@ -183,15 +183,14 @@ impl GpuSearcher {
         Ok(final_digest(&seed, &argon2_prep::mem_from_last(&lasts[0])))
     }
 
-    /// Prep + fill + finalize one batch; first solution in nonce order.
-    fn run_batch(
+    /// Prep one batch (CPU side of the pipeline).
+    fn prep_batch(
         &self,
         header: &[u8],
         height: u64,
-        target: &[u8; 32],
         start: u64,
         n: usize,
-    ) -> Result<Option<Solution>, String> {
+    ) -> (Vec<[u8; 32]>, Vec<[[u64; 128]; 2]>) {
         let salt = argon2_prep::lucky_salt(height);
         let mut seeds = Vec::with_capacity(n);
         let mut inits = Vec::with_capacity(n);
@@ -201,25 +200,95 @@ impl GpuSearcher {
             inits.push(argon2_prep::initial_blocks(&h0));
             seeds.push(seed);
         }
-        // Lazily create the persistent launch buffers once, then reuse.
-        let lasts = {
-            let mut guard = self.bufs.lock().expect("gpu buffers");
-            if guard.is_none() {
-                *guard = Some(self.dev.create_batch_buffers(self.batch)?);
-            }
-            self.dev
-                .fill_batch_with(guard.as_ref().expect("just created"), &inits)?
-        };
+        (seeds, inits)
+    }
+
+    /// Finalize one completed batch; first solution in nonce order.
+    fn finalize_batch(
+        seeds: &[[u8; 32]],
+        lasts: &[[u64; 128]],
+        target: &[u8; 32],
+        start: u64,
+    ) -> Option<Solution> {
         for (i, last) in lasts.iter().enumerate() {
             let out = final_digest(&seeds[i], &argon2_prep::mem_from_last(last));
             if meets_target(&out, target) {
-                return Ok(Some(Solution {
+                return Some(Solution {
                     nonce: start + i as u64,
                     out,
-                }));
+                });
             }
         }
-        Ok(None)
+        None
+    }
+
+    /// Pipelined batch loop (search + bench share it): submit batch N,
+    /// wait on batch N-1 and finalize it while the GPU fills N — the GPU
+    /// never idles between fills while the CPU preps/finalizes (~22% duty
+    /// cycle recovered over the serialized loop).
+    ///
+    /// `on_batch` sees every completed batch; returning true stops the
+    /// loop (a found solution for search).
+    #[allow(clippy::too_many_arguments)] // one pipeline signature shared by search + bench
+    fn pipelined_batches(
+        &self,
+        header: &[u8],
+        height: u64,
+        target: &[u8; 32],
+        start: u64,
+        end: u64,
+        mut on_batch: impl FnMut(Option<Solution>, Instant) -> bool,
+        rt: &mut crate::thermal::PolicyRuntime,
+    ) -> Result<(), String> {
+        let mut n = start;
+        // (pending batch, its seeds, its start nonce, batch wall clock)
+        let mut in_flight: Option<(crate::opencl::PendingBatch, Vec<[u8; 32]>, u64, Instant)> =
+            None;
+        while n < end || in_flight.is_some() {
+            if n < end {
+                let take = (end - n).min(self.batch as u64) as usize;
+                let (seeds, inits) = self.prep_batch(header, height, n, take);
+                let t0 = Instant::now();
+                let pending = {
+                    let mut guard = self.bufs.lock().expect("gpu buffers");
+                    if guard.is_none() {
+                        *guard = Some(self.dev.create_batch_buffers(self.batch)?);
+                    }
+                    self.dev
+                        .submit_batch(guard.as_ref().expect("just created"), &inits)?
+                };
+                let mut stop = false;
+                if let Some((prev, prev_seeds, prev_start, prev_t0)) = in_flight.take() {
+                    let lasts = prev.wait_and_take()?;
+                    let sol = Self::finalize_batch(&prev_seeds, &lasts, target, prev_start);
+                    if on_batch(sol, prev_t0) {
+                        stop = true;
+                    }
+                }
+                if stop {
+                    // The just-submitted batch is still in flight: drain it
+                    // before returning (its host buffers must outlive the
+                    // queue's pending commands).
+                    if let Some((pending, ..)) = in_flight.take() {
+                        let _ = pending.wait_and_take()?;
+                    }
+                    return Ok(());
+                }
+                in_flight = Some((pending, seeds, n, t0));
+                let d = rt.decide(read_gpu_temp_c(), t0.elapsed());
+                if !d.is_zero() {
+                    std::thread::sleep(d);
+                }
+                n += take as u64;
+            } else {
+                // Drain the last in-flight batch.
+                let (prev, prev_seeds, prev_start, prev_t0) = in_flight.take().expect("drain");
+                let lasts = prev.wait_and_take()?;
+                let sol = Self::finalize_batch(&prev_seeds, &lasts, target, prev_start);
+                on_batch(sol, prev_t0);
+            }
+        }
+        Ok(())
     }
 
     /// Sequential search over `[start, start + count)`, policy-paced
@@ -239,20 +308,16 @@ impl GpuSearcher {
         }
         let mut rt = policy.runtime();
         let end = start.saturating_add(count);
-        let mut n = start;
-        while n < end {
-            let take = (end - n).min(self.batch as u64) as usize;
-            let t0 = Instant::now();
-            if let Some(sol) = self.run_batch(header, height, target, n, take)? {
-                return Ok(Some(sol));
+        let mut found: Option<Solution> = None;
+        self.pipelined_batches(header, height, target, start, end, |sol, _| {
+            if sol.is_some() {
+                found = sol;
+                true // stop the pipeline: first find wins
+            } else {
+                false
             }
-            let d = rt.decide(read_gpu_temp_c(), t0.elapsed());
-            if !d.is_zero() {
-                std::thread::sleep(d);
-            }
-            n += take as u64;
-        }
-        Ok(None)
+        }, &mut rt)?;
+        Ok(found)
     }
 
     /// Timed pipeline run over `hashes` nonces; the same report shape as
@@ -262,14 +327,18 @@ impl GpuSearcher {
         if hashes == 0 {
             return Err("--hashes must be >= 1".to_string());
         }
-        let no_target = [0u8; 32]; // strict less-than: nothing ever validates
+        let no_target = [0u8; 32]; // impossible target: nothing ever validates
         let wall = Instant::now();
-        let mut n = 0u64;
-        while n < hashes {
-            let take = (hashes - n).min(self.batch as u64) as usize;
-            self.run_batch(header, height, &no_target, n, take)?;
-            n += take as u64;
-        }
+        let mut rt = MiningPolicy::unguarded().runtime();
+        self.pipelined_batches(
+            header,
+            height,
+            &no_target,
+            0,
+            hashes,
+            |_sol, _| false,
+            &mut rt,
+        )?;
         let elapsed = wall.elapsed();
         let total_hps = hashes as f64 / elapsed.as_secs_f64().max(1e-9);
         Ok(BenchReport {
@@ -347,5 +416,46 @@ mod tests {
                 assert_eq!(got, wants[i], "case {case}");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod perf_probe {
+    //! Dev-only timing probes (ignored): measure the CPU share of the
+    //! GPU pipeline to decide where overlap pays.
+    use super::*;
+    use std::time::Instant;
+
+    #[test]
+    #[ignore]
+    fn cpu_prep_finalize_share_of_batch() {
+        let n = 512usize;
+        let header = [7u8; 80];
+        let height = 100u64;
+        let target = [0u8; 32]; // impossible: nothing hits, timing only
+        let salt = argon2_prep::lucky_salt(height);
+        let t0 = Instant::now();
+        let mut seeds = Vec::with_capacity(n);
+        let mut inits = Vec::with_capacity(n);
+        for i in 0..n {
+            let seed = pow_seed(&header, i as u64);
+            let h0 = argon2_prep::h0(&seed, &salt, lm_pow::ASSOCIATED_DATA);
+            inits.push(argon2_prep::initial_blocks(&h0));
+            seeds.push(seed);
+        }
+        let t_prep = t0.elapsed();
+        let t1 = Instant::now();
+        let lasts = vec![[0u64; 128]; n]; // fake fills: finalize only
+        let mut hits = 0;
+        for (i, last) in lasts.iter().enumerate() {
+            let out = final_digest(&seeds[i], &argon2_prep::mem_from_last(last));
+            if meets_target(&out, &target) {
+                hits += 1;
+            }
+        }
+        let t_fin = t1.elapsed();
+        println!("prep 512: {:.1} ms ({:.3} ms/inst)", t_prep.as_secs_f64()*1000.0, t_prep.as_secs_f64()*1000.0/n as f64);
+        println!("finalize 512: {:.1} ms ({:.3} ms/inst)", t_fin.as_secs_f64()*1000.0, t_fin.as_secs_f64()*1000.0/n as f64);
+        assert_eq!(hits, 0);
     }
 }
