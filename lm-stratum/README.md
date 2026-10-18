@@ -52,13 +52,19 @@ This is the reference implementation; run it on testnet knowing:
   per-block skim. The payout ledger itself now survives restarts with
   `--state-file`; `payout_totals` in `/api/stats` reconciles it
   (coinbases == owed + paid + fees).
-- **No auth, no TLS.** Stratum and the `--http` dashboard are plaintext
-  and identify workers by name hash; bind to localhost or a private
-  network.
-- **Claim modes change block liveness.** `--claim-jackpots` /
-  `--claim-pot` serve claim templates and locally withhold non-drawing
-  finds (1/100 and 1/1000 draws). That is correct for hunting a claim,
-  but it throttles block submission — don't run a public pool that way.
+- **Auth and TLS are real but minimal.** Stratum takes a shared
+  `--pool-password` (or a per-worker token map via `--workers-file`,
+  which is authoritative when set; comparisons are constant-time); the
+  dashboard's miner API takes a bearer token, never a query string.
+  `--tls-cert/--tls-key` serves stratum over TLS and the miner
+  (`--tls [--tls-ca PEM]`) verifies. Still bind the dashboard to
+  localhost behind a reverse proxy for public deployments.
+- **Claim modes advertise exact claims.** `--claim-jackpots` /
+  `--claim-pot` splice the node's pre-committed per-height claims into
+  the template (draws are fixed by `SHA256D(parent || height)` before
+  grinding), so every find lands — the old claim-mode withholding
+  economics no longer apply. The node must run the matching build
+  (GBT advertises `jackpotbonus`/`potcredited`).
 - **Work-identity dedupe is windowed** (2^16 identities). A replay older
   than the window can pass; accepted as the reference trade-off.
 - **Stratum V1 is the default wire; V2 serves alongside it** behind flags

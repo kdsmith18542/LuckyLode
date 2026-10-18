@@ -9,10 +9,11 @@
 //! CPU: BLAKE3 seeds + H0 + initial blocks  →  GPU: fill whole batch  →
 //! CPU: H' finalize + target compare.
 //!
-//! NOTE: written but not yet compiled (grind window). Verify with
-//! `cargo test -p lm-miner opencl` (CPU-side unit tests only) and the
-//! ignored `gpu_kat_vectors` test on real hardware, plus
-//! `lm-miner gpu-test`.
+//! Verified paths: `cargo test -p lm-miner opencl` (CPU-side unit
+//! tests), the ignored `gpu_kat_vectors` + 1024-case randomized battery
+//! on real hardware, and `lm-miner bench --device opencl`. The kernel
+//! is compiled and shipped (write-back barrier included since
+//! 2026-10-18).
 
 use std::ffi::{c_char, c_void, CString};
 use std::ptr;
