@@ -181,9 +181,11 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("tmpdir");
         let path = dir.join("config.json");
-        let mut cfg = Config::default();
-        cfg.rpc_user = "alice".to_string();
-        cfg.rpc_pass = secret.to_string();
+        let cfg = Config {
+            rpc_user: "alice".to_string(),
+            rpc_pass: secret.to_string(),
+            ..Config::default()
+        };
         cfg.save(&path).expect("save");
         let on_disk: Config =
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
