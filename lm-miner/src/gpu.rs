@@ -101,22 +101,42 @@ pub fn read_gpu_temp_c() -> i32 {
     gpu_status().0
 }
 
-/// Apply an NVIDIA board power limit (`nvidia-smi -pl W`). Needs driver
-/// permission (often root); failure is returned, never fatal — the
-/// thermal guard still bounds the card.
+/// Apply an NVIDIA board power limit (`nvidia-smi -pl W`).
+///
+/// Runs as the app user first; on a permission denial it escalates just
+/// this one command — passwordless `sudo -n` when the admin allowed
+/// exactly it (`ALL=(ALL) NOPASSWD: /usr/bin/nvidia-smi -pl *`), else
+/// `pkexec` (desktop password prompt) — so the GUI field works without
+/// ever running the wallet itself as root. Any other failure is returned
+/// as-is (never fatal: the thermal guard still bounds the card).
 pub fn apply_power_limit(watts: u32) -> Result<(), String> {
-    match std::process::Command::new("nvidia-smi")
-        .args(["-pl", &watts.to_string()])
-        .output()
-    {
-        Ok(o) if o.status.success() => Ok(()),
-        Ok(o) => {
-            let err = String::from_utf8_lossy(&o.stderr).trim().to_string();
-            let out = String::from_utf8_lossy(&o.stdout).trim().to_string();
-            Err(if err.is_empty() { out } else { err })
+    let arg = watts.to_string();
+    let run = |prog: &str, args: &[&str]| -> Result<(), String> {
+        match std::process::Command::new(prog).args(args).output() {
+            Ok(o) if o.status.success() => Ok(()),
+            Ok(o) => {
+                let err = String::from_utf8_lossy(&o.stderr).trim().to_string();
+                let out = String::from_utf8_lossy(&o.stdout).trim().to_string();
+                Err(if err.is_empty() { out } else { err })
+            }
+            Err(e) => Err(format!("{prog} unavailable ({e})")),
         }
-        Err(e) => Err(format!("nvidia-smi unavailable ({e})")),
+    };
+    match run("nvidia-smi", &["-pl", &arg]) {
+        Ok(()) => Ok(()),
+        Err(e) if is_permission_denied(&e) => {
+            if run("sudo", &["-n", "nvidia-smi", "-pl", &arg]).is_ok() {
+                return Ok(());
+            }
+            run("pkexec", &["nvidia-smi", "-pl", &arg])
+        }
+        Err(e) => Err(e),
     }
+}
+
+/// Driver refusal text: only privilege escalation can help these.
+fn is_permission_denied(msg: &str) -> bool {
+    msg.contains("Insufficient Permissions") || msg.contains("Permission denied")
 }
 
 /// A compiled GPU ready to grind LuckyHash.
@@ -254,6 +274,17 @@ impl GpuSearcher {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn permission_denial_classifier() {
+        assert!(is_permission_denied(
+            "Failed to set power management limit for GPU 00000000:2B:00.0: Insufficient Permissions"
+        ));
+        assert!(is_permission_denied("Error: Permission denied"));
+        assert!(!is_permission_denied("Invalid power limit 0 W"));
+        assert!(!is_permission_denied("nvidia-smi unavailable (not found)"));
+        assert!(!is_permission_denied(""));
+    }
 
     /// Hardware gate — run with a GPU present:
     /// `GPU_TESTS=1 cargo test --release -p lm-miner -- --ignored`.
