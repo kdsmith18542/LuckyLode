@@ -83,13 +83,16 @@ consensus; the frozen strings below are called out precisely because they
   merge-mining wording, `PROOF_PBAASMMR` Verus MMR proof), the frozen
   `verusDataSignaturePrefix`, and one legacy wallet-dump test fixture.
 - **PBaaS / Verus Vault feature names — RESOLVED 2026-10-18 (owner
-  direction):** the user-facing name for the vault feature is
-  **LuckyVault**. No user-facing "Verus Vault" strings exist in the node
-  (all occurrences are internal activation constants —
-  `ACTIVATE_VERUSVAULT`, `SOLUTION_VERUSV6` — which are format, not
-  branding, same policy as `VERSION_VERUSID`). **PBaaS stays PBaaS**: it
-  is the neutral upstream technical term (like "Equihash"), carries no
-  Verus branding, and names inherited machinery Lucky Lode does not
-  use. The data-dir subpaths are done for Lucky Lode chains (2026-10-17);
-  only genuine PBaaS chains keep upstream paths.
+  direction):** the user-facing names are **LuckyVault** (vault
+  feature — no user-facing strings existed in the node; the only
+  occurrences are internal activation constants, `ACTIVATE_VERUSVAULT`
+  / `SOLUTION_VERUSV6`, which are format, not branding, same policy as
+  `VERSION_VERUSID`) and **LuckyBridge** (the chain-launch / cross-chain
+  layer, upstream "PBaaS" — decided 2026-10-18 over LuckyLink to avoid
+  Chainlink/LINK adjacency). 68 user-facing strings swept (help,
+  validation errors, RPC text). Deliberately kept: internal identifiers
+  (`CPBaaS*`, `pbaas.cpp`, `ASSETCHAINS_PBAAS*`), wire keys
+  (`pbaassystemregistrationfee`), and the upstream datadir paths for
+  genuine PBaaS chains — same format-not-branding policy. The data-dir
+  subpaths are done for Lucky Lode chains (2026-10-17).
 - Name-the-algo contest — **concluded 2026-10-14: LuckyHash** (§13.2).

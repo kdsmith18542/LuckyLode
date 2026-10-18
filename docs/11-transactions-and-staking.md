@@ -15,7 +15,7 @@ policy, wallet, or sidecar work.
 - Fee policy in force (doc 04 §4.1): minimal anti-spam floor, no fee burns
   at launch.
 - **LuckyID** (the identity/badges layer; user-facing rename of VerusID
-  decided 2026-10-14, see doc 13), PBaaS inheritance potential — kept for
+  decided 2026-10-14, see doc 13), LuckyBridge (upstream PBaaS) inheritance potential — kept for
   later (deferred decision).
 
 ## 11.2 "Cheap" — policy, not a promise to Litecoin parity

@@ -9,7 +9,8 @@
 **What a Verus fork buys:** battle-tested hybrid consensus, VerusHash 2.2
 (ARM miners like VerusMiner9000/Primo point at your chain on day one),
 LuckyID (free identity/badges layer for doc 03 achievements), possible
-PBaaS/DeFi inheritance later, merged-mining research surface.
+LuckyBridge (upstream PBaaS) / DeFi inheritance later, merged-mining
+research surface.
 
 **What it costs:** a large, old C++ (Komodo/Zcash-derived) monolith —
 slow builds, gnarly consensus code you must not break, big audit surface,
