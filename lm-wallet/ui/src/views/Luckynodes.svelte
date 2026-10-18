@@ -113,6 +113,12 @@
   </tbody>
 </table>
 
+<div class="muted" style="margin-top:6px">
+  the local service runs only while this app is open — closing the wallet stops heartbeats
+  (the node goes idle and sits out draws until you start it again). For 24/7 participation run
+  the standalone <span class="addr">luckynode</span> daemon on an always-on machine instead.
+</div>
+
 <h2>Register a luckynode</h2>
 <div class="card" style="max-width:640px">
   <label for="addr">payout address (holds the bond)</label>

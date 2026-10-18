@@ -93,7 +93,7 @@ tr.off td { color: var(--off); }
   border-radius: 8px; padding: 6px 12px; cursor: pointer; font: inherit;
 }
 .btn:hover { border-color: var(--gold); }
-.btn.primary { background: var(--gold); color: #161b22; border-color: var(--gold); font-weight: 600; }
+.btn.primary { background: var(--gold); color: var(--bg); border-color: var(--gold); font-weight: 600; }
 .btn.danger { color: var(--red); }
 .btn:disabled { opacity: .5; cursor: default; }
 input, select {
@@ -109,4 +109,5 @@ label { display: block; color: var(--dim); font-size: 12px; margin: 10px 0 4px; 
   color: var(--gold); background: var(--banner-bg); margin-bottom: 14px;
 }
 .banner.pot { border-color: var(--green); color: var(--green); background: var(--pot-bg); }
-.addr { color: var(--blue); cursor: pointer; }
+.addr { color: var(--blue); }
+.copyable { cursor: pointer; }

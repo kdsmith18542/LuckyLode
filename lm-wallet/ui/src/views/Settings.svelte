@@ -17,6 +17,7 @@
   let newPhrase = $state<string | null>(null);
   let confirmBackup = $state(false);
   let restoreInput = $state("");
+  let rpw = $state("");
   let pw = $state("");
   let pw2 = $state("");
   let oldPw = $state("");
@@ -54,14 +55,13 @@
     }
   }
 
-  async function restore() {
+  async function restore(pass: string) {
     wmsg = "";
     err = "";
     try {
-      await api.walletRestore(restoreInput.trim(), pw);
+      await api.walletRestore(restoreInput.trim(), pass);
       restoreInput = "";
-      pw = "";
-      pw2 = "";
+      rpw = "";
       wmsg = "wallet restored + rescanned";
       await loadWallet();
     } catch (e) {
@@ -340,14 +340,14 @@
         <button class="btn" onclick={() => (revealWarn = true)}>Reveal backup phrase</button>
       {:else if revealWarn && !reveal}
         <span class="muted">someone looking over your shoulder can steal everything. continue?</span>
-        <button class="btn" style="border-color:#f85149;color:#f85149" onclick={doReveal}>Show it</button>
+        <button class="btn" style="border-color:var(--red);color:var(--red)" onclick={doReveal}>Show it</button>
         <button class="btn" onclick={() => (revealWarn = false)}>Cancel</button>
       {/if}
       <button class="btn" onclick={rescan}>Rescan chain</button>
       <button class="btn" onclick={lockNow}>Lock now</button>
     </div>
     {#if reveal}
-      <div class="card" style="margin-top:10px;border-color:#f85149">
+      <div class="card" style="margin-top:10px;border-color:var(--red)">
         <div class="row" style="justify-content:space-between">
           <b>backup phrase — write it down, never share it</b>
           <span class="muted">hides in {revealLeft}s</span>
@@ -370,7 +370,7 @@
           <span class="addr" style="word-break:break-all">{a}</span>
           {#if releaseArm === a}
             <span class="muted">release? a luckynode using it loses draw eligibility</span>
-            <button class="btn" style="border-color:#f85149;color:#f85149" onclick={() => release(a)}>Confirm</button>
+            <button class="btn" style="border-color:var(--red);color:var(--red)" onclick={() => release(a)}>Confirm</button>
             <button class="btn" onclick={() => (releaseArm = "")}>Cancel</button>
           {:else}
             <button class="btn" onclick={() => release(a)}>Release</button>
@@ -432,13 +432,13 @@
     <label for="rest" style="margin-top:12px">or restore from backup phrase</label>
     <input id="rest" bind:value={restoreInput} placeholder="twelve words separated by spaces" spellcheck="false" />
     <label for="rpw">spending password for this install</label>
-    <input id="rpw" type="password" bind:value={pw} spellcheck="false" />
+    <input id="rpw" type="password" bind:value={rpw} spellcheck="false" />
     <div class="row">
-      <button class="btn" disabled={!restoreInput.trim() || pw.length < 8} onclick={restore}>Restore</button>
+      <button class="btn" disabled={!restoreInput.trim() || rpw.length < 8} onclick={() => restore(rpw)}>Restore</button>
     </div>
   {/if}
   {#if newPhrase}
-    <div class="card" style="margin-top:12px;border-color:#ffd166">
+    <div class="card" style="margin-top:12px;border-color:var(--gold)">
       <b>write these 12 words down (paper, offline). anyone with them owns your funds.</b>
       <div class="addr" style="word-break:break-word;margin:8px 0;font-size:15px">{newPhrase}</div>
       <label class="row" style="align-items:center;gap:8px">

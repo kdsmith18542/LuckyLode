@@ -93,14 +93,103 @@ impl Default for Config {
 
 impl Config {
     pub fn load(path: &Path) -> Self {
-        std::fs::read_to_string(path)
+        let mut cfg: Config = std::fs::read_to_string(path)
             .ok()
             .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_default()
+            .unwrap_or_default();
+        // The RPC password may live in the OS keyring instead of this
+        // file (see `save`). Sentinel in the file + a live keyring
+        // entry = password never touches disk; keyring unavailable
+        // (locked session, fresh reboot) resolves to empty and the
+        // connection prompts for re-entry in Settings.
+        if cfg.rpc_pass == KEYRING_SENTINEL {
+            cfg.rpc_pass = keyring_load().unwrap_or_default();
+        }
+        cfg
     }
 
     pub fn save(&self, path: &Path) -> Result<(), String> {
-        let s = serde_json::to_string_pretty(self).map_err(|e| e.to_string())?;
+        // Prefer the OS keyring for the RPC password; the file then
+        // carries only a sentinel. The public testnet placeholder pair
+        // stays in the file (public by design, and a fresh keyring
+        // after reboot must not lock novices out of the default node).
+        // If the keyring is unavailable the password stays in the file
+        // (0600 app dir) — never block a connection on it.
+        let mut for_disk = self.clone();
+        let placeholder = for_disk.rpc_user == crate::node_proc::PLACEHOLDER_USER
+            && for_disk.rpc_pass == crate::node_proc::PLACEHOLDER_PASS;
+        if for_disk.rpc_pass != KEYRING_SENTINEL && !placeholder && keyring_store(&for_disk.rpc_pass) {
+            for_disk.rpc_pass = KEYRING_SENTINEL.to_string();
+        }
+        let s = serde_json::to_string_pretty(&for_disk).map_err(|e| e.to_string())?;
         std::fs::write(path, s).map_err(|e| format!("write {}: {e}", path.display()))
+    }
+}
+
+/// Marker stored in config.json when the real RPC password is in the
+/// OS keyring.
+const KEYRING_SENTINEL: &str = "@keyring";
+const KEYRING_SERVICE: &str = "cc.luckylode.wallet";
+const KEYRING_ACCOUNT: &str = "rpc_pass";
+
+fn keyring_store(pass: &str) -> bool {
+    keyring::Entry::new(KEYRING_SERVICE, KEYRING_ACCOUNT)
+        .and_then(|e| e.set_password(pass))
+        .is_ok()
+}
+
+fn keyring_load() -> Option<String> {
+    keyring::Entry::new(KEYRING_SERVICE, KEYRING_ACCOUNT)
+        .ok()
+        .and_then(|e| e.get_password().ok())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The public testnet placeholder pair never goes to the keyring —
+    /// a fresh keyring after reboot must not lock a default install out
+    /// of the shared node.
+    #[test]
+    fn placeholder_creds_stay_in_the_file() {
+        let dir = std::env::temp_dir().join(format!("lk-cfg-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("tmpdir");
+        let path = dir.join("config.json");
+        let cfg = Config::default();
+        assert_eq!(cfg.rpc_pass, "p");
+        cfg.save(&path).expect("save");
+        let on_disk: Config =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(on_disk.rpc_pass, "p");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// When the OS keyring accepts the password, the file only ever
+    /// carries the sentinel — and load resolves it back. Skipped on
+    /// boxes without a usable keyring (graceful fallback keeps the
+    /// plaintext path).
+    #[test]
+    fn real_password_roundtrips_via_keyring() {
+        let secret = "test-secret-not-a-placeholder";
+        if !keyring_store(secret) {
+            eprintln!("keyring unavailable; skipping");
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("lk-cfgkr-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("tmpdir");
+        let path = dir.join("config.json");
+        let mut cfg = Config::default();
+        cfg.rpc_user = "alice".to_string();
+        cfg.rpc_pass = secret.to_string();
+        cfg.save(&path).expect("save");
+        let on_disk: Config =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(on_disk.rpc_pass, KEYRING_SENTINEL, "file must not carry the password");
+        let loaded = Config::load(&path);
+        assert_eq!(loaded.rpc_pass, secret, "load resolves the keyring entry");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

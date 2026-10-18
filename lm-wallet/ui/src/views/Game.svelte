@@ -6,14 +6,24 @@
   let err = $state("");
 
   async function load() {
+    // Per-source: a dead pool must not blank node-sourced cards and
+    // vice versa.
     try {
       info = await api.gameInfo();
-      pool = await api.poolStats();
-      draw = await api.nextDraw();
-      err = "";
-    } catch (e) {
-      err = String(e);
+    } catch {
+      info = null;
     }
+    try {
+      pool = await api.poolStats();
+    } catch {
+      pool = null;
+    }
+    try {
+      draw = await api.nextDraw();
+    } catch {
+      draw = null;
+    }
+    err = "";
   }
   $effect(() => {
     load();

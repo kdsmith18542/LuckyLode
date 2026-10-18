@@ -6,6 +6,7 @@
   import Luckynodes from "./views/Luckynodes.svelte";
   import Game from "./views/Game.svelte";
   import Settings from "./views/Settings.svelte";
+  import Faq from "./views/Faq.svelte";
   import * as api from "./lib/api";
   import { getTheme, setTheme } from "./lib/theme";
 
@@ -122,6 +123,7 @@
     ["miner", "Miner"],
     ["luckynodes", "Luckynodes"],
     ["game", "Game"],
+    ["faq", "FAQ"],
     ["settings", "Settings"],
   ];
 
@@ -282,7 +284,7 @@
       <div class="banner pot">💧 NEXT BLOCK ({next.height}) IS A POT EVENT — tier {next.tier} ({next.tier}% of the pot) splash</div>
     {/if}
 
-    {#if view === "overview"}<Overview />{:else if view === "send"}<Send />{:else if view === "receive"}<Receive />{:else if view === "miner"}<Miner />{:else if view === "luckynodes"}<Luckynodes />{:else if view === "game"}<Game />{:else if view === "settings"}<Settings />{/if}
+    {#if view === "overview"}<Overview />{:else if view === "send"}<Send />{:else if view === "receive"}<Receive />{:else if view === "miner"}<Miner />{:else if view === "luckynodes"}<Luckynodes />{:else if view === "game"}<Game />{:else if view === "faq"}<Faq />{:else if view === "settings"}<Settings />{/if}
   </main>
 </div>
 {/if}

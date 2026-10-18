@@ -94,14 +94,14 @@
     <tbody>
       {#if current}
         <tr>
-          <td class="addr" onclick={() => copy(current)} title="click to copy">{current}</td>
+          <td class="addr copyable" onclick={() => copy(current)} title="click to copy">{current}</td>
           <td class="muted">{copied === current ? "copied ✓" : "current"}</td>
           <td><button class="btn" onclick={() => showQr(current)}>QR</button></td>
         </tr>
       {/if}
       {#each prev as a}
         <tr>
-          <td class="addr" onclick={() => copy(a)} title="click to copy">{a}</td>
+          <td class="addr copyable" onclick={() => copy(a)} title="click to copy">{a}</td>
           <td class="muted">{copied === a ? "copied ✓" : ""}</td>
           <td><button class="btn" onclick={() => showQr(a)}>QR</button></td>
         </tr>
