@@ -1,12 +1,28 @@
 <script lang="ts">
   import * as api from "../lib/api";
-  let addrs = $state<string[]>([]);
+  let current = $state("");
+  let prev = $state<string[]>([]);
   let err = $state("");
   let copied = $state("");
   let qr = $state("");
   let qrAddr = $state("");
   let saveName = $state("");
   let saved = $state("");
+
+  async function load() {
+    try {
+      const r: any = await api.receiveList();
+      current = r.current;
+      prev = r.previous ?? [];
+      if (!qrAddr) await showQr(r.current);
+      err = "";
+    } catch (e) {
+      err = String(e);
+    }
+  }
+  $effect(() => {
+    load();
+  });
 
   async function showQr(a: string) {
     try {
@@ -19,9 +35,10 @@
   async function gen() {
     try {
       const a = await api.newAddress();
-      addrs = [a, ...addrs];
-      err = "";
+      current = a;
       await showQr(a);
+      await load();
+      err = "";
     } catch (e) {
       err = String(e);
     }
@@ -52,7 +69,7 @@
 <div class="card" style="max-width:620px">
   <div class="row">
     <button class="btn primary" onclick={gen}>New address</button>
-    <span class="muted">addresses are transparent by default; shielded support lands in a later build</span>
+    <span class="muted">your addresses, derived from your own seed — previously shared addresses stay valid</span>
   </div>
   {#if qr && qrAddr}
     <div class="card" style="max-width:340px;text-align:center;margin-top:12px">
@@ -70,14 +87,21 @@
   {/if}
   <table style="margin-top:12px">
     <tbody>
-      {#each addrs as a}
+      {#if current}
+        <tr>
+          <td class="addr" onclick={() => copy(current)} title="click to copy">{current}</td>
+          <td class="muted">{copied === current ? "copied ✓" : "current"}</td>
+          <td><button class="btn" onclick={() => showQr(current)}>QR</button></td>
+        </tr>
+      {/if}
+      {#each prev as a}
         <tr>
           <td class="addr" onclick={() => copy(a)} title="click to copy">{a}</td>
           <td class="muted">{copied === a ? "copied ✓" : ""}</td>
           <td><button class="btn" onclick={() => showQr(a)}>QR</button></td>
         </tr>
       {/each}
-      {#if addrs.length === 0}<tr><td class="muted">generate an address to receive</td></tr>{/if}
+      {#if !current && prev.length === 0}<tr><td class="muted">no wallet yet — create or restore one to begin</td></tr>{/if}
     </tbody>
   </table>
   {#if err}<div class="err">{err}</div>{/if}

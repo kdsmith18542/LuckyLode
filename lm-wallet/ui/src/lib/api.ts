@@ -4,6 +4,13 @@ import { invoke } from "@tauri-apps/api/core";
 export type Json = unknown;
 
 export const nodeStatus = () => invoke<Json>("node_status");
+export const nodeStart = () => invoke<Json>("node_start");
+export const nodeStop = () => invoke<Json>("node_stop");
+/** What the Settings connection picker shows: found verusd binaries + default datadir. */
+export const nodeDiscover = () => invoke<Json>("node_discover");
+/** One-click connection: "shared" (public testnet node, creds embedded) | "local" (wallet-managed node). */
+export const useConnectionPreset = (preset: "shared" | "local") =>
+  invoke<Json>("use_connection_preset", { preset });
 export const walletBalances = () => invoke<Json>("wallet_balances");
 export const transactions = (count = 50) => invoke<Json>("transactions", { count });
 export const contactsList = () => invoke<Json>("contacts_list");
@@ -13,7 +20,24 @@ export const contactRemove = (address: string) => invoke<void>("contact_remove",
 export const addressQr = (address: string) => invoke<string>("address_qr", { address });
 export const txDetail = (txid: string) => invoke<Json>("tx_detail", { txid });
 export const newAddress = () => invoke<string>("new_address");
-export const send = (to: string, amount: string) => invoke<string>("send", { to, amount });
+export const receiveList = () => invoke<Json>("receive_list");
+export const walletStatus = () => invoke<Json>("wallet_status");
+export const walletCreate = (password: string) => invoke<Json>("wallet_create", { password });
+export const walletRestore = (phrase: string, password: string) =>
+  invoke<Json>("wallet_restore", { phrase, password });
+export const walletUnlock = (password: string) => invoke<Json>("wallet_unlock", { password });
+export const walletLock = () => invoke<Json>("wallet_lock");
+export const walletMigrate = (password: string) => invoke<Json>("wallet_migrate", { password });
+export const walletChangePassword = (old_password: string, new_password: string) =>
+  invoke<Json>("wallet_change_password", { old_password, new_password });
+export const walletReveal = () => invoke<Json>("wallet_reveal");
+export const walletRescan = () => invoke<Json>("wallet_rescan");
+export const send = (to: string, amount: string) => invoke<Json>("send", { to, amount });
+/** Review step: build + sign locally, returns the exact fee/change for confirmation. Nothing broadcasts. */
+export const sendPreview = (to: string, amount: string) =>
+  invoke<Json>("send_preview", { to, amount });
+/** Confirm step: broadcast the exact reviewed bytes (single-use). */
+export const sendConfirm = (txid: string) => invoke<Json>("send_confirm", { txid });
 export const gameInfo = () => invoke<Json>("game_info");
 export const emission = () => invoke<Json>("emission_info");
 export const nextDraw = () => invoke<Json>("next_draw");
@@ -27,6 +51,16 @@ export const serviceStop = (id: string) => invoke<Json>("luckynode_service_stop"
 export const serviceStatus = () => invoke<Json>("luckynode_service_status");
 export const getConfig = () => invoke<Json>("get_config");
 export const testRpc = () => invoke<Json>("test_rpc");
+export const protectAddress = (address: string) =>
+  invoke<Json>("protect_address", { address });
+export const unprotectAddress = (address: string) =>
+  invoke<Json>("unprotect_address", { address });
+export const stakingInfo = () => invoke<Json>("staking_info");
+export const setStaking = (on: boolean) => invoke<Json>("set_staking", { on });
+/** Fresh address from the connected node's wallet (staking-fund target). */
+export const nodeFundingAddress = () => invoke<Json>("node_funding_address");
+/** Import this app's funded keys into the local node wallet (same-box staking). */
+export const stakeAppCoins = () => invoke<Json>("stake_app_coins");
 export const setConfig = (c: {
   rpc_url: string;
   rpc_user: string;
@@ -52,11 +86,44 @@ export const minerStop = () => invoke<void>("miner_stop");
 export const minerStatus = () => invoke<Json>("miner_status");
 export const minerLog = () => invoke<string[]>("miner_log");
 
-/** coin display: base units → LKYL with 2-4 decimals */
+/** Chain-aware ticker (review fix 2026-10-18 — no more hardcoded LKYL).
+ * Set once per refresh from node_status.chain; defaults to tLKYL (safe). */
+let currentChain = "test";
+export function setChain(c: unknown) {
+  if (typeof c === "string" && c) currentChain = c;
+}
+export function ticker(): string {
+  const c = currentChain.toLowerCase();
+  if (c === "main" || c === "luckylode" || c === "mainnet") return "LKYL";
+  if (c === "regtest") return "rLKYL";
+  return "tLKYL";
+}
+/** coin + ticker suffix: the one money formatter for every money field. */
+export function coinU(v: unknown): string {
+  return `${coin(v)} ${ticker()}`;
+}
+/** decimal-LKYL + ticker suffix. */
+export function coinDecU(v: unknown): string {
+  return `${coinDec(v)} ${ticker()}`;
+}
+
+/** coin display: base units → exact LKYL (8dp, trailing zeros trimmed).
+ * One formatter for the whole app — never show 0 for a non-zero balance
+ * and never render raw floats (0.029999999999999995). Satoshis are exact. */
 export function coin(v: unknown): string {
   const n = typeof v === "number" ? v : NaN;
   if (!Number.isFinite(n)) return "–";
-  return (n / 1e8).toLocaleString(undefined, { maximumFractionDigits: 4 });
+  const s = (n / 1e8).toFixed(8).replace(/0+$/, "").replace(/\.$/, ".0");
+  return Number(s).toLocaleString(undefined, { maximumFractionDigits: 8 });
+}
+
+/** decimal LKYL → 8dp trimmed. The activity feed ships floats (0.03 renders
+ * as 0.029999999999999995); this rounds them to real satoshi precision. */
+export function coinDec(v: unknown): string {
+  const n = typeof v === "number" ? v : NaN;
+  if (!Number.isFinite(n)) return "–";
+  const s = n.toFixed(8).replace(/0+$/, "").replace(/\.$/, ".0");
+  return Number(s).toLocaleString(undefined, { maximumFractionDigits: 8 });
 }
 
 export function short(s: unknown, n = 12): string {

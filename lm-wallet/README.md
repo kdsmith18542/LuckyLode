@@ -52,7 +52,19 @@ webkit/gtk; needs `libfuse2`).
 
 ## Defaults
 
-- Node RPC: `http://127.0.0.1:9271` (testnet port; Settings tab).
+- Node connection is preset-based (Settings → Node): **Shared testnet
+  node** (`https://luckylode.cc/node/`, public `u`/`p` testnet creds,
+  embedded by the app — nobody types them) or **Node on this computer**
+  (the wallet manages verusd: auto-detects the binary on PATH and the
+  usual per-OS install locations, resolves the daemon's own default
+  datadir per platform, and generates its own RPC credentials to pass
+  to the node — the user never sees them; RPC is pinned to loopback).
+  A fresh install points at `127.0.0.1:19271` (local-first, like Core;
+  the daemon's own testnet rpcport)
+  and the top bar suggests the shared node until one of them is running.
+  Advanced exposes the raw RPC URL/user/password and node location for
+  custom setups — `http://`, `https://`, and URL path prefixes are all
+  supported.
 - Pool API: `https://luckylode.cc/pool`.
 - The luckynode ed25519 key is stored 0600 in the app config dir; it is
   separate from wallet funds and never leaves the machine.
