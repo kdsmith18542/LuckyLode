@@ -3,7 +3,9 @@
 //!
 //! usage:
 //!   luckynode --pool HOST:PORT --address ADDR --key-file PATH
+//!             [--payout-key-hex HEX | --payout-key-file PATH]
 //!             [--heartbeat-interval SECS] [--register-only] [--once]
+//! The payout key secret may also come from LUCKYNODE_PAYOUT_KEY (env).
 //!
 //! The key file holds 32 raw ed25519 secret bytes (created with mode 0600
 //! if missing, from /dev/urandom). The node id is the hex pubkey.
@@ -17,7 +19,7 @@ use lm_luckynode::register_body;
 
 fn usage() -> ! {
     eprintln!(
-        "usage:\n  luckynode --pool HOST:PORT --address ADDR --key-file PATH --payout-key-hex <32-byte hex secret> [--heartbeat-interval SECS] [--register-only] [--once]"
+        "usage:\n  luckynode --pool HOST:PORT --address ADDR --key-file PATH [--payout-key-hex HEX | --payout-key-file PATH | LUCKYNODE_PAYOUT_KEY env] [--heartbeat-interval SECS] [--register-only] [--once]"
     );
     std::process::exit(2);
 }
@@ -107,6 +109,22 @@ fn main() {
                 i += 1;
                 payout_key_hex = args.get(i).unwrap_or_else(|| usage()).clone();
             }
+            "--payout-key-file" => {
+                // Secrets off argv: a 0600 file (or the environment) beats a
+                // `ps`-visible command line. One hex secret per line.
+                i += 1;
+                let path = args.get(i).unwrap_or_else(|| usage()).clone();
+                payout_key_hex = std::fs::read_to_string(path.trim())
+                    .unwrap_or_else(|e| {
+                        eprintln!("luckynode: cannot read payout-key-file: {e}");
+                        std::process::exit(2);
+                    })
+                    .lines()
+                    .find(|l| !l.trim().is_empty())
+                    .unwrap_or("")
+                    .trim()
+                    .to_string();
+            }
             "--heartbeat-interval" => {
                 i += 1;
                 interval = args
@@ -123,6 +141,13 @@ fn main() {
     }
     if pool.is_empty() || address.is_empty() || key_file.is_empty() {
         usage();
+    }
+    // Precedence: --payout-key-hex / --payout-key-file, then the
+    // LUCKYNODE_PAYOUT_KEY environment variable.
+    if payout_key_hex.is_empty() {
+        if let Ok(k) = std::env::var("LUCKYNODE_PAYOUT_KEY") {
+            payout_key_hex = k.trim().to_string();
+        }
     }
 
     let secret = match load_or_gen_key(&key_file) {
