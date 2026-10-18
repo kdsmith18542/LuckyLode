@@ -10,7 +10,7 @@ no third party.
 There is no solo-mining mode inside the miner. Solo = you run all three
 pieces on your own machine(s):
 
-1. **Node** (`verusd`) — holds the chain, builds block templates, pays the
+1. **Node** (`luckyd`) — holds the chain, builds block templates, pays the
    coinbase to *your* address.
 2. **Reference pool** (`pool_server`, localhost-only) — bridges the miner's
    Stratum to the node's `getblocktemplate`, submits found blocks.
@@ -22,7 +22,7 @@ is paid in the coinbase to the block finder — you.
 
 ## Requirements
 
-- `verusd` + `pool_server` + `lm-miner` binaries (releases, or build from
+- `luckyd` + `pool_server` + `lm-miner` binaries (releases, or build from
   source; see the repo README).
 - A Lucky Lode receiving address (create one in the node wallet with
   `getnewaddress`; it starts with `L` on mainnet, `m`/`n` on testnet).
@@ -35,7 +35,7 @@ is paid in the coinbase to the block finder — you.
 **1. Node** — the coinbase pays `-mineraddress` (your address):
 
 ```sh
-./verusd -ac_algo=luckyhash -datadir=$HOME/.luckylode \
+./luckyd -ac_algo=luckyhash -datadir=$HOME/.luckylode \
   -mineraddress=<YOUR-R-ADDRESS> -daemon -listen=1
 ```
 
@@ -81,7 +81,7 @@ exposing it. Never expose the node's RPC to the network.
 - `bad-cb-amount`: template/claim mismatch — make sure `--claim-*` flags
   match the network rules (testnet uses the same divisor as mainnet; only
   regtest overrides differ, and all nodes on a regtest chain must match).
-- Port conflicts: a second `verusd` silently fails to bind while the old one
-  answers — verify with `pgrep -x verusd` and check the height.
+- Port conflicts: a second `luckyd` silently fails to bind while the old one
+  answers — verify with `pgrep -x luckyd` and check the height.
 - Always stop the node gracefully (`stop` via RPC); `kill -9` can lose
   unflushed blocks.

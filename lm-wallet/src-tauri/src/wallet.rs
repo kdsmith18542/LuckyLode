@@ -1381,11 +1381,11 @@ mod tests {
     }
 
     /// Live wallet e2e on a throwaway regtest node (explicit runs only):
-    /// boots verusd, funds the wallet's first address, then exercises the
+    /// boots luckyd, funds the wallet's first address, then exercises the
     /// REAL backend paths — scan, balances, activity, local-sign send,
     /// confirm — against chain truth.
     ///
-    /// `VERUSD_BIN=... cargo test -p lucky-lode-wallet -- --ignored`
+    /// `LUCKYD_BIN=... cargo test -p lucky-lode-wallet -- --ignored`
     /// (takes ~10 min: the in-node CPU miner is slow on LuckyHash).
     #[test]
     #[ignore]
@@ -1393,19 +1393,27 @@ mod tests {
         use std::process::Command;
         use std::time::{Duration, Instant};
 
-        let verusd = std::env::var("VERUSD_BIN").unwrap_or_else(|_| {
-            format!(
-                "{}/../../verus/src/verusd",
-                env!("CARGO_MANIFEST_DIR")
-            )
-        });
+        let luckyd = std::env::var("LUCKYD_BIN")
+            .or_else(|_| std::env::var("VERUSD_BIN"))
+            .unwrap_or_default();
+        let luckyd = if !luckyd.is_empty() {
+            luckyd
+        } else {
+            let d = format!("{}/../../verus/src", env!("CARGO_MANIFEST_DIR"));
+            let renamed = format!("{d}/luckyd");
+            if std::path::Path::new(&renamed).exists() {
+                renamed
+            } else {
+                format!("{d}/verusd")
+            }
+        };
         let rpc_port = 18971;
         let p2p_port = 18970;
         let dir = std::env::temp_dir().join(format!("lk-wsnit-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("tmpdir");
         let rpc_url = format!("http://127.0.0.1:{rpc_port}");
-        let start = Command::new(&verusd)
+        let start = Command::new(&luckyd)
             .args([
                 "-regtest",
                 "-ac_algo=luckyhash",
@@ -1420,8 +1428,8 @@ mod tests {
                 "-verus-coinbase-maturity=1",
             ])
             .output()
-            .expect("spawn verusd");
-        assert!(start.status.success(), "verusd failed to start");
+            .expect("spawn luckyd");
+        assert!(start.status.success(), "luckyd failed to start");
         let rpc = RpcClient::from_url(&rpc_url, "u", "p").expect("rpc client");
         // Wait for RPC.
         let t0 = Instant::now();

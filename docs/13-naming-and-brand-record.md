@@ -24,6 +24,14 @@ consensus; the frozen strings below are called out precisely because they
   node help/error strings use LuckyID; the internal serialization
   constants (`VERSION_VERUSID`, `TYPE_VERUSID_DEFAULT` — numeric wire
   values) keep their identifiers — they are format, not branding.
+- **luckyd** (decided 2026-10-18): the node daemon binary builds as
+  `luckyd` (was `verusd`). Build target, pid-file default (`luckyd.pid`),
+  startup help, and the packaging/CI steps all follow; chain selection is
+  unaffected (the chain defaults to LUCKYLODE regardless of the binary
+  name). The wallet auto-detects `luckyd` first and still accepts a
+  legacy `verusd` as a fallback so pre-rename installs keep working.
+  The `verus` CLI and `verus-tx` utility binaries keep their upstream
+  names.
 - **LuckyHash** (decided 2026-10-14): final name for the proof-of-work
   algorithm (previously the EmberHash working name; doc 05 title updated,
   docs/02/04/09 swept). The name-the-algo contest is concluded.

@@ -240,7 +240,7 @@
     err = "";
     try {
       const r: any = await api.nodeStart();
-      const where = r.auto_bin ? ` (verusd found at ${api.short(r.node_bin, 24)})` : "";
+      const where = r.auto_bin ? ` (luckyd found at ${api.short(r.node_bin, 24)})` : "";
       nodemsg = `node running${where} · pid ${r.pid} · height ${r.height}`;
       await refreshNode();
     } catch (e) {
@@ -394,12 +394,12 @@
     {#if !cfg.node_bin}
       {#if discover?.candidates?.length}
         <div class="muted" style="margin-top:8px">
-          verusd found automatically: {discover.candidates[0]} — Start will use it
+          luckyd found automatically: {discover.candidates[0]} — Start will use it
           {#if discover.candidates.length > 1}({discover.candidates.length - 1} more){/if}
         </div>
       {:else}
         <div class="muted" style="margin-top:8px">
-          no verusd found yet — install the Lucky Lode node (verusd on your PATH),
+          no luckyd found yet — install the Lucky Lode node (luckyd on your PATH),
           or set its location under Advanced.
         </div>
       {/if}
@@ -421,7 +421,7 @@
       <input id="p" bind:value={cfg.rpc_pass} type="password" />
       <label for="pool">pool API URL</label>
       <input id="pool" bind:value={cfg.pool_url} spellcheck="false" />
-      <label for="nbin">verusd binary path (empty = auto-detect: PATH + usual install locations)</label>
+      <label for="nbin">luckyd binary path (empty = auto-detect: PATH + usual install locations; legacy verusd also detected)</label>
       <input id="nbin" bind:value={cfg.node_bin} spellcheck="false" placeholder="auto-detect" />
       <label for="ndata">node datadir (empty = {discover?.default_datadir ?? "per-OS default"})</label>
       <input id="ndata" bind:value={cfg.node_datadir} spellcheck="false" />

@@ -55,7 +55,7 @@ webkit/gtk; needs `libfuse2`).
 - Node connection is preset-based (Settings → Node): **Shared testnet
   node** (`https://luckylode.cc/node/`, public `u`/`p` testnet creds,
   embedded by the app — nobody types them) or **Node on this computer**
-  (the wallet manages verusd: auto-detects the binary on PATH and the
+  (the wallet manages the node daemon: auto-detects luckyd on PATH and the
   usual per-OS install locations, resolves the daemon's own default
   datadir per platform, and generates its own RPC credentials to pass
   to the node — the user never sees them; RPC is pinned to loopback).

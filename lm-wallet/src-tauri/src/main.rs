@@ -20,7 +20,7 @@ pub struct AppState {
     pub cfg_path: std::path::PathBuf,
     pub services: Mutex<HashMap<String, luckynode::Service>>,
     pub miner: Mutex<Option<miner::Miner>>,
-    /// verusd child this app started (None = unmanaged / not running).
+    /// Node daemon child this app started (None = unmanaged / not running).
     /// The wallet never supervises: no auto-restart, stop only this PID.
     pub node_proc: Mutex<Option<node_proc::ManagedNode>>,
     /// Unlocked wallet session (seed + phrase, RAM only, wiped on lock).

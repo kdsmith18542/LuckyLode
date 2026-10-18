@@ -1,4 +1,5 @@
-//! Wallet-managed verusd: start/stop/status for YOUR node on this box.
+//! Wallet-managed node daemon (luckyd): start/stop/status for YOUR node
+//! on this box.
 //!
 //! The wallet never supervises anything (standing rule): it starts the
 //! configured binary as a plain foreground child, tracks the PID it
@@ -85,7 +86,7 @@ pub fn resolve_datadir(configured: &str) -> Result<String, String> {
     default_datadir()
 }
 
-/// Candidate `verusd` locations for one run. PATH first (what a CLI
+/// Candidate node-binary locations for one run. PATH first (what a CLI
 /// install puts in reach), then per-OS install conventions.
 fn search_dirs() -> Vec<std::path::PathBuf> {
     let mut dirs: Vec<std::path::PathBuf> = std::env::var_os("PATH")
@@ -110,18 +111,27 @@ fn search_dirs() -> Vec<std::path::PathBuf> {
     dirs
 }
 
-/// Find a runnable verusd. First hit wins; only files that exist, are
+/// Find a runnable node daemon. `luckyd` first everywhere; a legacy
+/// `verusd` (pre-rename install) is accepted as a fallback so existing
+/// boxes keep working. First hit wins; only files that exist, are
 /// regular and (unix) executable are returned. Testable via
-/// `find_verusd_in`.
-pub fn find_verusd() -> Vec<String> {
+/// `find_luckyd_in`.
+pub fn find_luckyd() -> Vec<String> {
     let dirs = search_dirs();
-    let exe = if cfg!(windows) { "verusd.exe" } else { "verusd" };
-    let names: Vec<std::path::PathBuf> = dirs.iter().map(|d| d.join(exe)).collect();
-    find_verusd_in(&names)
+    let mut candidates: Vec<std::path::PathBuf> = Vec::new();
+    for name in ["luckyd", "verusd"] {
+        let exe = if cfg!(windows) {
+            format!("{name}.exe")
+        } else {
+            name.to_string()
+        };
+        candidates.extend(dirs.iter().map(|d| d.join(&exe)));
+    }
+    find_luckyd_in(&candidates)
 }
 
-/// `find_verusd` over explicit candidates (unit-testable, no PATH games).
-pub fn find_verusd_in(candidates: &[std::path::PathBuf]) -> Vec<String> {
+/// `find_luckyd` over explicit candidates (unit-testable, no PATH games).
+pub fn find_luckyd_in(candidates: &[std::path::PathBuf]) -> Vec<String> {
     let mut found = Vec::new();
     for c in candidates {
         let meta = match std::fs::metadata(c) {
@@ -167,9 +177,10 @@ pub fn needs_generated_creds(user: &str, pass: &str) -> bool {
 }
 
 /// argv for the managed node (foreground — never -daemon, or the Child
-/// handle would track a forked-away double-fork... verusd -daemon forks,
-/// so we run attached and let it log to its debuglogfile). RPC is pinned
-/// to loopback: a wallet-managed node must never expose its RPC port.
+/// handle would track a forked-away double-fork... the daemon's -daemon
+/// forks, so we run attached and let it log to its debuglogfile). RPC is
+/// pinned to loopback: a wallet-managed node must never expose its RPC
+/// port.
 pub fn build_args(datadir: &str, user: &str, pass: &str, port: u16, extra: &str) -> Vec<String> {
     let mut args = vec![
         format!("-datadir={datadir}"),
@@ -194,7 +205,7 @@ pub fn build_args(datadir: &str, user: &str, pass: &str, port: u16, extra: &str)
 /// readiness is the caller's `wait_for_rpc`).
 pub fn spawn(bin: &str, args: &[String]) -> Result<Child, String> {
     if bin.trim().is_empty() {
-        return Err("no node binary configured (Settings → Node → verusd path)".to_string());
+        return Err("no node binary configured (Settings → Node → luckyd path)".to_string());
     }
     let meta = std::fs::metadata(bin)
         .map_err(|e| format!("node binary {bin}: {e}"))?;
@@ -277,7 +288,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("lk-find-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("tmpdir");
-        let good = dir.join("verusd");
+        let good = dir.join("luckyd");
         std::fs::write(&good, b"#!/bin/sh\n").expect("write");
         #[cfg(unix)]
         {
@@ -285,7 +296,7 @@ mod tests {
             std::fs::set_permissions(&good, std::fs::Permissions::from_mode(0o755))
                 .expect("chmod");
         }
-        let not_exec = dir.join("verusd-noexec");
+        let not_exec = dir.join("luckyd-noexec");
         std::fs::write(&not_exec, b"#!/bin/sh\n").expect("write");
         #[cfg(unix)]
         {
@@ -293,10 +304,36 @@ mod tests {
             std::fs::set_permissions(&not_exec, std::fs::Permissions::from_mode(0o644))
                 .expect("chmod");
         }
-        let missing = dir.join("verusd-gone");
+        let missing = dir.join("luckyd-gone");
         let candidates = vec![good.clone(), not_exec, missing, dir.clone()];
-        let found = find_verusd_in(&candidates);
+        let found = find_luckyd_in(&candidates);
         assert_eq!(found, vec![good.to_string_lossy().into_owned()]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn luckyd_wins_over_legacy_verusd() {
+        let dir = std::env::temp_dir().join(format!("lk-find-legacy-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("tmpdir");
+        let mut candidates = Vec::new();
+        // `find_luckyd` always builds its candidate list luckyd-first (the
+        // loop order here mirrors it): a leftover pre-rename binary in the
+        // same directory can never win over the renamed one.
+        for name in ["luckyd", "verusd"] {
+            let p = dir.join(name);
+            std::fs::write(&p, b"#!/bin/sh\n").expect("write");
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755))
+                    .expect("chmod");
+            }
+            candidates.push(p);
+        }
+        let found = find_luckyd_in(&candidates);
+        assert_eq!(found.len(), 2);
+        assert!(found[0].ends_with("luckyd"), "{found:?}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -324,24 +361,34 @@ mod tests {
         assert!(a.contains(&"-rpcport=1234".to_string()));
     }
 
-    /// Full lifecycle against a real verusd: spawn → RPC up → stop →
+    /// Full lifecycle against a real luckyd: spawn → RPC up → stop →
     /// reaped. Slow (~30s); run explicitly when the node binary changes.
     #[test]
     #[ignore]
     fn live_managed_regtest_lifecycle() {
-        let verusd = std::env::var("VERUSD_BIN").unwrap_or_else(|_| {
-            format!(
-                "{}/../../verus/src/verusd",
-                env!("CARGO_MANIFEST_DIR")
-            )
-        });
+        let luckyd = std::env::var("LUCKYD_BIN")
+            .or_else(|_| std::env::var("VERUSD_BIN"))
+            .unwrap_or_default();
+        let luckyd = if !luckyd.is_empty() {
+            luckyd
+        } else {
+            // Default: the renamed binary, with the pre-rename name as a
+            // fallback for stale dev trees.
+            let d = format!("{}/../../verus/src", env!("CARGO_MANIFEST_DIR"));
+            let renamed = format!("{d}/luckyd");
+            if std::path::Path::new(&renamed).exists() {
+                renamed
+            } else {
+                format!("{d}/verusd")
+            }
+        };
         let dir = std::env::temp_dir().join(format!("lk-wmtest-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("tmpdir");
         let dir_s = dir.to_str().expect("tmpdir utf8").to_string();
         let port = 45553u16;
         let args = build_args(&dir_s, "u", "p", port, "-regtest");
-        let mut child = spawn(&verusd, &args).expect("spawn verusd");
+        let mut child = spawn(&luckyd, &args).expect("spawn luckyd");
         let rpc = lm_stratum::rpc::RpcClient::from_url(
             &format!("http://127.0.0.1:{port}"),
             "u",

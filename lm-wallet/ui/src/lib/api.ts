@@ -6,7 +6,7 @@ export type Json = unknown;
 export const nodeStatus = () => invoke<Json>("node_status");
 export const nodeStart = () => invoke<Json>("node_start");
 export const nodeStop = () => invoke<Json>("node_stop");
-/** What the Settings connection picker shows: found verusd binaries + default datadir. */
+/** What the Settings connection picker shows: found node binaries (luckyd) + default datadir. */
 export const nodeDiscover = () => invoke<Json>("node_discover");
 /** One-click connection: "shared" (public testnet node, creds embedded) | "local" (wallet-managed node). */
 export const useConnectionPreset = (preset: "shared" | "local") =>

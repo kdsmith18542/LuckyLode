@@ -54,12 +54,12 @@ pub fn is_shared_url(url: &str) -> bool {
 }
 
 /// What a fresh install can connect to, without typing anything:
-/// the found verusd binaries and the default datadir a managed node
+/// the found luckyd binaries and the default datadir a managed node
 /// would use. Powers the Settings connection picker.
 #[tauri::command]
 pub fn node_discover() -> Result<serde_json::Value, String> {
     Ok(json!({
-        "candidates": node_proc::find_verusd(),
+        "candidates": node_proc::find_luckyd(),
         "default_datadir": node_proc::default_datadir().ok(),
     }))
 }
@@ -99,7 +99,7 @@ pub fn use_connection_preset(state: State<'_, AppState>, preset: String) -> Resu
 }
 
 /// Start YOUR node on this machine. Zero-config path: if no binary is
-/// configured the wallet auto-detects verusd (PATH + per-OS install
+/// configured the wallet auto-detects luckyd (PATH + per-OS install
 /// locations) and remembers the hit, and if the RPC credentials are the
 /// shipped placeholders it generates a pair and passes them to the node
 /// itself — the user never types either. Loopback only — same guard as
@@ -114,11 +114,11 @@ pub fn node_start(state: State<'_, AppState>) -> Result<serde_json::Value, Strin
         let mut cfg = state.cfg.lock().expect("cfg");
         let auto_bin = cfg.node_bin.trim().is_empty();
         if auto_bin {
-            match node_proc::find_verusd().first() {
+            match node_proc::find_luckyd().first() {
                 Some(found) => cfg.node_bin = found.clone(),
                 None => {
                     return Err(
-                        "no verusd found — install the Lucky Lode node and put verusd on your PATH, or set its location under Advanced".to_string(),
+                        "no luckyd found — install the Lucky Lode node and put luckyd on your PATH, or set its location under Advanced".to_string(),
                     );
                 }
             }

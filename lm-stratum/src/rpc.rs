@@ -136,7 +136,7 @@ impl RpcClient {
         }
         let ok_status = head.starts_with("HTTP/1.1 200") || head.starts_with("HTTP/1.0 200");
         let text = String::from_utf8_lossy(&payload);
-        // verusd-family nodes carry the JSON-RPC envelope on some
+        // luckyd-family nodes carry the JSON-RPC envelope on some
         // non-2xx statuses too (e.g. an over-balance `sendtoaddress`
         // returns HTTP 500 with the -6 error body) — surface it.
         if !ok_status {

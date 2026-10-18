@@ -37,7 +37,7 @@ pub struct Config {
     /// section in Settings lists them with release buttons.
     #[serde(default)]
     pub protected_addrs: Vec<String>,
-    /// verusd binary this app may start/stop (Settings → Node). Empty =
+    /// Node daemon binary (luckyd) this app may start/stop (Settings → Node). Empty =
     /// unmanaged (the wallet only connects to a node someone else runs).
     #[serde(default)]
     pub node_bin: String,
