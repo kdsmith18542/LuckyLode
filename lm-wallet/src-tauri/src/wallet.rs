@@ -415,9 +415,9 @@ fn u64_field(v: &Value, key: &str) -> Option<u64> {
 /// Persistent per-txid metadata (`<appdir>/txmeta.json`): the only things a
 /// rescan would otherwise re-fetch one RPC at a time. `coinbase` never
 /// changes; `height` lets confirmations recompute from the tip; `verbose`
-/// caches the full decoded-once transaction for history. Entries younger
-/// than [`TXMETA_FRESH_DEPTH`] blocks are re-fetched (reorg safety); older
-/// history is immutable and trusted.
+/// caches the full decoded-once transaction for history. Reorg safety is
+/// height-equality against the address index (a mismatch re-fetches); a
+/// cache hit costs zero RPCs at any depth.
 #[derive(Clone, Serialize, Deserialize, Default)]
 struct TxMeta {
     #[serde(default)]
@@ -429,7 +429,6 @@ struct TxMeta {
 }
 
 const TXMETA_FILE: &str = "txmeta.json";
-const TXMETA_FRESH_DEPTH: u64 = 12;
 
 fn load_txmeta(dir: &Path) -> HashMap<String, TxMeta> {
     std::fs::read_to_string(dir.join(TXMETA_FILE))
@@ -500,16 +499,20 @@ pub fn scan(
             // entries are re-fetched for safety.
             let idx_height = u64_field(u, "height").unwrap_or(0);
             let (coinbase, confirmations) = match meta.get(&txid) {
-                Some(m)
-                    if m.height == idx_height
-                        && idx_height > 0
-                        && tip.saturating_sub(idx_height) >= TXMETA_FRESH_DEPTH =>
-                {
-                    (
-                        m.coinbase,
-                        tip.saturating_sub(idx_height).saturating_add(1),
-                    )
-                }
+                // Height equality IS the reorg check: getaddressutxos
+                // returns the CURRENT index height, so a match means the
+                // entry is unchanged (coinbase-ness never changes, and
+                // confirmations recompute from the tip). A reorg shows up
+                // as a mismatch and re-fetches; a mempool→confirm
+                // transition is a 0→height mismatch too. The old extra
+                // depth clause re-fetched every UTXO younger than 12
+                // confirmations on EVERY refresh — with per-minute pool
+                // payouts that was ~a dozen RPCs per refresh (the
+                // "balances take a while" report).
+                Some(m) if m.height == idx_height && idx_height > 0 => (
+                    m.coinbase,
+                    tip.saturating_sub(idx_height).saturating_add(1),
+                ),
                 _ => {
                     let raw = rpc.call("getrawtransaction", json!([txid, 1]))?;
                     let cb = is_coinbase_tx(&raw);
