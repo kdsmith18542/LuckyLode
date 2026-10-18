@@ -3,19 +3,21 @@
 use crate::AppState;
 use lm_stratum::rpc::RpcClient;
 
-/// RPC client from the current settings (`rpc_url` may include http://).
+/// RPC client from the current settings (`rpc_url`; `http(s)://` optional,
+/// path prefixes are honoured so a reverse-proxied public node works —
+/// e.g. `https://luckylode.cc/node/`).
 pub fn client(state: &AppState) -> Result<RpcClient, String> {
     let cfg = state.cfg.lock().expect("cfg");
-    let addr = cfg
-        .rpc_url
-        .trim_start_matches("http://")
-        .trim_start_matches("https://")
-        .trim_end_matches('/')
-        .to_string();
-    if addr.is_empty() {
+    let url = cfg.rpc_url.trim();
+    if url.is_empty() {
         return Err("node RPC URL is empty (Settings)".to_string());
     }
-    Ok(RpcClient::new(&addr, &cfg.rpc_user, &cfg.rpc_pass))
+    let url = if url.contains("://") {
+        url.to_string()
+    } else {
+        format!("http://{url}")
+    };
+    RpcClient::from_url(&url, &cfg.rpc_user, &cfg.rpc_pass)
 }
 
 /// Call and return the JSON `result`, with a friendlier auth error.

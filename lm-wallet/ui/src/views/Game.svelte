@@ -63,27 +63,27 @@
 
 <h2>Game state</h2>
 <div class="grid">
-  <div class="card"><div class="k">jackpot reserve</div><div class="v gold">{api.coin(jp.reserve)}</div></div>
-  <div class="card"><div class="k">lucky pot</div><div class="v">{api.coin(jp.pot)}</div></div>
+  <div class="card"><div class="k">jackpot reserve</div><div class="v gold">{api.coinU(jp.reserve)}</div></div>
+  <div class="card"><div class="k">lucky pot</div><div class="v">{api.coinU(jp.pot)}</div></div>
   <div class="card">
     <div class="k">league pool</div>
-    <div class="v">{league !== null ? api.coin(league) : "–"}</div>
+    <div class="v">{league !== null ? api.coinU(league) : "–"}</div>
   </div>
   <div class="card">
-    <div class="k">pot pity in</div>
+    <div class="k">forced pot splash in</div>
     <div class="v">{droughtLeft !== null ? `${droughtLeft} blocks` : "–"}</div>
   </div>
   <div class="card"><div class="k">difficulty</div><div class="v">{mining.difficulty ?? "–"}</div></div>
 </div>
 
-<h2>Emission (docs/04 §4.1)</h2>
+<h2>Emission schedule</h2>
 <div class="card" style="max-width:720px">
   {#if em}
     <div class="row" style="justify-content:space-between">
       <div><span class="muted">phase</span> <strong>{em.phase}</strong> <span class="muted">(era {em.era})</span></div>
       <div>
-        <span class="muted">reward</span> <strong>{api.coin(em.reward)}</strong>
-        <span class="muted">gross · {api.coin(em.net)} after the 5% levy</span>
+        <span class="muted">reward</span> <strong>{api.coinU(em.reward)}</strong>
+        <span class="muted">gross · {api.coinU(em.net)} after the 5% levy</span>
       </div>
     </div>
     <div style="margin-top:10px;background:var(--active);border-radius:6px;height:8px;overflow:hidden">
@@ -139,13 +139,13 @@
   {#if draw?.next}
     <div>height <strong>{draw.next.height}</strong> ·
       {#if draw.next.jackpot}<span class="pill warn">JACKPOT</span>{/if}
-      {#if draw.next.pot_event}<span class="pill ok">POT · tier {draw.next.tier}</span>{/if}
+      {#if draw.next.pot_event}<span class="pill ok">POT · tier {draw.next.tier} ({draw.next.tier}% of pot)</span>{/if}
       {#if !draw.next.jackpot && !draw.next.pot_event}<span class="pill">normal</span>{/if}
     </div>
-    <div class="muted" style="margin-top:8px">digest {draw.next.digest}</div>
+    <div class="muted" style="margin-top:8px">draw ticket hash {draw.next.digest}</div>
     <div class="muted" style="margin-top:4px">
       the ticket is SHA256D(parent hash ‖ height): fixed the moment the parent lands — the next
-      height's class is exact; later heights are unknown until their parents exist (~1/100 each).
+      height's class is exact; later heights are unknown until their parents exist (jackpot ~1/100, pot ~1/1000 per block).
     </div>
   {:else}
     <div class="muted">node offline</div>
@@ -161,7 +161,7 @@
         <td>{d.epoch}</td>
         <td>{d.height}</td>
         <td class="muted">{api.short(d.winner, 12)}</td>
-        <td>{api.coin(d.budget)}</td>
+        <td>{api.coinU(d.budget)}</td>
         <td>{d.cosigns ?? 0}</td>
         <td class="muted" title={String(d.txid ?? "")}>{txLabel(d.txid)}</td>
       </tr>
@@ -172,18 +172,19 @@
 
 <h2>Recent game events</h2>
 <table>
-  <thead><tr><th>height</th><th>finder</th><th>jackpot</th><th>pot splash</th><th>league inflow</th></tr></thead>
+  <thead><tr><th>height</th><th>finder</th><th>block reward</th><th>jackpot bonus</th><th>pot splash</th><th>league inflow</th></tr></thead>
   <tbody>
     {#each events as b}
       <tr>
         <td>{b.height}</td>
         <td class="muted">{api.short(b.finder_name ?? b.finder, 10)}</td>
-        <td>{api.coin(b.bonus)}</td>
-        <td>{api.coin(b.pot)}</td>
-        <td>{api.coin(b.league_overflow)}</td>
+        <td>{api.coinU(b.value)}</td>
+        <td>{api.coinU(b.bonus)}</td>
+        <td>{api.coinU(b.pot)}</td>
+        <td>{api.coinU(b.league_overflow)}</td>
       </tr>
     {/each}
-    {#if events.length === 0}<tr><td colspan="5" class="muted">no jackpot/pot/league events in the pool's recent window</td></tr>{/if}
+    {#if events.length === 0}<tr><td colspan="6" class="muted">no jackpot/pot/league events in the pool's recent window</td></tr>{/if}
   </tbody>
 </table>
 
@@ -191,7 +192,7 @@
 <div class="grid">
   <div class="card"><div class="k">network hashrate</div><div class="v">{mining.networkhashps ?? "–"} H/s</div></div>
   <div class="card"><div class="k">chain height</div><div class="v">{mining.blocks ?? "–"}</div></div>
-  <div class="card"><div class="k">pool 10m</div><div class="v">{pool?.pool?.hashrate10m ? Math.round(pool.pool.hashrate10m) + " H/s" : "–"}</div></div>
-  <div class="card"><div class="k">emission plan</div><div class="v" style="font-size:14px">ramp 0→16 · 16/8/4/2 · tail 1/block</div></div>
+  <div class="card"><div class="k">pool hashrate 10m</div><div class="v">{pool?.pool?.hashrate10m ? Math.round(pool.pool.hashrate10m) + " H/s" : "–"}</div></div>
+  <div class="card"><div class="k">block reward schedule</div><div class="v" style="font-size:14px">week-1 ramp 0→16 · halving 16/8/4/2 every 2 yrs · 1/block tail forever</div></div>
 </div>
 {#if err}<div class="err">{err}</div>{/if}

@@ -8,8 +8,17 @@
 set -euo pipefail
 
 BIN_DIR="$(cd "$(dirname "$0")" && pwd)"
-APPIMAGE=$(ls -t "$BIN_DIR"/target/release/bundle/appimage/*.AppImage 2>/dev/null | head -1)
 INSTALL_DIR="$HOME/Applications/LuckyLodeWallet"
+
+# Newest AppImage under either layout (repo root or src-tauri as CWD).
+APPIMAGE=""
+for f in "$BIN_DIR"/target/release/bundle/appimage/*.AppImage \
+         "$BIN_DIR"/src-tauri/target/release/bundle/appimage/*.AppImage; do
+    [ -f "$f" ] || continue
+    if [ -z "$APPIMAGE" ] || [ "$f" -nt "$APPIMAGE" ]; then
+        APPIMAGE="$f"
+    fi
+done
 
 if [ -z "$APPIMAGE" ]; then
     echo "no AppImage found — run: cd $BIN_DIR/src-tauri && cargo tauri build" >&2
@@ -23,11 +32,14 @@ mkdir -p "$INSTALL_DIR"
 rm -rf /tmp/lw-extract && mkdir -p /tmp/lw-extract
 (cd /tmp/lw-extract && "$APPIMAGE" --appimage-extract >/dev/null 2>&1 || true)
 
-if [ -x /tmp/lw-extract/squashfs-root/lucky-lode-wallet ]; then
+if [ -x /tmp/lw-extract/squashfs-root/usr/bin/lucky-lode-wallet ]; then
+    cp /tmp/lw-extract/squashfs-root/usr/bin/lucky-lode-wallet "$INSTALL_DIR/lucky-lode-wallet"
+    cp /tmp/lw-extract/squashfs-root/usr/share/icons/hicolor/256x256/apps/lucky-lode-wallet.png \
+        "$INSTALL_DIR/256x256.png" 2>/dev/null || true
+    cp /tmp/lw-extract/squashfs-root/*.png "$INSTALL_DIR/" 2>/dev/null || true
+elif [ -x /tmp/lw-extract/squashfs-root/lucky-lode-wallet ]; then
     cp /tmp/lw-extract/squashfs-root/lucky-lode-wallet "$INSTALL_DIR/lucky-lode-wallet"
     cp /tmp/lw-extract/squashfs-root/*.png "$INSTALL_DIR/" 2>/dev/null || true
-    [ -f /tmp/lw-extract/squashfs-root/*.desktop ] && \
-        cp /tmp/lw-extract/squashfs-root/*.desktop /tmp/lw-desktop.tpl || true
 else
     # Fallback: launcher that runs the AppImage directly.
     cat > "$INSTALL_DIR/lucky-lode-wallet" <<EOF
@@ -37,7 +49,8 @@ EOF
 fi
 chmod +x "$INSTALL_DIR/lucky-lode-wallet"
 
-ICON="$INSTALL_DIR/128x128.png"
+ICON="$INSTALL_DIR/256x256.png"
+[ -f "$ICON" ] || ICON="$INSTALL_DIR/128x128.png"
 [ -f "$ICON" ] || ICON="utilities-terminal"
 
 mkdir -p "$HOME/.local/share/applications"

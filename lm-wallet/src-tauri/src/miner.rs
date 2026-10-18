@@ -77,6 +77,7 @@ pub fn start(
     gpu_platform: usize,
     gpu_device: usize,
     gpu_batch: usize,
+    tls: bool,
     max_power: u32,
 ) -> Result<Miner, String> {
     if worker.trim().is_empty() {
@@ -119,6 +120,7 @@ pub fn start(
             gpu_platform,
             gpu_device,
             gpu_batch,
+            tls,
             max_power,
         )
     });
@@ -139,6 +141,7 @@ fn run(
     gpu_platform: usize,
     gpu_device: usize,
     gpu_batch: usize,
+    tls: bool,
     max_power: u32,
 ) {
     let policy = match MiningPolicy::new(max_temp, duty.min(100) as i64) {
@@ -202,12 +205,32 @@ fn run(
                 continue;
             }
         };
-        let mut client = match PoolClient::connect(addr) {
-            Ok(c) => c,
-            Err(e) => {
-                set_error(&status, &log, Some(format!("pool connect: {e}")));
-                sleep_stop(&stop, Duration::from_secs(3));
-                continue;
+        // TLS (review fix 2026-10-18): the reference pool serves
+        // stratum+TLS on request — same roots the CLI miner uses.
+        let mut client = if tls {
+            let host = pool.split(':').next().unwrap_or(&pool);
+            match PoolClient::connect_tls(
+                addr,
+                host,
+                None,
+                false,
+                std::time::Duration::from_secs(10),
+            ) {
+                Ok(c) => c,
+                Err(e) => {
+                    set_error(&status, &log, Some(format!("pool TLS connect: {e}")));
+                    sleep_stop(&stop, Duration::from_secs(3));
+                    continue;
+                }
+            }
+        } else {
+            match PoolClient::connect(addr) {
+                Ok(c) => c,
+                Err(e) => {
+                    set_error(&status, &log, Some(format!("pool connect: {e}")));
+                    sleep_stop(&stop, Duration::from_secs(3));
+                    continue;
+                }
             }
         };
         if let Err(e) = client
@@ -388,6 +411,7 @@ mod tests {
             0,
             0,
             512,
+            false,
             0,
         )
         .expect("start");
@@ -421,6 +445,7 @@ mod tests {
             0,
             0,
             512,
+            false,
             0,
         )
         .expect("start");

@@ -26,6 +26,9 @@
     err = "";
     try {
       const r: any = await api.luckynodeRegister(addr.trim());
+      const ids = new Set(localIds);
+      ids.add(r.id);
+      localIds = [...ids];
       msg = `registered ${api.short(r.id, 16)} — key stored at ${r.key_path}`;
       await load();
     } catch (e) {
@@ -53,6 +56,16 @@
   const draws = $derived<any[]>(data?.recent_draws ?? []);
   const running: string[] = $derived(svc?.running ?? []);
   const bondAmount = $derived(data?.config?.bond ?? 0);
+  // Nodes THIS app registered (the embedded service holds their keys).
+  // Foreign pool nodes are read-only here — the backend rejects their
+  // start/stop anyway (id must match the stored key).
+  let localIds = $state<string[]>(
+    JSON.parse(localStorage.getItem("ll-local-luckynodes") ?? "[]"),
+  );
+  $effect(() => {
+    localStorage.setItem("ll-local-luckynodes", JSON.stringify(localIds));
+  });
+  const mine = $derived(nodes.filter((n) => localIds.includes(n.id)));
   const days = (s: unknown) => Math.floor((Number(s) || 0) / 86400);
   const weight = (w: unknown) => ((Number(w) || 1000) / 1000).toFixed(1) + "×";
 </script>
@@ -61,13 +74,13 @@
 <div class="grid">
   <div class="card"><div class="k">registered</div><div class="v">{nodes.length}</div></div>
   <div class="card"><div class="k">active (heartbeat)</div><div class="v">{data?.active?.length ?? 0}</div></div>
-  <div class="card"><div class="k">bond required</div><div class="v gold">{api.coin(bondAmount)}</div></div>
+  <div class="card"><div class="k">bond required</div><div class="v gold">{bondAmount > 0 ? api.coinU(bondAmount) : "free (bond 0)"}</div></div>
   <div class="card"><div class="k">draw epoch</div><div class="v">{data?.config?.epoch ?? "–"} blocks</div></div>
 </div>
 
 <table style="margin-top:14px">
   <thead>
-    <tr><th>node</th><th>payout address</th><th>bond</th><th>active</th><th>tenure</th><th>weight</th><th>last heartbeat</th><th>service</th></tr>
+    <tr><th>node</th><th>payout address</th><th>bond</th><th>active</th><th>tenure</th><th>weight</th><th>last heartbeat</th><th>local service</th></tr>
   </thead>
   <tbody>
     {#each nodes as n}
@@ -76,19 +89,27 @@
         <td class="muted">{api.short(n.address, 10)}</td>
         <td><span class="pill" class:ok={n.bond_ok} class:bad={!n.bond_ok}>{n.bond_ok ? "bonded" : "under"}</span></td>
         <td><span class="pill" class:ok={data.active?.includes(n.id)} class:off={!data.active?.includes(n.id)}>{data.active?.includes(n.id) ? "yes" : "idle"}</span></td>
-        <td>{days(n.tenure_secs)}d</td>
-        <td class="muted">{weight(n.weight_millis)}</td>
+        <td title="days since first heartbeat">{n.tenure_secs < 172800 ? Math.max(1, Math.round(n.tenure_secs / 3600)) + "h" : days(n.tenure_secs) + "d"}</td>
+        <td class="muted" title="draw odds multiplier from tenure">{weight(n.weight_millis)}</td>
         <td class="muted">{api.ago(n.last_heartbeat)}</td>
         <td>
-          {#if running.includes(n.id)}
-            <button class="btn danger" onclick={() => stop(n)}>Stop</button>
+          {#if localIds.includes(n.id)}
+            {#if running.includes(n.id)}
+              <button class="btn danger" onclick={() => stop(n)}>Stop</button>
+            {:else}
+              <button class="btn" onclick={() => start(n)}>Start</button>
+            {/if}
           {:else}
-            <button class="btn" onclick={() => start(n)}>Start</button>
+            <span class="muted">not yours</span>
           {/if}
         </td>
       </tr>
     {/each}
-    {#if nodes.length === 0}<tr><td colspan="8" class="muted">no luckynodes registered on this pool yet</td></tr>{/if}
+    {#if nodes.length === 0}
+      <tr><td colspan="8" class="muted">no luckynodes registered on this pool yet</td></tr>
+    {:else if mine.length === 0}
+      <tr><td colspan="8" class="muted">none of these are yours — only your own nodes can be started from this app</td></tr>
+    {/if}
   </tbody>
 </table>
 
@@ -97,26 +118,27 @@
   <label for="addr">payout address (holds the bond)</label>
   <input id="addr" bind:value={addr} placeholder="L… / m… / n…" spellcheck="false" />
   <div class="row" style="margin-top:12px">
-    <button class="btn primary" disabled={!addr} onclick={register}>Generate key + register</button>
-    <span class="muted">ed25519 identity stored 0600 in the app dir; the wallet can run the service for you</span>
+  <button class="btn primary" disabled={!addr} onclick={register}>Generate key + register</button>
+  <span class="muted">ed25519 identity stored 0600 in the app dir; the wallet can run the service for you — registration proves this wallet owns the payout address (no key, no node)</span>
   </div>
   {#if msg}<div class="muted" style="margin-top:10px">{msg}</div>{/if}
 </div>
 
 <h2>Recent draws</h2>
 <table>
-  <thead><tr><th>epoch</th><th>height</th><th>winner</th><th>budget</th><th>txid</th></tr></thead>
+  <thead><tr><th>epoch</th><th>height</th><th>winner</th><th>budget</th><th>cosigns</th><th>txid</th></tr></thead>
   <tbody>
     {#each draws as d}
       <tr>
         <td>{d.epoch}</td>
         <td>{d.height}</td>
         <td>{api.short(d.winner, 10)}</td>
-        <td>{api.coin(d.budget)}</td>
+        <td>{api.coinU(d.budget)}</td>
+        <td>{d.cosigns ?? 0}</td>
         <td class="muted">{api.short(d.txid, 12)}</td>
       </tr>
     {/each}
-    {#if draws.length === 0}<tr><td colspan="5" class="muted">no draws yet — the next epoch boundary fires one</td></tr>{/if}
+    {#if draws.length === 0}<tr><td colspan="6" class="muted">no draws yet — one fires every 2,880 blocks</td></tr>{/if}
   </tbody>
 </table>
 {#if err}<div class="err">{err}</div>{/if}

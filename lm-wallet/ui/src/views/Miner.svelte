@@ -2,6 +2,7 @@
   import * as api from "../lib/api";
   let cfg = $state<any>({ pool_stratum: "", mining_worker: "" });
   let device = $state("auto");
+  let useTls = $state(false);
   let threads = $state(4);
   let duty = $state(100);
   let maxTemp = $state(80);
@@ -49,6 +50,7 @@
       await api.minerStart({
         pool: cfg.pool_stratum,
         worker: cfg.mining_worker.trim(),
+        tls: useTls,
         device,
         threads: Number(threads) || 1,
         duty: Number(duty) || 100,
@@ -101,11 +103,16 @@
 <div class="card" style="max-width:640px">
   <p class="muted" style="margin-top:0">
     Mine from the wallet — same engine as the reference <code>lm-miner</code>, with duty
-    pacing and a temperature guard. Rewards go to the payout address below (your worker name).
+    pacing and a temperature guard. Payouts go to the worker address below; leave it
+    blank to mine straight to your wallet's current receive address.
   </p>
   <label for="st">stratum endpoint (host:port)</label>
   <input id="st" bind:value={cfg.pool_stratum} spellcheck="false" disabled={running} />
-  <label for="wk">payout address (worker name — the pool pays here)</label>
+  <label class="row" style="align-items:center;gap:8px">
+    <input type="checkbox" bind:checked={useTls} disabled={running} style="width:auto" />
+    <span class="muted">use TLS (the official pool serves stratum+TLS on request — needs its TLS hostname)</span>
+  </label>
+  <label for="wk">worker name (is the payout address — the pool pays here; blank = your wallet)</label>
   <div class="row">
     <input
       id="wk"
@@ -149,7 +156,7 @@
     {/if}
     <div class="row" style="margin-top:4px">
       <div>
-        <label for="gb">gpu batch (MiB VRAM)</label>
+        <label for="gb" title="search batch size (work units per GPU pass), not VRAM size">gpu work batch</label>
         <input id="gb" type="number" min="1" max="8192" bind:value={gpuBatch} disabled={running} style="width:110px" />
       </div>
       <div>
@@ -175,7 +182,7 @@
     <div class="card"><div class="k">hashrate</div><div class="v">{hs(st.hashrate)}</div></div>
     <div class="card"><div class="k">accepted</div><div class="v">{st.accepted}</div></div>
     <div class="card"><div class="k">rejected</div><div class="v">{st.rejected}</div></div>
-    <div class="card"><div class="k">duplicates</div><div class="v">{st.duplicates}</div></div>
+    <div class="card" title="resubmitted shares the pool already counted — not extra work"><div class="k">duplicates</div><div class="v">{st.duplicates}</div></div>
     <div class="card"><div class="k">hashes</div><div class="v">{st.hashes}</div></div>
     <div class="card"><div class="k">uptime</div><div class="v">{uptime(st.uptime_secs)}</div></div>
     {#if st.temp_c > 0}

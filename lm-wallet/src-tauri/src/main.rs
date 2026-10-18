@@ -7,7 +7,9 @@ mod emission;
 mod luckynode;
 mod miner;
 mod node;
+mod node_proc;
 mod pool;
+mod wallet;
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -18,6 +20,25 @@ pub struct AppState {
     pub cfg_path: std::path::PathBuf,
     pub services: Mutex<HashMap<String, luckynode::Service>>,
     pub miner: Mutex<Option<miner::Miner>>,
+    /// verusd child this app started (None = unmanaged / not running).
+    /// The wallet never supervises: no auto-restart, stop only this PID.
+    pub node_proc: Mutex<Option<node_proc::ManagedNode>>,
+    /// Unlocked wallet session (seed + phrase, RAM only, wiped on lock).
+    /// None = locked (or no wallet yet).
+    pub session: Mutex<Option<wallet::Session>>,
+    /// Built-but-unbroadcast payments (txid → signed hex). Single-use,
+    /// 2-minute TTL: the preview/confirm review flow can never broadcast
+    /// anything but the exact bytes the user reviewed.
+    pub pending: Mutex<HashMap<String, PendingSend>>,
+}
+
+/// A built + signed payment awaiting user confirmation.
+pub struct PendingSend {
+    pub hex: String,
+    pub fee: u64,
+    pub change: u64,
+    pub change_used: Option<u32>,
+    pub expires_at: std::time::Instant,
 }
 
 fn main() {
@@ -35,20 +56,45 @@ fn main() {
                 cfg_path,
                 services: Mutex::new(HashMap::new()),
                 miner: Mutex::new(None),
+                node_proc: Mutex::new(None),
+                session: Mutex::new(None),
+                pending: Mutex::new(HashMap::new()),
             });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             commands::node_status,
+            commands::node_start,
+            commands::node_stop,
+            commands::node_discover,
+            commands::use_connection_preset,
+            commands::staking_info,
+            commands::set_staking,
+            commands::node_funding_address,
+            commands::stake_app_coins,
             commands::wallet_balances,
             commands::transactions,
             commands::contacts_list,
             commands::contact_add,
             commands::contact_remove,
             commands::address_qr,
+            commands::protect_address,
+            commands::unprotect_address,
             commands::tx_detail,
             commands::new_address,
             commands::send,
+            commands::send_preview,
+            commands::send_confirm,
+            commands::receive_list,
+            commands::wallet_status,
+            commands::wallet_create,
+            commands::wallet_restore,
+            commands::wallet_reveal,
+            commands::wallet_rescan,
+            commands::wallet_unlock,
+            commands::wallet_lock,
+            commands::wallet_migrate,
+            commands::wallet_change_password,
             commands::game_info,
             commands::emission_info,
             commands::next_draw,

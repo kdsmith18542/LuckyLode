@@ -9,6 +9,8 @@ use std::time::Duration;
 /// Service handle held in app state.
 pub struct Service {
     pub stop: Arc<AtomicBool>,
+    /// Payout-address key (proves ownership at each registration).
+    pub addr_secret: [u8; 32],
 }
 
 fn now_secs() -> u64 {
@@ -43,12 +45,26 @@ pub fn load_or_gen_key(path: &std::path::Path) -> Result<[u8; 32], String> {
 }
 
 /// Spawn the heartbeat + cosign loop for one node. Returns the handle.
-pub fn start(pool_url: String, id: String, address: String, key: [u8; 32]) -> Service {
+/// `addr_secret` is the payout address's key: registration proves this app
+/// controls the bond/payout address (pool verifies via `verifymessage`).
+pub fn start(
+    pool_url: String,
+    id: String,
+    address: String,
+    key: [u8; 32],
+    addr_secret: [u8; 32],
+) -> Service {
     let stop = Arc::new(AtomicBool::new(false));
     let stop_thread = Arc::clone(&stop);
     std::thread::spawn(move || {
-        let reg = serde_json::json!({ "id": id, "address": address, "pubkey": id }).to_string();
-        if let Err(e) = crate::pool::post(&pool_url, "api/luckynode/register", &reg) {
+        let reg = match lm_luckynode::register_body(&id, &address, &addr_secret) {
+            Ok(b) => b,
+            Err(e) => {
+                eprintln!("luckynode {id}: register sign failed: {e}");
+                serde_json::json!({ "id": id, "address": address, "pubkey": id })
+            }
+        };
+        if let Err(e) = crate::pool::post(&pool_url, "api/luckynode/register", &reg.to_string()) {
             eprintln!("luckynode {id}: register failed: {e}");
         }
         while !stop_thread.load(Ordering::Relaxed) {
@@ -65,10 +81,17 @@ pub fn start(pool_url: String, id: String, address: String, key: [u8; 32]) -> Se
                         Err(e) => {
                             eprintln!("luckynode {id}: heartbeat: {e}");
                             if e.contains("unknown node") {
+                                let reg = match lm_luckynode::register_body(&id, &address, &addr_secret) {
+                                    Ok(b) => b,
+                                    Err(e) => {
+                                        eprintln!("luckynode {id}: register sign failed: {e}");
+                                        serde_json::json!({ "id": id, "address": address, "pubkey": id })
+                                    }
+                                };
                                 let _ = crate::pool::post(
                                     &pool_url,
                                     "api/luckynode/register",
-                                    &reg,
+                                    &reg.to_string(),
                                 );
                             }
                         }
@@ -104,5 +127,8 @@ pub fn start(pool_url: String, id: String, address: String, key: [u8; 32]) -> Se
             }
         }
     });
-    Service { stop }
+    Service {
+        stop,
+        addr_secret,
+    }
 }
