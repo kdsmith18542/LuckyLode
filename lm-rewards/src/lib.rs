@@ -122,15 +122,17 @@ pub fn split_jackpot(shares: &[Share], bonus: u64) -> Vec<(String, u64)> {
     // Largest-remainder dust, miner-id tiebreak (miners already id-sorted).
     let mut dust = bonus - assigned;
     remainders.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+    // Row index by id once (the dust walk was O(n) per unit).
+    let row_index: std::collections::HashMap<&str, usize> = miners
+        .iter()
+        .enumerate()
+        .map(|(i, (m, _))| (m.as_str(), i))
+        .collect();
     for (_, id) in remainders {
         if dust == 0 {
             break;
         }
-        let idx = miners
-            .iter()
-            .position(|(m, _)| *m == id)
-            .expect("id present");
-        payouts[idx] += 1;
+        payouts[*row_index.get(id.as_str()).expect("id present")] += 1;
         dust -= 1;
     }
     // Locked miners hold exactly cap_each and take no dust.

@@ -346,11 +346,18 @@ impl Ledger {
         }
         fracs.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
         let mut dust = balance - assigned;
+        // Row index by id once — the dust walk is O(1) per step, not a
+        // linear rescan per unit (O(n^2) over the window before).
+        let row_index: std::collections::HashMap<&str, usize> = rows
+            .iter()
+            .enumerate()
+            .map(|(i, (m, _))| (m.as_str(), i))
+            .collect();
         for (_, id) in fracs {
             if dust == 0 {
                 break;
             }
-            pays[rows.iter().position(|(m, _)| *m == id).expect("id present")] += 1;
+            pays[*row_index.get(id.as_str()).expect("id present")] += 1;
             dust -= 1;
         }
         self.league_pool = 0;

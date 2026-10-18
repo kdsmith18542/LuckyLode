@@ -143,6 +143,11 @@ fn is_permission_denied(msg: &str) -> bool {
 pub struct GpuSearcher {
     dev: GpuDevice,
     batch: usize,
+    /// Persistent launch buffers for `batch` instances: created lazily on
+    /// the first grind batch and reused for every launch after
+    /// (per-launch clCreateBuffer of a batch x 1 MiB mem buffer was
+    /// driver churn).
+    bufs: std::sync::Mutex<Option<crate::opencl::BatchBuffers>>,
 }
 
 impl GpuSearcher {
@@ -152,6 +157,7 @@ impl GpuSearcher {
         Ok(Self {
             dev: GpuDevice::open(platform, device)?,
             batch: batch.max(1),
+            bufs: std::sync::Mutex::new(None),
         })
     }
 
@@ -195,7 +201,15 @@ impl GpuSearcher {
             inits.push(argon2_prep::initial_blocks(&h0));
             seeds.push(seed);
         }
-        let lasts = self.dev.fill_batch(&inits)?;
+        // Lazily create the persistent launch buffers once, then reuse.
+        let lasts = {
+            let mut guard = self.bufs.lock().expect("gpu buffers");
+            if guard.is_none() {
+                *guard = Some(self.dev.create_batch_buffers(self.batch)?);
+            }
+            self.dev
+                .fill_batch_with(guard.as_ref().expect("just created"), &inits)?
+        };
         for (i, last) in lasts.iter().enumerate() {
             let out = final_digest(&seeds[i], &argon2_prep::mem_from_last(last));
             if meets_target(&out, target) {

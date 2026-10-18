@@ -435,6 +435,153 @@ pub fn list_devices() -> Vec<(usize, usize, String)> {
         (if ok1 { wg } else { 0 }, if ok2 { pm } else { 0 })
     }
 
+    /// Persistent launch buffers for one batch capacity: created once and
+    /// reused across launches (the per-launch clCreateBuffer set — a
+    /// batch x 1 MiB mem buffer among them — is pure driver churn in the
+    /// grind loop). Capacity is in unpadded instances; every launch with
+    /// the same batch size reuses the same objects.
+    pub fn create_batch_buffers(&self, capacity: usize) -> Result<BatchBuffers, String> {
+        let n_pad = capacity.div_ceil(4) * 4;
+        let words_per_instance = 1024usize * 128;
+        let mut err = 0i32;
+        let init = unsafe {
+            clCreateBuffer(self.context, CL_MEM_READ_ONLY, n_pad * 2 * 128 * 8, ptr::null_mut(), &mut err)
+        };
+        ck(err, "clCreateBuffer(init)")?;
+        let mem = unsafe {
+            clCreateBuffer(
+                self.context,
+                CL_MEM_READ_WRITE,
+                n_pad * words_per_instance * 8,
+                ptr::null_mut(),
+                &mut err,
+            )
+        };
+        if err != CL_SUCCESS {
+            unsafe { clReleaseMemObject(init) };
+            return Err(format!("clCreateBuffer(mem) failed ({err})"));
+        }
+        let out = unsafe {
+            clCreateBuffer(self.context, CL_MEM_WRITE_ONLY, n_pad * 128 * 8, ptr::null_mut(), &mut err)
+        };
+        if err != CL_SUCCESS {
+            unsafe {
+                clReleaseMemObject(init);
+                clReleaseMemObject(mem);
+            }
+            return Err(format!("clCreateBuffer(out) failed ({err})"));
+        }
+        let scratch = unsafe {
+            clCreateBuffer(self.context, CL_MEM_READ_WRITE, n_pad * 384 * 8, ptr::null_mut(), &mut err)
+        };
+        if err != CL_SUCCESS {
+            unsafe {
+                clReleaseMemObject(init);
+                clReleaseMemObject(mem);
+                clReleaseMemObject(out);
+            }
+            return Err(format!("clCreateBuffer(scratch) failed ({err})"));
+        }
+        Ok(BatchBuffers {
+            init,
+            mem,
+            out,
+            scratch,
+            capacity,
+        })
+    }
+
+    /// Same contract as [`fill_batch`] but over CALLER-OWNED persistent
+    /// buffers ([`create_batch_buffers`]); `bufs.capacity` must be >=
+    /// `inits.len()`.
+    pub fn fill_batch_with(
+        &self,
+        bufs: &BatchBuffers,
+        inits: &[[[u64; 128]; 2]],
+    ) -> Result<Vec<[u64; 128]>, String> {
+        let n = inits.len();
+        if n == 0 {
+            return Err("empty batch".to_string());
+        }
+        if n > bufs.capacity {
+            return Err(format!("batch {n} exceeds buffer capacity {}", bufs.capacity));
+        }
+        const LOCAL: usize = 32; // 4 instances x 8 items
+        let n_pad = bufs.capacity.div_ceil(4) * 4;
+        let mut init_flat = Vec::with_capacity(n_pad * 2 * 128);
+        for pair in inits {
+            init_flat.extend_from_slice(&pair[0]);
+            init_flat.extend_from_slice(&pair[1]);
+        }
+        init_flat.resize(n_pad * 2 * 128, 0);
+        ck(
+            unsafe {
+                clEnqueueWriteBuffer(
+                    self.queue,
+                    bufs.init,
+                    CL_TRUE,
+                    0,
+                    init_flat.len() * 8,
+                    init_flat.as_ptr() as *const c_void,
+                    0,
+                    ptr::null(),
+                    ptr::null_mut(),
+                )
+            },
+            "clEnqueueWriteBuffer(init)",
+        )?;
+        for (i, buf) in [bufs.init, bufs.mem, bufs.out, bufs.scratch].iter().enumerate() {
+            let mut b = *buf;
+            ck(
+                unsafe { clSetKernelArg(self.kernel, i as u32, 8, &mut b as *mut _ as *const c_void) },
+                "clSetKernelArg",
+            )?;
+        }
+        let global = n_pad * 8; // 8 items per instance
+        let local = LOCAL;
+        ck(
+            unsafe {
+                clEnqueueNDRangeKernel(
+                    self.queue,
+                    self.kernel,
+                    1,
+                    ptr::null(),
+                    &global as *const usize,
+                    &local as *const usize,
+                    0,
+                    ptr::null(),
+                    ptr::null_mut(),
+                )
+            },
+            "clEnqueueNDRangeKernel",
+        )?;
+        ck(unsafe { clFinish(self.queue) }, "clFinish")?;
+        let mut out_flat = vec![0u64; n_pad * 128];
+        ck(
+            unsafe {
+                clEnqueueReadBuffer(
+                    self.queue,
+                    bufs.out,
+                    CL_TRUE,
+                    0,
+                    out_flat.len() * 8,
+                    out_flat.as_mut_ptr() as *mut c_void,
+                    0,
+                    ptr::null(),
+                    ptr::null_mut(),
+                )
+            },
+            "clEnqueueReadBuffer(out)",
+        )?;
+        let mut out = Vec::with_capacity(n);
+        for chunk in out_flat.chunks_exact(128).take(n) {
+            let mut block = [0u64; 128];
+            block.copy_from_slice(chunk);
+            out.push(block);
+        }
+        Ok(out)
+    }
+
     /// Run the fill for a batch of instances. `inits[i]` = the two initial
     /// 128-word blocks for instance i (from `argon2_prep::initial_blocks`).
     /// Returns the 128-word final block per instance. Batch sizing is the
@@ -444,7 +591,8 @@ pub fn list_devices() -> Vec<(usize, usize, String)> {
     /// v2 pads the batch to a multiple of 4 instances (one workgroup = 32
     /// items = 4 instances; every workgroup is fully populated so barrier
     /// participation is uniform) and gives each instance a 3-block global
-    /// scratch array (input | mid | address).
+    /// scratch array (input | mid | address). One-shot buffer set — the
+    /// grind loop uses [`fill_batch_with`] with persistent buffers.
     pub fn fill_batch(&self, inits: &[[[u64; 128]; 2]]) -> Result<Vec<[u64; 128]>, String> {
         let n = inits.len();
         if n == 0 {
@@ -594,6 +742,26 @@ pub fn list_devices() -> Vec<(usize, usize, String)> {
             clReleaseMemObject(scratch_buf);
         }
         result
+    }
+}
+
+/// Persistent OpenCL launch buffers (see [`GpuDevice::create_batch_buffers`]).
+pub struct BatchBuffers {
+    init: *mut c_void,
+    mem: *mut c_void,
+    out: *mut c_void,
+    scratch: *mut c_void,
+    capacity: usize,
+}
+
+impl Drop for BatchBuffers {
+    fn drop(&mut self) {
+        unsafe {
+            clReleaseMemObject(self.init);
+            clReleaseMemObject(self.mem);
+            clReleaseMemObject(self.out);
+            clReleaseMemObject(self.scratch);
+        }
     }
 }
 

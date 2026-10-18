@@ -20,7 +20,7 @@ pub mod gpu;
 pub mod opencl;
 pub mod thermal;
 
-use lm_pow::{meets_target, pow_hash};
+use lm_pow::{meets_target, CpuHasher};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::Instant;
@@ -100,8 +100,12 @@ pub fn search_with_policy(
                 let mut since_pace = 0u32;
                 let mut policy_rt = policy.runtime();
                 let mut chunk = Instant::now();
+                // One reusable hasher per thread: no megabyte alloc/free
+                // per nonce. Byte-identical to the one-shot path (pinned
+                // in lm-pow tests).
+                let mut hasher = CpuHasher::new();
                 loop {
-                    let out = pow_hash(header, n, height);
+                    let out = hasher.pow_hash(header, n, height);
                     if meets_target(&out, target) {
                         if !stop.swap(true, Ordering::SeqCst) {
                             *found.lock().expect("found lock") = Some(Solution { nonce: n, out });
@@ -227,9 +231,10 @@ pub fn bench(
             handles.push(s.spawn(move || {
                 let base = (t as u64).saturating_mul(hashes_per_thread);
                 let t0 = Instant::now();
+                let mut hasher = CpuHasher::new();
                 for k in 0..hashes_per_thread {
                     let nonce = base.saturating_add(k);
-                    std::hint::black_box(pow_hash(header, nonce, height));
+                    std::hint::black_box(hasher.pow_hash(header, nonce, height));
                 }
                 let secs = t0.elapsed().as_secs_f64().max(1e-9);
                 hashes_per_thread as f64 / secs

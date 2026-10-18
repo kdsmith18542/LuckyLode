@@ -62,31 +62,34 @@ fn argon2_ctx() -> &'static Argon2<'static> {
 /// Seed stage alone: `BLAKE3(header || nonce_le64)`. Exposed for
 /// alternative Argon2id backends (the OpenCL fill path, doc 15) that
 /// reproduce [`pow_full`]'s stages on different hardware.
+///
+/// Uses blake3's incremental hasher: no intermediate allocation (the
+/// old Vec-per-hash was pure overhead in the grind loop).
 #[must_use]
 pub fn seed(header: &[u8], nonce: u64) -> [u8; OUT_LEN] {
-    let mut pre = Vec::with_capacity(header.len() + 8);
-    pre.extend_from_slice(header);
-    pre.extend_from_slice(&nonce.to_le_bytes());
-    *blake3::hash(&pre).as_bytes()
+    let mut h = blake3::Hasher::new();
+    h.update(header);
+    h.update(&nonce.to_le_bytes());
+    *h.finalize().as_bytes()
 }
 
 /// Digest stage alone: `BLAKE3(mem || seed)`. Exposed for the same
 /// reason as [`seed`].
 #[must_use]
 pub fn final_digest(seed: &[u8; OUT_LEN], mem: &[u8; OUT_LEN]) -> [u8; OUT_LEN] {
-    let mut post = Vec::with_capacity(OUT_LEN * 2);
-    post.extend_from_slice(mem);
-    post.extend_from_slice(seed);
-    *blake3::hash(&post).as_bytes()
+    let mut h = blake3::Hasher::new();
+    h.update(mem);
+    h.update(seed);
+    *h.finalize().as_bytes()
 }
 
 /// Full three-stage evaluation.
 pub fn pow_full(header: &[u8], nonce: u64, height: u64) -> FullHash {
     let seed = seed(header, nonce);
 
-    let mut salt = Vec::with_capacity(SALT_PREFIX.len() + 8);
-    salt.extend_from_slice(SALT_PREFIX);
-    salt.extend_from_slice(&height.to_le_bytes());
+    let mut salt = [0u8; SALT_PREFIX.len() + 8];
+    salt[..SALT_PREFIX.len()].copy_from_slice(SALT_PREFIX);
+    salt[SALT_PREFIX.len()..].copy_from_slice(&height.to_le_bytes());
 
     let mut mem = [0u8; OUT_LEN];
     argon2_ctx()
@@ -99,6 +102,48 @@ pub fn pow_full(header: &[u8], nonce: u64, height: u64) -> FullHash {
 /// Final digest only (the hot path for miners and verifiers).
 pub fn pow_hash(header: &[u8], nonce: u64, height: u64) -> [u8; 32] {
     pow_full(header, nonce, height).out
+}
+
+/// A CPU hasher that owns its 1 MiB Argon2 working memory so grind
+/// loops do not pay a megabyte alloc + free + first-touch page faults
+/// per nonce. Argon2's fill overwrites every block deterministically,
+/// so reuse cannot leak state between hashes.
+///
+/// For one-shot verification use [`pow_hash`] — the allocation is
+/// irrelevant there.
+pub struct CpuHasher {
+    blocks: Vec<argon2::Block>,
+}
+
+impl Default for CpuHasher {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl CpuHasher {
+    /// Sized for the frozen LuckyHash params (m=1024 KiB = 1024 blocks).
+    #[must_use]
+    pub fn new() -> Self {
+        let n = argon2_ctx().params().block_count();
+        Self {
+            blocks: vec![argon2::Block::default(); n],
+        }
+    }
+
+    /// Final digest, reusing the working memory. Byte-identical to
+    /// [`pow_hash`] (pinned by tests).
+    pub fn pow_hash(&mut self, header: &[u8], nonce: u64, height: u64) -> [u8; 32] {
+        let seed = seed(header, nonce);
+        let mut salt = [0u8; SALT_PREFIX.len() + 8];
+        salt[..SALT_PREFIX.len()].copy_from_slice(SALT_PREFIX);
+        salt[SALT_PREFIX.len()..].copy_from_slice(&height.to_le_bytes());
+        let mut mem = [0u8; OUT_LEN];
+        argon2_ctx()
+            .hash_password_into_with_memory(&seed, &salt, &mut mem, &mut self.blocks)
+            .expect("fixed params; inputs always valid");
+        final_digest(&seed, &mem)
+    }
 }
 
 /// Target check: `out <= target`, both 256-bit big-endian. Equal IS
@@ -131,6 +176,12 @@ mod tests {
         assert!(meets_target(&lo, &hi));
         // Equality is VALID and pinned: the node accepts hash == target.
         assert!(meets_target(&hi, &hi), "equal must validate (node parity)");
+        // The reusable-buffer hasher is byte-identical to the one-shot
+        // path across a grind (reuse cannot leak state between hashes).
+        let mut h = CpuHasher::new();
+        for n in 0..64u64 {
+            assert_eq!(h.pow_hash(&hi, n, 12345), pow_hash(&hi, n, 12345));
+        }
         assert!(!meets_target(&hi, &lo));
         // Leading byte dominates trailing bytes.
         let mut a = [0x00u8; 32];
