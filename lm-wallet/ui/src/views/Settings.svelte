@@ -24,6 +24,11 @@
   let newPw2 = $state("");
   let reveal = $state("");
   let revealWarn = $state(false);
+  let revealLeft = $state(0); // seconds until the phrase auto-hides
+  let releaseArm = $state(""); // two-step confirm for bond release
+  let contacts = $state<any[]>([]);
+  let contactRename = $state(""); // address being renamed
+  let contactName = $state("");
   let wmsg = $state("");
 
   async function loadWallet() {
@@ -116,6 +121,12 @@
   }
 
   async function release(addr: string) {
+    if (releaseArm !== addr) {
+      // Two-step: a stray click must not silently strip draw eligibility.
+      releaseArm = addr;
+      return;
+    }
+    releaseArm = "";
     wmsg = "";
     err = "";
     try {
@@ -129,12 +140,67 @@
 
   const protectedAddrs = $derived<string[]>(ws?.protected_addrs ?? []);
 
+  const REVEAL_SECS = 60;
+
   async function doReveal() {
     wmsg = "";
     err = "";
     try {
       const r: any = await api.walletReveal();
       reveal = r.phrase;
+      revealLeft = REVEAL_SECS;
+    } catch (e) {
+      err = String(e);
+    }
+  }
+
+  // Auto-hide the phrase after REVEAL_SECS — an open backup phrase must
+  // not sit on screen indefinitely.
+  $effect(() => {
+    if (revealLeft <= 0) return;
+    const t = setInterval(() => {
+      revealLeft -= 1;
+      if (revealLeft <= 0) {
+        reveal = "";
+        revealWarn = false;
+      }
+    }, 1000);
+    return () => clearInterval(t);
+  });
+
+  function hideReveal() {
+    revealLeft = 0;
+    reveal = "";
+    revealWarn = false;
+  }
+
+  async function loadContacts() {
+    try {
+      contacts = ((await api.contactsList()) as any[]) ?? [];
+    } catch {
+      contacts = [];
+    }
+  }
+
+  async function removeContact(addr: string) {
+    try {
+      await api.contactRemove(addr);
+      wmsg = "contact removed";
+      await loadContacts();
+    } catch (e) {
+      err = String(e);
+    }
+  }
+
+  async function saveRename(addr: string) {
+    const name = contactName.trim();
+    contactRename = "";
+    contactName = "";
+    if (!name) return;
+    try {
+      await api.contactAdd(name, addr); // re-adding replaces the name
+      wmsg = "contact renamed";
+      await loadContacts();
     } catch (e) {
       err = String(e);
     }
@@ -164,6 +230,7 @@
       .then((c: any) => (cfg = c))
       .catch((e) => (err = String(e)));
     loadWallet();
+    loadContacts();
     refreshNode();
     api
       .nodeDiscover()
@@ -281,9 +348,12 @@
     </div>
     {#if reveal}
       <div class="card" style="margin-top:10px;border-color:#f85149">
-        <b>backup phrase — write it down, never share it</b>
+        <div class="row" style="justify-content:space-between">
+          <b>backup phrase — write it down, never share it</b>
+          <span class="muted">hides in {revealLeft}s</span>
+        </div>
         <div class="addr" style="word-break:break-word;margin-top:6px">{reveal}</div>
-        <button class="btn" style="margin-top:8px" onclick={() => { reveal = ""; revealWarn = false; }}>Hide</button>
+        <button class="btn" style="margin-top:8px" onclick={hideReveal}>Hide now</button>
       </div>
     {/if}
     <label for="opw" style="margin-top:12px">change spending password</label>
@@ -298,7 +368,35 @@
       {#each protectedAddrs as a}
         <div class="row" style="align-items:center;gap:8px">
           <span class="addr" style="word-break:break-all">{a}</span>
-          <button class="btn" onclick={() => release(a)}>Release</button>
+          {#if releaseArm === a}
+            <span class="muted">release? a luckynode using it loses draw eligibility</span>
+            <button class="btn" style="border-color:#f85149;color:#f85149" onclick={() => release(a)}>Confirm</button>
+            <button class="btn" onclick={() => (releaseArm = "")}>Cancel</button>
+          {:else}
+            <button class="btn" onclick={() => release(a)}>Release</button>
+          {/if}
+        </div>
+      {/each}
+    {/if}
+    {#if contacts.length > 0}
+      <label style="margin-top:12px">contacts</label>
+      {#each contacts as c}
+        <div class="row" style="align-items:center;gap:8px">
+          {#if contactRename === c.address}
+            <input
+              style="max-width:160px"
+              bind:value={contactName}
+              placeholder="new name"
+              onkeydown={(e) => { if (e.key === "Enter") saveRename(c.address); }}
+            />
+            <button class="btn" onclick={() => saveRename(c.address)}>Save</button>
+            <button class="btn" onclick={() => { contactRename = ""; contactName = ""; }}>Cancel</button>
+          {:else}
+            <b style="min-width:80px">{c.name}</b>
+            <span class="addr" style="word-break:break-all">{c.address}</span>
+            <button class="btn" onclick={() => { contactRename = c.address; contactName = c.name; }}>Rename</button>
+            <button class="btn" onclick={() => removeContact(c.address)}>Remove</button>
+          {/if}
         </div>
       {/each}
     {/if}

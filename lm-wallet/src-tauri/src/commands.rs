@@ -488,6 +488,23 @@ fn app_dir(state: &State<'_, AppState>) -> std::path::PathBuf {
         .unwrap_or_else(|| std::path::PathBuf::from("."))
 }
 
+/// Key file for a luckynode payout address. The name is the address's
+/// full SHA-256 — the legacy first-8-chars scheme could collide across
+/// addresses (two payout addresses sharing a key silently share a node
+/// identity). A legacy file is kept when present so existing installs
+/// retain their node identity and tenure.
+fn luckynode_key_path(dir: &std::path::Path, address: &str) -> std::path::PathBuf {
+    let legacy = dir.join(format!("luckynode-{}.key", &address[..8.min(address.len())]));
+    if legacy.exists() {
+        return legacy;
+    }
+    use sha2::{Digest, Sha256};
+    dir.join(format!(
+        "luckynode-{}.key",
+        lm_luckynode::notarize::hex(&Sha256::digest(address.as_bytes()))
+    ))
+}
+
 fn wctx(state: &State<'_, AppState>) -> Result<WCtx, String> {
     let rpc = node::client(state)?;
     let net = wallet::network_of(&rpc)?;
@@ -672,12 +689,25 @@ pub fn unprotect_address(state: State<'_, AppState>, address: String) -> Result<
 }
 
 /// QR code (SVG string) for an address — the Receive view renders it.
+/// An optional `amount` (decimal string) turns it into a payment request
+/// ("address?amount=x", BIP21-style without a scheme so any scanner
+/// extracts both).
 #[tauri::command]
-pub fn address_qr(address: String) -> Result<String, String> {
+pub fn address_qr(address: String, amount: Option<String>) -> Result<String, String> {
     if address.is_empty() {
         return Err("no address".to_string());
     }
-    let qr = qrcodegen::QrCode::encode_text(&address, qrcodegen::QrCodeEcc::Low)
+    let mut text = address;
+    if let Some(a) = amount.as_deref().map(str::trim).filter(|a| !a.is_empty()) {
+        let v: f64 = a
+            .parse()
+            .map_err(|_| format!("'{a}' is not a number"))?;
+        if !(v.is_finite() && v > 0.0) {
+            return Err("amount must be positive".to_string());
+        }
+        text = format!("{text}?amount={a}");
+    }
+    let qr = qrcodegen::QrCode::encode_text(&text, qrcodegen::QrCodeEcc::Low)
         .map_err(|e| format!("qr: {e}"))?;
     let n = qr.size();
     let scale = 4i32;
@@ -1034,7 +1064,7 @@ pub fn luckynode_register(
         .parent()
         .ok_or("no config dir")?
         .to_path_buf();
-    let key_path = dir.join(format!("luckynode-{}.key", &address[..8.min(address.len())]));
+    let key_path = luckynode_key_path(&dir, &address);
     let key = luckynode::load_or_gen_key(&key_path)?;
     let id = {
         use ed25519_dalek::SigningKey;
@@ -1110,7 +1140,7 @@ pub fn luckynode_service_start(
         .parent()
         .ok_or("no config dir")?
         .to_path_buf();
-    let key_path = dir.join(format!("luckynode-{}.key", &address[..8.min(address.len())]));
+    let key_path = luckynode_key_path(&dir, &address);
     let key = luckynode::load_or_gen_key(&key_path)?;
     // Confirm the id matches the key (no mismatched service).
     let derived = {
@@ -1313,4 +1343,38 @@ pub fn miner_log(state: State<'_, AppState>) -> Result<Vec<String>, String> {
         .as_ref()
         .map(|m| m.log.lock().expect("miner log").iter().cloned().collect())
         .unwrap_or_default())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::luckynode_key_path;
+
+    /// New addresses get a full-hash filename; two addresses sharing the
+    /// first 8 chars must NOT share a key file.
+    #[test]
+    fn key_paths_are_unique_per_full_address() {
+        let dir = std::env::temp_dir().join(format!("lk-keypath-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("tmpdir");
+        let a = luckynode_key_path(&dir, "mx5tDPWsWxhC7EVkJXGCR14dUoMdps8fLy");
+        let b = luckynode_key_path(&dir, "mx5tDPWsZzzzzzzzzzzzzzzzzzzzzzzzzzz");
+        assert_ne!(a, b, "same-prefix addresses must not share a key file");
+        assert!(a.to_string_lossy().contains("luckynode-"));
+        assert!(!a.to_string_lossy().contains("mx5tDPWs"), "no address prefix in the name");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An existing legacy file (first-8-chars name) keeps being used so
+    /// pre-rename installs retain their node identity and tenure.
+    #[test]
+    fn key_path_prefers_existing_legacy_file() {
+        let dir = std::env::temp_dir().join(format!("lk-keypath-legacy-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("tmpdir");
+        let legacy = dir.join("luckynode-mx5tDPWs.key");
+        std::fs::write(&legacy, [0u8; 32]).expect("write legacy");
+        let p = luckynode_key_path(&dir, "mx5tDPWsWxhC7EVkJXGCR14dUoMdps8fLy");
+        assert_eq!(p, legacy);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

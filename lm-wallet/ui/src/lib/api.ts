@@ -17,7 +17,8 @@ export const contactsList = () => invoke<Json>("contacts_list");
 export const contactAdd = (name: string, address: string) =>
   invoke<void>("contact_add", { name, address });
 export const contactRemove = (address: string) => invoke<void>("contact_remove", { address });
-export const addressQr = (address: string) => invoke<string>("address_qr", { address });
+export const addressQr = (address: string, amount?: string) =>
+  invoke<string>("address_qr", { address, amount: amount ?? null });
 export const txDetail = (txid: string) => invoke<Json>("tx_detail", { txid });
 export const newAddress = () => invoke<string>("new_address");
 export const receiveList = () => invoke<Json>("receive_list");

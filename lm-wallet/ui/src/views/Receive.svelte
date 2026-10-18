@@ -8,6 +8,7 @@
   let qrAddr = $state("");
   let saveName = $state("");
   let saved = $state("");
+  let qrAmount = $state("");
 
   async function load() {
     try {
@@ -26,7 +27,7 @@
 
   async function showQr(a: string) {
     try {
-      qr = await api.addressQr(a);
+      qr = await api.addressQr(a, qrAmount.trim() || undefined);
       qrAddr = a;
     } catch (e) {
       err = String(e);
@@ -77,7 +78,11 @@
       <div style="background:#fff;border-radius:8px;padding:8px;display:inline-block;margin:8px 0">
         {@html qr}
       </div>
-      <div class="addr" style="word-break:break-all;font-size:12px">{qrAddr}</div>
+      <div class="addr" style="word-break:break-all;font-size:12px">{qrAddr}{qrAmount.trim() ? `?amount=${qrAmount.trim()}` : ""}</div>
+      <div class="row" style="margin-top:8px;justify-content:center">
+        <input bind:value={qrAmount} placeholder="amount (optional)" inputmode="decimal" style="max-width:140px" title="embeds a requested amount in the QR (payment request)" />
+        <button class="btn" onclick={() => showQr(qrAddr)}>Re-make QR</button>
+      </div>
       <div class="row" style="margin-top:8px;justify-content:center">
         <input bind:value={saveName} placeholder="save as contact…" style="max-width:180px" />
         <button class="btn" disabled={!saveName} onclick={saveContact}>Save</button>

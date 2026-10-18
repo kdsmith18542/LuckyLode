@@ -4,10 +4,13 @@
   let txs = $state<any[]>([]);
   let pool = $state<any>(null);
   let stake = $state<any>(null);
+  let game = $state<any>(null);
+  let em = $state<any>(null);
   let err = $state("");
   let detail = $state<any>(null);
   let loading = $state(true);
   let inFlight = $state(false);
+  let showAll = $state(false);
 
   async function load() {
     if (inFlight) return; // one coordinator beats five racing scans
@@ -16,6 +19,8 @@
       bal = await api.walletBalances();
       txs = ((await api.transactions(25)) as any[]) ?? [];
       pool = await api.poolStats();
+      game = await api.gameInfo();
+      em = await api.emission();
       err = "";
     } catch (e) {
       err = String(e);
@@ -128,6 +133,8 @@
   }
 
   const recent = $derived((pool?.last_blocks ?? []).slice(0, 5));
+  const mining = $derived<any>(game?.mining ?? {});
+  const shownTxs = $derived(showAll ? txs : txs.slice(0, 12));
 </script>
 
 <h2>Balances</h2>
@@ -218,7 +225,7 @@
 <table>
   <thead><tr><th>time</th><th>direction</th><th>amount</th><th>address</th><th>status</th></tr></thead>
   <tbody>
-    {#each txs.slice(0, 12) as tx}
+    {#each shownTxs as tx}
       <tr style="cursor:pointer" onclick={() => openDetail(tx.txid)} title="click a row for details, txid and explorer link">
         <td>{new Date((tx.time ?? 0) * 1000).toLocaleString()}</td>
         <td class:off={tx.category !== "receive"}>{tx.category}</td>
@@ -230,6 +237,11 @@
     {#if loading}<tr><td colspan="5" class="muted">building history cache…</td></tr>{:else if txs.length === 0}<tr><td colspan="5" class="muted">no transactions yet</td></tr>{/if}
   </tbody>
 </table>
+{#if txs.length > 12}
+  <button class="btn" style="margin-top:6px" onclick={() => (showAll = !showAll)}>
+    {showAll ? "show fewer" : `show more (${txs.length - 12} older)`}
+  </button>
+{/if}
 
 {#if detail}
   <div class="card" style="max-width:720px">
@@ -282,4 +294,38 @@
     {#if recent.length === 0}<tr><td colspan="6" class="muted">no blocks indexed yet</td></tr>{/if}
   </tbody>
 </table>
+
+<h2>Network</h2>
+<div class="grid">
+  <div class="card"><div class="k">network hashrate</div><div class="v">{mining.networkhashps ?? "–"} H/s</div></div>
+  <div class="card"><div class="k">difficulty</div><div class="v">{mining.difficulty ?? "–"}</div></div>
+  <div class="card"><div class="k">chain height</div><div class="v">{mining.blocks ?? "–"}</div></div>
+  <div class="card"><div class="k">pool hashrate 10m</div><div class="v">{pool?.pool?.hashrate10m ? Math.round(pool.pool.hashrate10m) + " H/s" : "–"}</div></div>
+</div>
+
+<h2>Emission schedule</h2>
+<div class="card" style="max-width:720px">
+  {#if em}
+    <div class="row" style="justify-content:space-between">
+      <div><span class="muted">phase</span> <strong>{em.phase}</strong> <span class="muted">(era {em.era})</span></div>
+      <div>
+        <span class="muted">reward</span> <strong>{api.coinU(em.reward)}</strong>
+        <span class="muted">gross · {api.coinU(em.net)} after the 5% levy</span>
+      </div>
+    </div>
+    <div style="margin-top:10px;background:var(--active);border-radius:6px;height:8px;overflow:hidden">
+      <div style="height:8px;background:var(--gold);width:{Math.min(100, (em.progress ?? 0) * 100).toFixed(1)}%"></div>
+    </div>
+    <div class="muted" style="margin-top:6px">
+      {#if em.next_milestone}
+        {em.next_milestone.label} at height {em.next_milestone.height}
+        ({Math.max(0, em.next_milestone.height - em.height)} blocks away)
+      {:else}
+        tail forever — no further halvings
+      {/if}
+    </div>
+  {:else}
+    <div class="muted">node offline</div>
+  {/if}
+</div>
 {#if err}<div class="err">{err}</div>{/if}
