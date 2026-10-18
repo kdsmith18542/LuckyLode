@@ -9,7 +9,7 @@ genesis game-fund seed, and the 4%/1% levy split. **Rev 1.2
 the rev 1.0 digest-based trigger forced claim pools to commit a
 bonus-bearing coinbase before knowing the draw and withhold ~99% of
 their finds — uneconomic at real odds, so the reserve could never pay
-(internal/16 §16.9). The payout math, caps, tiers, and levy are
+. The payout math, caps, tiers, and levy are
 unchanged.
 
 ## 6.1 Trigger (pre-committable, no new cryptography)
@@ -135,7 +135,7 @@ issuance. Executable spec: `lm-rewards/src/pot.rs`; consensus:
 - **Who can win:** draws are gated to **PoW finders** in consensus (the
   locked 2026-10-13 rule); PoS blocks never claim. The pity splash lands
   on the next finder regardless of the draw class. Stakers get their game-layer luck through the **Luckynode
-  Draw**, a separate pool-side event (internal/18) — the finder's prize is
+  Draw**, a separate pool-side event — the finder's prize is
   never diluted.
 - **Testnet gates (extend §6.5):** ≥20,000 blocks with the pot event rate
   inside [0.05%, 0.2%], pity-timer firings as expected, and exact

@@ -1,4 +1,4 @@
-//! Lucky Lode Wallet — Tauri v2 shell (internal/19).
+//! Lucky Lode Wallet — Tauri v2 shell.
 
 mod commands;
 mod config;

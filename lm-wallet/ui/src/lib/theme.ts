@@ -1,4 +1,4 @@
-// Theme handling (internal/19 M5): dark default, light palette in app.css
+// Theme handling: dark default, light palette in app.css
 // via `:root[data-theme="light"]`. Persisted in localStorage; applied to
 // the document root so every token flips at once.
 const KEY = "ll-theme";

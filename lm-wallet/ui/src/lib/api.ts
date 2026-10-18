@@ -1,4 +1,4 @@
-// Typed wrappers over the Tauri backend commands (internal/19).
+// Typed wrappers over the Tauri backend commands.
 import { invoke } from "@tauri-apps/api/core";
 
 export type Json = unknown;
@@ -86,7 +86,7 @@ export const minerStop = () => invoke<void>("miner_stop");
 export const minerStatus = () => invoke<Json>("miner_status");
 export const minerLog = () => invoke<string[]>("miner_log");
 
-/** Chain-aware ticker (review fix 2026-10-18 — no more hardcoded LKYL).
+/** Chain-aware ticker (no hardcoded LKYL).
  * Set once per refresh from node_status.chain; defaults to tLKYL (safe). */
 let currentChain = "test";
 export function setChain(c: unknown) {

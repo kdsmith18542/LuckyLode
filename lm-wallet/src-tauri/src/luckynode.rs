@@ -1,5 +1,5 @@
 //! Embedded luckynode service: heartbeat + draw cosigning from the wallet
-//! (replaces the CLI daemon for desktop users; internal/18 v1).
+//! (replaces the CLI daemon for desktop users; v1).
 
 use lm_luckynode::notarize;
 use std::sync::atomic::{AtomicBool, Ordering};

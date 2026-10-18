@@ -20,7 +20,7 @@
 //! `potcredited` and `potdrought` on `getblocktemplate`; with the claim
 //! flags the pool splices the claimed amounts into the coinbase and only
 //! submits a claim-template find when the digest actually wins the
-//! matching draw (doc 10 §10.8, internal/16). Without the flags the
+//! matching draw (doc 10 §10.8,. Without the flags the
 //! node's template passes through untouched — normal-mode mining.
 
 use crate::provider::{BlockOutcome, JobTemplate, TemplateProvider};
@@ -75,7 +75,7 @@ struct TemplateState {
     /// Recent (merkle -> tx set, claims) ring. The header's merkle field
     /// commits to the tx set, so a submission must be assembled with the
     /// tx set THAT MATCHED THE JOB'S HEADER — not the latest template
-    /// (drill-caught: a 2s refresh between grind and submit swapped the
+    /// (found in testing: a 2s refresh between grind and submit swapped the
     /// coinbase and made the submitted merkle disagree with its own
     /// header).
     recent: std::collections::VecDeque<RecentTemplate>,
@@ -371,7 +371,7 @@ impl TemplateProvider for NodeProvider {
 
 /// Advisory league-pool overflow for the template's height (base units):
 /// the jackpot-levy slice that overflows the reserve cap and funds the
-/// league pool / Luckynode Draw budgets (doc 06 §6.2, internal/18).
+/// league pool / Luckynode Draw budgets (doc 06 §6.2,.
 /// Nodes predating the field read as 0 (safe: no credit).
 #[must_use]
 pub fn parse_league_overflow(gbt: &serde_json::Value) -> u64 {

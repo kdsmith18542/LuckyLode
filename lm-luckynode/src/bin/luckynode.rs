@@ -1,5 +1,5 @@
 //! luckynode daemon: registers a bonded service node with the pool,
-//! heartbeats liveness, and cosigns draw results (internal/18, v1 test).
+//! heartbeats liveness, and cosigns draw results, v1 test).
 //!
 //! usage:
 //!   luckynode --pool HOST:PORT --address ADDR --key-file PATH

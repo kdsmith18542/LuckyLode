@@ -29,7 +29,7 @@ pub struct PoolClient {
     /// Accumulated partial input. A line that spans two socket reads (TCP
     /// segmentation, Nagle) must survive the read timeout between them —
     /// `read_line` into a fresh string per call silently ate half-received
-    /// messages (live-caught: lost submit responses -> reconnect loops).
+    /// messages (found in testing: lost submit responses -> reconnect loops).
     rx_buf: String,
 }
 
@@ -126,7 +126,7 @@ impl PoolClient {
                 // Clean EOF: the pool closed the connection. This MUST be an
                 // error, not "no data yet" — treating it as a timeout made
                 // read_job/poll_job spin (or block) on a dead socket until
-                // the job deadline instead of reconnecting (live-caught:
+                // the job deadline instead of reconnecting (found in testing:
                 // miner sat in CLOSE-WAIT for minutes after a pool restart).
                 Ok(0) => {
                     return Err(std::io::Error::new(

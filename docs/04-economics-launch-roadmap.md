@@ -23,7 +23,7 @@
   jackpot-reserve overflow feeds the league pool, pot overflow burns.
   Expectation-neutral by construction — the game layer redistributes
   miner-earned value, it never mints.
-- **Luckynodes** (docs/11 §11.6 Direction A, internal/18): cheap-bond
+- **Luckynodes** (docs/11 §11.6 Direction A,: cheap-bond
   service nodes paid from fun-layer budgets (league pool), **never from
   inflation** — so the emission schedule funds only PoW miners and PoS
   stakers.

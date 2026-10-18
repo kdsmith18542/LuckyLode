@@ -278,7 +278,7 @@ pub fn node_funding_address(state: State<'_, AppState>) -> Result<serde_json::Va
 }
 
 /// Import this app's FUNDED keys into the LOCAL node wallet so the node
-/// minter can stake them — "stake my app coins" (review fix 2026-10-18).
+/// minter can stake them — "stake my app coins".
 /// Same-box only (loopback gate): the node ends up holding copies of these
 /// spending keys, correct on one machine and wrong anywhere else. UTXO age
 /// is chain data, so mature coins become eligible immediately after the
@@ -329,7 +329,7 @@ pub fn stake_app_coins(state: State<'_, AppState>) -> Result<serde_json::Value, 
 /// the NODE wallet's coins (it must hold mature, unlocked coins); the
 /// app's own coins never stake under this fork.
 ///
-/// Review fix 2026-10-18: this only ever touches YOUR node. The default
+/// This only ever touches YOUR node. The default
 /// config points at the shared public node — flipping setgenerate there
 /// would reach into shared infrastructure, so anything but loopback is
 /// refused (point Settings → Node at 127.0.0.1 to stake your own coins).
@@ -611,7 +611,7 @@ pub fn transactions(
     ))
 }
 
-/// Saved contacts (address book, internal/19 M2).
+/// Saved contacts (address book, M2).
 #[tauri::command]
 pub fn contacts_list(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
     let cfg = state.cfg.lock().expect("cfg");
@@ -1208,7 +1208,7 @@ pub fn set_config(
     cfg.save(&state.cfg_path)
 }
 
-// ---- Built-in pool miner (internal/19) ----------------------------------
+// ---- Built-in pool miner ----------------------------------
 
 /// Persist the mining-specific settings (stratum endpoint + worker address).
 #[tauri::command(rename_all = "snake_case")]

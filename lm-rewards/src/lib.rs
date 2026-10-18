@@ -18,7 +18,7 @@
 //! Reserve accounting lives in [`reserve`] (per-block levy, bonus, cap,
 //! league-pool overflow — doc 06 §6.2); the Lucky Pot (second stochastic
 //! sink: frequent small splashes beside rare full-drain jackpots) lives in
-//! [`pot`] (internal/16, promotes to doc 06 on sign-off); multi-class luck
+//! [`pot`], promotes to doc 06 on sign-off); multi-class luck
 //! exploration lives in [`luck`] (doc 12 §12.10, not consensus-wired).
 
 pub mod luck;
@@ -33,8 +33,7 @@ pub const CAP_PERMILLE: u64 = 250;
 pub const CAP_MIN_MINERS: usize = 5;
 
 /// One miner's PPLNS-window shares. `miner` is the pool-side worker identity
-/// — the FULL name string (review fix 2026-10-17: money must never be keyed
-/// by a non-crypto 64-bit hash; FNV worker ids were forgeable).
+/// — the FULL name string.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Share {
     pub miner: String,

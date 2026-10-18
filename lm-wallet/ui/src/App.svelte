@@ -135,7 +135,7 @@
     } catch (e) {
       err = String(e);
     }
-    // Auto-lock flip (review fix 2026-10-18): the backend wipes the
+    // Auto-lock flip: the backend wipes the
     // session after 15 min idle, but the UI used to stay open showing
     // balances — the user found out via red errors. Re-check the lock
     // on every tick and drop straight to the lock screen.

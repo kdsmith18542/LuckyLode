@@ -2,7 +2,7 @@
 
 Tauri v2 desktop wallet: wallet core, **luckynodes** (registry, bond,
 embedded heartbeat/cosign service), and all game/network stats — spec in
-`internal/19-wallet-gui.md`.
+`-wallet-gui.md`.
 
 ## Layout
 

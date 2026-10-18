@@ -65,7 +65,7 @@ impl Default for Config {
             // proxy); point it at your own node (e.g. 127.0.0.1:9271) in
             // Settings to run against localhost. Testnet RPC creds are
             // public (u/p) — mainnet with the ceremony.
-            // Local-first (review fix 2026-10-18): like every standard
+            // Local-first: like every standard
             // wallet (Core, Verus native), we default to YOUR node on
             // localhost. Port 19271 is the daemon's own LUCKYLODETEST
             // rpcport (chainparams.cpp; a flagless `-testnet` node binds

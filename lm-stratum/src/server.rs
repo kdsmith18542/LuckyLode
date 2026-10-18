@@ -97,7 +97,7 @@ impl<P: TemplateProvider + 'static> Drop for ConnGuard<P> {
     }
 }
 
-/// Connection bounds (review fix 2026-10-17): the accept loop used to
+/// Connection bounds: the accept loop used to
 /// spawn an unbounded thread per TCP connection and the read loop
 /// accumulated an uncapped line — slowloris OOM on a public bind.
 const MAX_CONNS: usize = 2048;
@@ -140,12 +140,12 @@ struct Shared<P> {
     conn_total: std::sync::atomic::AtomicUsize,
     conn_per_ip: Mutex<std::collections::HashMap<std::net::IpAddr, usize>>,
     /// Per-worker dashboard stats (accepted/rejected, rolling hashrate,
-    /// liveness) — internal/17 §17.1.
+    /// liveness) —.
     workers: Mutex<WorkerStats>,
-    /// Per-miner value accounting (internal/17 §17.4): what each miner
+    /// Per-miner value accounting: what each miner
     /// earned from blocks (pro-rata) and splits, minus what paid out.
     balances: Mutex<PayoutLedger>,
-    /// Per-miner payout settings (address/threshold overrides, internal/17).
+    /// Per-miner payout settings (address/threshold overrides,.
     payout_settings: Mutex<PayoutSettings>,
     /// Pool fee in per-myriad, applied when blocks credit balances.
     pool_fee: Mutex<u16>,
@@ -163,7 +163,7 @@ struct Shared<P> {
     shutdown: AtomicBool,
 }
 
-/// Per-miner payout settings (internal/17): an optional payout address
+/// Per-miner payout settings: an optional payout address
 /// override (the default is the worker name, which doubles as an address)
 /// and an optional payout threshold override (the default is the pool's
 /// global threshold).
@@ -181,7 +181,7 @@ pub struct MinerSettings {
 /// state file).
 pub type PayoutSettings = std::collections::BTreeMap<String, MinerSettings>;
 
-/// One miner's dashboard row + value totals (internal/17).
+/// One miner's dashboard row + value totals.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct MinerRow {
     pub miner: String,
@@ -276,7 +276,7 @@ fn refresh_loop<P: TemplateProvider + 'static>(shared: Arc<Shared<P>>) {
             // node's template cadence was slower than the timer: two
             // "different" jobs shared one header, so the miner re-found the
             // same nonce for each and the pool counted duplicate work as
-            // separate shares (live-caught: nonce 20796 on jobs 1f/20/21).
+            // separate shares (found in testing: nonce 20796 on jobs 1f/20/21).
             if tpl.height != bc.job.height || tpl.header != bc.job.header {
                 let id = shared.job_counter.fetch_add(1, Ordering::SeqCst);
                 bc.job = Job {
@@ -430,7 +430,7 @@ fn apply_block_found<P: TemplateProvider + 'static>(
         // reference sqrt/cap rules); the combined list is what pays out.
         let mut payouts = ledger.jackpot_payout_shares(outcome.bonus, LEDGER_PPLNS, now);
         payouts.extend(ledger.jackpot_payout_shares(outcome.pot, LEDGER_PPLNS, now));
-        // Per-miner value accounting (internal/17 §17.4): the normal block
+        // Per-miner value accounting: the normal block
         // value by PPLNS weight plus the block's own split payouts.
         let weights: Vec<(String, u64)> = ledger
             .aggregate_shares(LEDGER_PPLNS, now)
@@ -526,7 +526,7 @@ fn handle_conn<P: TemplateProvider + 'static>(stream: TcpStream, shared: Arc<Sha
         // Partial reads MUST survive the tick timeout: a message split
         // across it (TCP segmentation, Nagle) was silently discarded by the
         // old clear-then-read pattern — half a submit got eaten, the miner
-        // never got a response and reconnected (live-caught with pcaps:
+        // never got a response and reconnected (found in testing with pcaps:
         // submit body ACKed, pool silent 10 s, then FIN). Keep accumulating
         // in `line` until a full line arrives.
         match stream.read_line(&mut line) {
@@ -536,7 +536,7 @@ fn handle_conn<P: TemplateProvider + 'static>(stream: TcpStream, shared: Arc<Sha
                 if e.kind() == std::io::ErrorKind::WouldBlock
                     || e.kind() == std::io::ErrorKind::TimedOut =>
             {
-                // Deadlines (review fix 2026-10-17): authorize promptly,
+                // Deadlines: authorize promptly,
                 // and no connection may sit silent forever.
                 if authorized.is_none()
                     && connected_at.elapsed().as_secs() > AUTH_DEADLINE_SECS
@@ -614,8 +614,7 @@ fn handle_conn<P: TemplateProvider + 'static>(stream: TcpStream, shared: Arc<Sha
                     );
                     continue;
                 }
-                // Money identity = the worker name itself (review fix
-                // 2026-10-17): FNV-1a worker ids were forgeable and the
+                // Money identity = the worker name itself: FNV-1a worker ids were forgeable and the
                 // payout ledger keyed by them could be redirected.
                 shared.workers.lock().expect("workers").authorized(
                     &worker,
@@ -1081,7 +1080,7 @@ impl<P: TemplateProvider + 'static> RunningServer<P> {
             .collect()
     }
 
-    /// Ledger snapshot for `--state-file` persistence (internal/17).
+    /// Ledger snapshot for `--state-file` persistence.
     pub fn ledger_snapshot(&self) -> PayoutLedger {
         self.shared.balances.lock().expect("balances").clone()
     }
@@ -1145,7 +1144,7 @@ impl<P: TemplateProvider + 'static> RunningServer<P> {
             .set_league_balance(balance);
     }
 
-    /// Per-worker snapshots for the dashboard/API (internal/17 §17.1).
+    /// Per-worker snapshots for the dashboard/API.
     /// Workers idle past `WORKER_HIDE_SECS` (6 h) drop off this list; the
     /// unfiltered `snapshot`/`names` still back accounting and payouts.
     pub fn workers(&self, now: u64) -> Vec<WorkerSnapshot> {
@@ -1408,7 +1407,7 @@ pub fn spawn_server<P: TemplateProvider + 'static>(
         while !accept_shared.shutdown.load(Ordering::Relaxed) {
             match listener.accept() {
                 Ok((stream, peer)) => {
-                    // Caps (review fix 2026-10-17): bounded threads per
+                    // Caps: bounded threads per
                     // pool, bounded share per IP. Over-cap connections are
                     // dropped at accept — no thread, no TLS, no state.
                     let ip = peer.ip();
@@ -1512,7 +1511,7 @@ mod auth_tests {
         assert!(parse_workers_file("w:1\nw:2").is_err());
     }
 
-    /// Regression (live-caught with pcaps on testnet): a message split
+    /// Regression (found in testing with pcaps on testnet): a message split
     /// across the 100 ms read tick — submit body, then the newline after a
     /// Nagle-sized gap — must still be answered. The old clear-then-read
     /// pattern discarded the partial line, the miner never got a response,
@@ -1581,7 +1580,7 @@ mod auth_tests {
         panic!("split submit got no response within 3 s (partial line discarded)");
     }
 
-    /// Miner-facing auth + payout settings (internal/17): a worker token
+    /// Miner-facing auth + payout settings: a worker token
     /// resolves to the miner id only after authorize, and settings
     /// round-trip through the server.
     #[test]

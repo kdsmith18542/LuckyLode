@@ -1,8 +1,8 @@
-//! Lucky Pot accounting (internal/16, promotes to doc 06 on sign-off).
+//! Lucky Pot accounting, promotes to doc 06 on sign-off).
 //!
 //! Second stochastic sink beside the jackpot reserve: rare + full-drain
 //! (jackpot) vs frequent + small (pot) — two dopamine loops, one levy.
-//! Pre-seeded at genesis with a game-locked fund (internal/16 §16.1);
+//! Pre-seeded at genesis with a game-locked fund;
 //! thereafter purely organic.
 //!
 //! Rules (proposed, frozen on sign-off):
@@ -286,7 +286,7 @@ mod tests {
 
     #[test]
     fn seeded_start_pays_from_day_one() {
-        // Genesis game-fund seed (internal/16 §16.1): a seeded pot pays a
+        // Genesis game-fund seed: a seeded pot pays a
         // splash on the first event — no warm-up, unlike the reserve.
         // The block's own levy slice (800k at R+F=80M) credits first, then
         // the tier fraction applies to the credited pot.

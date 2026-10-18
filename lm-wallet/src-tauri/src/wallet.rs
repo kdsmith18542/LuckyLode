@@ -1,4 +1,4 @@
-//! Self-custody wallet backend (internal/19 v2).
+//! Self-custody wallet backend v2).
 //!
 //! The app holds its own BIP39 seed (0600 file in the app dir) and derives
 //! keys locally (BIP44 `m/44'/coin'/0'/{0,1}/i`, gap limit 20). The node

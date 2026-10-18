@@ -78,7 +78,7 @@ This is the reference implementation; run it on testnet knowing:
   both transport directions byte-identical, length tables agreeing.
 
 Tracked follow-ups: persistence + payout processor + auth
-(`internal/17`), V2 multi-channel + interop test against
+(``), V2 multi-channel + interop test against
 `codec_sv2`'s Encoder/Decoder,
 `lm-miner pool` subcommand speaking
 `client`, attestation-gated league entry.

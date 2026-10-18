@@ -253,7 +253,7 @@ async function tick(){
   document.getElementById('err').textContent='';
  }catch(e){document.getElementById('err').textContent='stats fetch failed: '+e;}
 }
-// My miner: token-authenticated stats + payout settings (internal/17).
+// My miner: token-authenticated stats + payout settings.
 let mtok='';
 async function loadMiner(){
   mtok=document.getElementById('mtoken').value.trim();
@@ -431,8 +431,7 @@ fn stats_json<P: TemplateProvider + 'static>(
         // Node-side staking state (the pool mines PoW; staking lives in
         // the node's wallet). PUBLIC surface: on/off + chain supply only.
         // Operator-wallet shape (eligible outputs/balance, unlock time) is
-        // deliberately NOT published — it maps an idle hot wallet (review
-        // fix 2026-10-18). The wallet serves it to the node owner.
+        // deliberately NOT published — it maps an idle hot wallet. The wallet serves it to the node owner.
         {
             let coins = |v: Option<&serde_json::Value>| -> u64 {
                 (v.and_then(|x| x.as_f64()).unwrap_or(0.0) * 100_000_000.0).round() as u64
@@ -641,7 +640,7 @@ fn query_param(query: &str, key: &str) -> Option<String> {
 }
 
 /// `GET /api/miner?token=…` — the token owner's row + payout settings
-/// (internal/17). Tokens come from `--workers-file`; without one the route
+///. Tokens come from `--workers-file`; without one the route
 /// is closed.
 fn miner_api<P: TemplateProvider + 'static>(
     server: &RunningServer<P>,
@@ -810,8 +809,7 @@ struct HttpCtx {
     threshold: u64,
     history: Arc<Mutex<VecDeque<PayoutRecord>>>,
     luckynode: Option<Arc<LuckynodeShared>>,
-    /// Chain label for the dashboard (review fix 2026-10-18: no hardcoded
-    /// testnet strings — "testnet" | "mainnet").
+    /// Chain label for the dashboard.
     network: String,
 }
 
@@ -867,7 +865,7 @@ struct PoolState {
     /// Luckynode registry snapshot (tenure survives pool restarts).
     #[serde(default)]
     luckynodes: Vec<lm_luckynode::Node>,
-    /// Per-miner payout settings (address/threshold overrides, internal/17).
+    /// Per-miner payout settings (address/threshold overrides,.
     #[serde(default)]
     payout_settings: lm_stratum::server::PayoutSettings,
     /// League prize-pool balance (feeds the Luckynode draw budgets).
@@ -926,7 +924,7 @@ fn load_state<P: TemplateProvider + 'static>(
             );
         }
         Err(e) => {
-            // Review fix 2026-10-17: a corrupt ledger must NOT silently
+            // A corrupt ledger must NOT silently
             // "start fresh" — that zeroes balances and double-pays. Move
             // the file aside and refuse to boot; the operator decides.
             let corrupt = path.with_extension("corrupt");
@@ -981,7 +979,7 @@ fn save_state<P: TemplateProvider + 'static>(
         }
     };
     let tmp = path.with_extension("tmp");
-    // Review fix 2026-10-17: write → fsync file → rename → fsync dir.
+    // Durability: write → fsync file → rename → fsync dir.
     // Without the syncs a power loss can leave a truncated/empty state
     // file after a "successful" rename.
     let result = std::fs::File::create(&tmp).and_then(|mut f| {
@@ -1014,14 +1012,14 @@ fn state_saver<P: TemplateProvider + 'static>(
     }
 }
 
-/// Background payout loop (internal/17 §17.4): every interval, send every
+/// Background payout loop: every interval, send every
 /// balance at/above the threshold whose worker name is a payout address,
 /// via the node wallet (`sendtoaddress`). Sends debit balances only when
 /// the RPC reports success; anything else (invalid name, RPC error) keeps
 /// accruing for a later round. In dry-run mode nothing is sent and
 /// nothing debits — the log shows what would have moved.
 /// Miners due for a payout: balance at or above their own threshold, else
-/// the pool's global one (internal/17 payout settings).
+/// the pool's global one payout settings).
 fn due_miners(
     balances: Vec<(String, u64)>,
     settings: &lm_stratum::server::PayoutSettings,
@@ -1045,7 +1043,7 @@ fn payout_destination(
     miner: &str,
     settings: &lm_stratum::server::PayoutSettings,
 ) -> String {
-    // The worker name IS the payout identity (review fix 2026-10-17) —
+    // The worker name IS the payout identity —
     // it doubles as the address unless the miner set an override.
     settings
         .get(miner)
@@ -1059,7 +1057,7 @@ fn payout_loop<P: TemplateProvider + 'static>(
     node: (String, String, String),
     cfg: PayoutCfg,
     history: Arc<Mutex<VecDeque<PayoutRecord>>>,
-    // Persist immediately after each real send (review fix 2026-10-17):
+    // Persist immediately after each real send:
     // the old 10 s snapshot window could restore a spent balance after a
     // crash and pay the same miner twice.
     state: Option<(PathBuf, Option<Arc<LuckynodeShared>>)>,
@@ -1144,7 +1142,7 @@ fn payout_loop<P: TemplateProvider + 'static>(
     }
 }
 
-/// Luckynode config (CLI; internal/18 pool-side v1 — no consensus).
+/// Luckynode config (CLI; pool-side v1 — no consensus).
 #[derive(Debug, Clone)]
 struct LuckynodeCfg {
     /// Payout address must hold at least this (base units) to qualify.
@@ -1175,16 +1173,14 @@ struct PendingCosign {
     created_at: u64,
 }
 
-/// A completed Luckynode Draw (internal/18 §34).
+/// A completed Luckynode Draw §34).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct DrawRecord {
     epoch: u64,
     height: u64,
     seed_hash: String,
     winner: String,
-    /// Winner's payout address, captured at draw time (review fix
-    /// 2026-10-18: a held draw could not pay after a restart because only
-    /// the id was stored and the in-memory registry was gone).
+    /// Winner's payout address, captured at draw time.
     #[serde(default)]
     winner_addr: String,
     budget: u64,
@@ -1446,7 +1442,7 @@ fn luckynode_tick<P: TemplateProvider + 'static>(
     }
 }
 
-/// Run the Luckynode Draw for epoch `e` (internal/18 §34).
+/// Run the Luckynode Draw for epoch `e` §34).
 /// Default Luckynode Draw slice: 10% of trailing league inflow
 /// (raised from 5% on 2026-10-17 — the draw is the only luckynode income).
 /// Pinned by `draw_budget_gates` so a silent revert fails CI.
@@ -1899,7 +1895,7 @@ const USAGE: &str = "usage:
   both modes accept [--state-file PATH]: owed/paid ledger, worker names and
   block history persist across restarts (atomic save every 10 s); delete the
   file to intentionally clear
-  node mode accepts [--luckynode] to run Luckynode draws (internal/18 v1):
+  node mode accepts [--luckynode] to run Luckynode draws v1):
   [--luckynode-bond V] [--luckynode-epoch N] [--luckynode-slice-bps BPS]
   [--luckynode-hb-window SECS] [--luckynode-exec] [--luckynode-interval SECS]
   (bond in base units, default 400 LKYL; epoch in blocks, default 2880;
@@ -1913,7 +1909,7 @@ jackpotbonus (submitted only on jackpot finds); --claim-pot claims the credited
 pot and only submits pot events; --claim-pot-tier 10|25|50 sets the claimed
 band (floor / B+ / C) — higher tiers claim more; draws are pre-committed per
 height, so every find lands either way (nothing is withheld).
-payouts (node mode, internal/17 §17.4): balances at/above --payout-threshold
+payouts (node mode,: balances at/above --payout-threshold
 (base units) are sent from the node wallet every --payout-interval seconds
 (default 60); WITHOUT --payout-exec the loop only logs what it would send.
 Worker names double as payout addresses (valid R-addresses only).";
@@ -2451,7 +2447,7 @@ fn main() -> std::process::ExitCode {
         // templates are built for jackpot/pot heights and EVERY find is
         // submittable. --claim-pot-tier/--claim-pot-pity are obsolete
         // (kept accepted for older scripts; they no longer change claims).
-        // Claim-gate guard (internal/16 §16.7): the pool's pot divisor
+        // Claim-gate guard: the pool's pot divisor
         // must equal the node's effective draw divisor. A mismatch either
         // withholds real events (chain stalls) or submits non-events
         // (bad-cb-amount rejects) — both silent until now.
@@ -2554,7 +2550,7 @@ fn main() -> std::process::ExitCode {
             server.addr(),
             node
         );
-        // Luckynodes (internal/18 v1, node mode only — needs node RPC).
+        // Luckynodes v1, node mode only — needs node RPC).
         // Created before the state load so persisted draws/cosigns restore
         // into it.
         let luckynode_shared: Option<Arc<LuckynodeShared>> = if luckynode {
@@ -2637,7 +2633,7 @@ fn main() -> std::process::ExitCode {
             };
             std::thread::spawn(move || http_serve(a, srv, ctx));
         }
-        // Payout loop (internal/17 §17.4): dry-run unless --payout-exec.
+        // Payout loop: dry-run unless --payout-exec.
         // Spawned whenever payouts are armed — a 0 threshold means "pay
         // everything", not "disabled" (the old `threshold > 0` gate
         // silently skipped the loop for --payout-threshold 0).
@@ -2794,7 +2790,7 @@ mod tests {
 
     #[test]
     fn draw_budget_gates() {
-        // Pin the 10% default (review 2026-10-18): the draw is the only
+        // Pin the 10% default: the draw is the only
         // luckynode income; a silent revert to 5% must fail CI.
         assert_eq!(DEFAULT_LUCKYNODE_SLICE_BPS, 1000);
         assert_eq!(draw_budget(1_000_000, 1000), 100_000); // 10%

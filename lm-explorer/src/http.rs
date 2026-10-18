@@ -32,7 +32,7 @@ fn fmt_time(ts: i64) -> String {
 }
 
 fn coins(v: i64) -> String {
-    // Adaptive precision (review fix 2026-10-18): up to 8 decimals,
+    // Adaptive precision: up to 8 decimals,
     // trailing zeros trimmed — `0.33`, never `0.33000000`, and never `0`
     // for a non-zero balance. Same rule as the wallet/pool formatters.
     let s = format!("{}.{:08}", v / 100_000_000, (v % 100_000_000).abs());

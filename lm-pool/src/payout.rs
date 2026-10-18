@@ -1,4 +1,4 @@
-//! Per-miner value accounting: who is owed what (internal/17 §17.4).
+//! Per-miner value accounting: who is owed what.
 //!
 //! The pool's node wallet receives block coinbases; this ledger tracks
 //! what each miner earned — normal block value pro-rata by PPLNS weight,

@@ -205,7 +205,7 @@ fn run(
                 continue;
             }
         };
-        // TLS (review fix 2026-10-18): the reference pool serves
+        // TLS: the reference pool serves
         // stratum+TLS on request — same roots the CLI miner uses.
         let mut client = if tls {
             let host = pool.split(':').next().unwrap_or(&pool);

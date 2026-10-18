@@ -27,7 +27,7 @@ consensus; the frozen strings below are called out precisely because they
 - **LuckyHash** (decided 2026-10-14): final name for the proof-of-work
   algorithm (previously the EmberHash working name; doc 05 title updated,
   docs/02/04/09 swept). The name-the-algo contest is concluded.
-  **Internal identifiers renamed 2026-10-18** (owner direction): the C++
+  **Internal identifiers renamed 2026-10-18** (2026-10-18): the C++
   layer is `lucky_hash.{h,cpp}` / `lucky_difficulty.{h,cpp}` /
   `lucky_kat.cpp` / `lucky_*_kat.cpp` / `lucky_kat.sh`,
   `CLuckyHash`/`GetLuckyHash`, `ASSETCHAINS_LUCKYHASH`; the Rust mirror

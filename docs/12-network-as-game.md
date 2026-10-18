@@ -191,7 +191,7 @@ fee slice — with dashboard-traceable coins.
 wallet float policy documented, uptime + DDoS plan before Season 1,
 incident post-mortems public (testnet discipline, doc 04 §4.3).
 
-**Hosting plan (2026-10-11, founder VPS shortlist):**
+**Hosting plan (2026-10-11, hosting shortlist):**
 
 - *Bootstrap (now):* one 6-core/12 GB/100 GB box (~$12/mo) — node (8 GB
   comfortable for the Verus-lineage daemon) + reference pool + website/

@@ -884,7 +884,7 @@ fn run_pool(o: &PoolOpts) -> ExitCode {
             // Non-blocking: pick up any newer job sitting in the buffer.
             // A vardiff retarget keeps the SAME header with a fresh job id —
             // keep the nonce position then, or the range gets re-ground and
-            // the pool dedupe rejects the replayed shares (live-caught: ~10%
+            // the pool dedupe rejects the replayed shares (found in testing: ~10%
             // of shares were duplicate re-finds after rotations).
             loop {
                 match client.poll_job() {

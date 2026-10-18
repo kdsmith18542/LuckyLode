@@ -9,7 +9,7 @@
   let saveName = $state("");
   let saved = $state("");
   let preview = $state<any>(null);
-  // Same-box staking shares the node's UTXO set (review fix 2026-10-18):
+  // Same-box staking shares the node's UTXO set :
   // a send can race the staker for the same coin. No coins are lost, but
   // one of the two transactions loses — warn so it is never a surprise.
   let stakingLocal = $state(false);

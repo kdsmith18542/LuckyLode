@@ -2,7 +2,7 @@
 name = "lm-luckynode"
 version = "0.1.0"
 edition = "2021"
-description = "Luckynode registry, heartbeat liveness, tenure-weighted draws, and draw notarization (internal/18, pool-side v1 — no consensus)"
+description = "Luckynode registry, heartbeat liveness, tenure-weighted draws, and draw notarization, pool-side v1 — no consensus)"
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }

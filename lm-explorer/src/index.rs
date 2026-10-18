@@ -640,7 +640,7 @@ impl Indexer {
     /// Live node staking state (not indexed — read through on each call).
     /// PUBLIC surface: on/off + chain supply only. Operator-wallet shape
     /// (eligible outputs/balance) is deliberately NOT published — it maps
-    /// an idle hot wallet (review fix 2026-10-18).
+    /// an idle hot wallet.
     pub fn staking_state(&self) -> Result<serde_json::Value, String> {
         let mining = self.rpc.call("getmininginfo", serde_json::json!([]))?;
         let coins = |v: Option<&serde_json::Value>| -> i64 {

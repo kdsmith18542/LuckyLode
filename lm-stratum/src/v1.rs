@@ -78,7 +78,7 @@ pub struct JobRegistry {
     /// Height of the newest issued job. A job is STALE only when a newer
     /// job at a DIFFERENT height exists (superseded by a block). Timer
     /// rotation (same height, fresh template) must NOT invalidate jobs
-    /// still being ground — live-caught: 30s rotation + ~60s finds meant
+    /// still being ground — found in testing: 30s rotation + ~60s finds meant
     /// every slow find was rejected as stale.
     latest_height: u64,
 }
@@ -113,7 +113,7 @@ impl JobRegistry {
     /// Pure evaluation of a submit: job lookup → cross-connection dupe
     /// peek → PoW check → dupe insert on acceptance.
     ///
-    /// Two review fixes (2026-10-17):
+    /// Two fixes:
     /// - Only shares that MEET THE POOL TARGET enter the shared window. A
     ///   flood of cheap garbage `(header, nonce)` lines used to evict real
     ///   identities (then an old accepted share could replay for double
@@ -181,7 +181,7 @@ const DEFAULT_WORK_WINDOW: usize = 1 << 16;
 /// Work identity for dedupe: FNV-1a-64 over the header bytes then the
 /// nonce. The same header+nonce is the same hash output no matter which
 /// job id, connection, or vardiff target it rode on (a vardiff retarget
-/// keeps the header and mints a fresh job id — live-caught: nonce 20796
+/// keeps the header and mints a fresh job id — found in testing: nonce 20796
 /// credited on jobs 1f/20/21 in a row). A 64-bit collision can only
 /// reject one legitimate share, never mint money.
 fn work_identity(header: &[u8], nonce: u64) -> u64 {
@@ -222,7 +222,7 @@ impl Dedupe {
 
     /// Record an ACCEPTED submission; `false` when this identity is
     /// already present (a replay). Only accepted shares enter the window
-    /// (review fix 2026-10-17) so cheap garbage cannot evict real
+    /// so cheap garbage cannot evict real
     /// identities and replay an accepted share for double credit.
     /// Cheap replay peek (no insertion).
     pub fn contains(&self, id: &u64) -> bool {
@@ -471,8 +471,7 @@ mod tests {
         let (v, s) = reg.evaluate("a", &render_nonce(0), &dedupe);
         assert_eq!(v, Verdict::LowDifficulty);
         assert!(s.is_none());
-        // Rejected shares do NOT enter the shared window (review fix
-        // 2026-10-17): a garbage flood can no longer evict real identities
+        // Rejected shares do NOT enter the shared window: a garbage flood can no longer evict real identities
         // and set up a replay-for-double-credit. Re-evaluating junk is
         // cheap-free-safe — it just rejects again.
         let (v, _) = reg.evaluate("a", &render_nonce(0), &dedupe);
@@ -494,7 +493,7 @@ mod tests {
     #[test]
     fn work_dedupe_keys_on_header_not_job_id() {
         // Same header + nonce under two DIFFERENT job ids (a vardiff
-        // retarget keeps the header) is one work identity — the live-caught
+        // retarget keeps the header) is one work identity — the observed
         // "nonce 20796 on jobs 1f/20/21 in a row" double-count.
         let mut d = Dedupe::new(16);
         assert!(d.insert(&[1, 2, 3], 7));

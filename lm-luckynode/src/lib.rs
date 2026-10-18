@@ -1,4 +1,4 @@
-//! Luckynodes: bonded service nodes for the game layer (internal/18,
+//! Luckynodes: bonded service nodes for the game layer,
 //! pool-side v1 — no consensus changes).
 //!
 //! - [`Registry`]: bonded nodes, heartbeat liveness, active set.
@@ -47,7 +47,7 @@ pub struct Node {
     pub owned: bool,
     /// Designated locked-collateral UTXO (txid, vout). When set, the pool
     /// verifies it is still unspent every tick; spending it evicts the
-    /// node immediately (review fix 2026-10-18). Balance-only checks let
+    /// node immediately. Balance-only checks let
     /// funds drift in and out between ticks — a designated UTXO does not.
     #[serde(default)]
     pub bond_utxo: Option<(String, u32)>,
@@ -69,7 +69,7 @@ impl Registry {
 
     /// Restore a persisted registry verbatim (state-file load). Tenure,
     /// heartbeat counts and ownership survive a pool restart instead of
-    /// resetting to zero (review fix 2026-10-18).
+    /// resetting to zero.
     pub fn restore(&mut self, nodes: Vec<Node>) {
         self.nodes = nodes.into_iter().map(|n| (n.id.clone(), n)).collect();
     }

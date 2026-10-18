@@ -15,7 +15,7 @@ pub const DEFAULT_MAX_TEMP_C: i64 = 75;
 const HYSTERESIS_C: i32 = 2;
 /// Width of the proportional duty band below the cap: full duty at
 /// `cap - BAND`, ~zero duty approaching `cap`. Smooths the equilibrium
-/// instead of bang-bang pause/resume (live-caught GPU sawtooth at cap).
+/// instead of bang-bang pause/resume (observed GPU sawtooth at cap).
 const THERMAL_SOFT_BAND_C: i32 = 8;
 const MIN_DWELL: Duration = Duration::from_secs(30);
 const BACKOFF_MIN_SECS: u64 = 5;
@@ -89,7 +89,7 @@ impl PolicyRuntime {
         // Wall-clock semantics: the caller sleeps for the returned duration,
         // so the clock must advance by work AND sleep — otherwise the dwell
         // check (30s) advances at work-speed only and a paused miner takes
-        // ~an hour of escalating sleeps to resume (live-caught bug).
+        // ~an hour of escalating sleeps to resume (found in testing).
         self.clock += chunk_elapsed;
         let mut sleep = Duration::ZERO;
 
@@ -260,7 +260,7 @@ mod tests {
 
     #[test]
     fn dwell_advances_with_sleep_time_not_work_time() {
-        // Live-caught: with ~0.45s work chunks, a paused miner must resume
+        // found in testing: with ~0.45s work chunks, a paused miner must resume
         // within a bounded number of decisions (sleeps advance the clock),
         // not after ~67 escalating decisions.
         let mut rt = MiningPolicy::new(75, 100).unwrap().runtime();

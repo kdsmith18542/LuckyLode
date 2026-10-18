@@ -1,4 +1,4 @@
-//! Per-worker stats for the dashboard/API (internal/17 §17.1).
+//! Per-worker stats for the dashboard/API.
 //!
 //! Bounded by construction: one FIFO-capped share log serves the rolling
 //! hashrate windows; per-worker counters are O(workers). Pure logic —
@@ -54,7 +54,7 @@ impl WorkerStats {
     /// Register/refresh a worker at authorize time. `agent` comes from the
     /// connection's subscribe (empty when the client sent none).
     pub fn authorized(&mut self, miner: &str, agent: &str, now: u64) {
-        // The worker NAME is the money identity (review fix 2026-10-17):
+        // The worker NAME is the money identity:
         // it keys the payout ledger and doubles as the payout address, so
         // a later authorize can never redirect someone else's balance.
         let w = self.workers.entry(miner.to_string()).or_default();
