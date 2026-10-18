@@ -2180,6 +2180,7 @@ version = "0.1.0"
 dependencies = [
  "lm-rewards",
  "serde",
+ "sha2",
 ]
 
 [[package]]
@@ -2189,6 +2190,7 @@ dependencies = [
  "argon2",
  "blake3",
  "primitive-types",
+ "sha2",
 ]
 
 [[package]]
@@ -2199,6 +2201,7 @@ version = "0.1.0"
 name = "lm-stratum"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "lm-luckynode",
  "lm-pool",
  "lm-pow",
