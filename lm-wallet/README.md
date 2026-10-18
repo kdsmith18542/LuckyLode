@@ -59,8 +59,8 @@ webkit/gtk; needs `libfuse2`).
   usual per-OS install locations, resolves the daemon's own default
   datadir per platform, and generates its own RPC credentials to pass
   to the node — the user never sees them; RPC is pinned to loopback).
-  A fresh install points at `127.0.0.1:19271` (local-first, like Core;
-  the daemon's own testnet rpcport)
+  A fresh install points at `127.0.0.1:42253` (local-first, like Core;
+  the flagless testnet RPC default, verified on a clean machine)
   and the top bar suggests the shared node until one of them is running.
   Advanced exposes the raw RPC URL/user/password and node location for
   custom setups — `http://`, `https://`, and URL path prefixes are all

@@ -67,12 +67,14 @@ impl Default for Config {
             // public (u/p) — mainnet with the ceremony.
             // Local-first: like every standard
             // wallet (Core, Verus native), we default to YOUR node on
-            // localhost. Port 19271 is the daemon's own LUCKYLODETEST
-            // rpcport (chainparams.cpp; a flagless `-testnet` node binds
-            // it on a clean machine — a chain conf `rpcport=` overrides it
-            // per install). The shared public node is an explicit opt-in
-            // preset in Settings (staking + private ops refuse it).
-            rpc_url: "http://127.0.0.1:19271".to_string(),
+            // localhost. Port 42253 is what a flagless `-testnet`
+            // node binds for RPC on a clean machine (empirical, stable
+            // across reinstalls; verified again 2026-10-18 with an empty
+            // datadir — the chainparams ASSETCHAINS_RPCPORT value is not
+            // used by the -testnet boot path, and a chain conf `rpcport=`
+            // still overrides per install). The shared public node is an
+            // explicit opt-in preset in Settings.
+            rpc_url: "http://127.0.0.1:42253".to_string(),
             rpc_user: "u".to_string(),
             rpc_pass: "p".to_string(),
             pool_url: "https://luckylode.cc/pool".to_string(),

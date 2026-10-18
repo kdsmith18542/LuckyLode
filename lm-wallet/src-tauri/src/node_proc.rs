@@ -8,12 +8,12 @@
 use std::process::{Child, Stdio};
 use std::time::{Duration, Instant};
 
-/// Default RPC port when the URL carries none: the daemon's own
-/// LUCKYLODETEST rpcport (chainparams.cpp — a flagless `-testnet` node
-/// binds it on a clean machine; a chain conf `rpcport=` overrides it per
-/// install, and the wallet's managed node always passes `-rpcport`
-/// explicitly anyway).
-pub const DEFAULT_RPC_PORT: u16 = 19271;
+/// Default RPC port when the URL carries none: what a flagless
+/// `-testnet` node binds on a clean machine (empirical default,
+/// re-verified 2026-10-18 on an empty datadir; a chain conf `rpcport=`
+/// overrides it per install, and the wallet's managed node always
+/// passes `-rpcport` explicitly anyway).
+pub const DEFAULT_RPC_PORT: u16 = 42253;
 
 /// Placeholder credentials shipped in a fresh config (`u`/`p` — the shared
 /// testnet node's public pair). When the wallet manages its own node it
@@ -250,7 +250,7 @@ mod tests {
 
     #[test]
     fn rpc_port_parsing() {
-        assert_eq!(rpc_port_from_url("http://127.0.0.1:19271"), 19271);
+        assert_eq!(rpc_port_from_url("http://127.0.0.1:42253"), 42253);
         assert_eq!(rpc_port_from_url("127.0.0.1:9271"), 9271);
         assert_eq!(rpc_port_from_url("https://luckylode.cc/node/"), DEFAULT_RPC_PORT);
         assert_eq!(rpc_port_from_url(""), DEFAULT_RPC_PORT);

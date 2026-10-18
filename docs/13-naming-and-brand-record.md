@@ -49,8 +49,10 @@ consensus; the frozen strings below are called out precisely because they
   deliberately distinct from Verus (cross-chain safety).
 - **Official wire ports (recorded 2026-10-17; frozen like the magic):**
   mainnet P2P **9270** / RPC **9271**, testnet P2P **19270** / RPC
-  **19271** (chainparams.cpp). These are the defaults a clean install
-  binds and the only values software may assume. A chain conf
+  **42253** (the flagless `-testnet` default, verified empirically on a
+  clean datadir — the chainparams ASSETCHAINS_RPCPORT value is not what
+  the boot path binds). These are the defaults a clean install binds
+  and the only values software may assume. A chain conf
   `rpcport=`/`port=` line overrides them *for that install only* —
   overrides must never leak into shipped defaults (a wallet once
   hard-coded a dev box's conf override as its default and would have
