@@ -15,7 +15,7 @@
 
 use crate::provider::TemplateProvider;
 use crate::v1::{
-    error_response, notify, response, work_for_share, worker_id, Dedupe, Job, JobRegistry, Message,
+    error_response, notify, response, work_for_share, Dedupe, Job, JobRegistry, Message,
     Verdict,
 };
 use crate::v2::{
@@ -27,9 +27,9 @@ use crate::v2::{
 use crate::v2_session::{accept_setup_connection, SessionError, V2Session};
 use crate::vardiff::{target_for_work, Vardiff};
 use crate::workerstats::{WorkerSnapshot, WorkerStats};
-use lm_pool::ledger::{Ledger, MinerAgg, ShareRec, PPLNS_WINDOW_SECS as LEDGER_PPLNS};
+use lm_pool::ledger::{Ledger, MinerAgg, ShareRec, PPLNS_WINDOW_SHARES as LEDGER_PPLNS};
 use lm_pool::payout::PayoutLedger;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::sync::{
@@ -49,7 +49,7 @@ const REFRESH_TICK_MS: u64 = 100;
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct BlockRecord {
     pub height: u64,
-    pub finder: u64,
+    pub finder: String,
     /// Net block value the pool received (normal coinbase, no claims).
     pub value: u64,
     pub bonus: u64,
@@ -57,7 +57,7 @@ pub struct BlockRecord {
     pub pot: u64,
     pub league_overflow: u64,
     /// PPLNS split of every claimed amount (jackpot + pot), per miner.
-    pub payouts: Vec<(u64, u64)>,
+    pub payouts: Vec<(String, u64)>,
 }
 /// Retained block history (finding G spirit: the dashboard must never
 /// OOM the pool; the cap is deep enough for every UI window).
@@ -76,6 +76,39 @@ struct JobState {
     version: u64,
 }
 
+/// RAII connection accounting: releases the accept-loop caps when the
+/// connection thread exits (any path, including panics).
+struct ConnGuard<P: TemplateProvider + 'static> {
+    shared: Arc<Shared<P>>,
+    ip: std::net::IpAddr,
+}
+
+impl<P: TemplateProvider + 'static> Drop for ConnGuard<P> {
+    fn drop(&mut self) {
+        use std::sync::atomic::Ordering as AtomicOrdering;
+        self.shared.conn_total.fetch_sub(1, AtomicOrdering::SeqCst);
+        let mut m = self.shared.conn_per_ip.lock().expect("per-ip");
+        if let Some(n) = m.get_mut(&self.ip) {
+            *n = n.saturating_sub(1);
+            if *n == 0 {
+                m.remove(&self.ip);
+            }
+        }
+    }
+}
+
+/// Connection bounds (review fix 2026-10-17): the accept loop used to
+/// spawn an unbounded thread per TCP connection and the read loop
+/// accumulated an uncapped line — slowloris OOM on a public bind.
+const MAX_CONNS: usize = 2048;
+const MAX_CONNS_PER_IP: usize = 64;
+/// Legitimate stratum messages are well under 2 KiB; 64 KiB is generous.
+const MAX_LINE_BYTES: usize = 64 * 1024;
+/// A client must authorize within this many seconds of connecting.
+const AUTH_DEADLINE_SECS: u64 = 30;
+/// Any connection silent this long (no complete line) is dropped.
+const IDLE_DEADLINE_SECS: u64 = 120;
+
 struct Shared<P> {
     provider: Mutex<P>,
     ledger: Mutex<Ledger>,
@@ -87,6 +120,25 @@ struct Shared<P> {
     /// connection's registry must reject it, so the memory lives here and
     /// is locked around each evaluate — not inside the registries.
     dedupe: Mutex<Dedupe>,
+    /// Prospective league overflow per template height (from the node's
+    /// own `leagueoverflow` advisory): credited to the league ledger when
+    /// the height's block lands — whether the pool mined it (accept path)
+    /// or an external finder did (tip-change reconcile in the refresh
+    /// loop). Without this, staker/peer-found blocks' overflow never
+    /// entered any pool ledger and Luckynode Draw budgets leaked on a
+    /// 50/50 chain.
+    tip_overflow: Mutex<BTreeMap<u64, u64>>,
+    /// Heights whose league overflow is already credited (either path).
+    /// Credit-once gate: the accept thread and the refresh thread race on
+    /// our own finds, and exactly one of them may credit a height.
+    league_credited: Mutex<HashSet<u64>>,
+    /// Highest tip height reconciled for external league credit (0 =
+    /// uninitialized; first tick starts from the live tip, no backfill —
+    /// same restart rule as the draw loop's epoch init).
+    league_tip: Mutex<u64>,
+    /// Live connection accounting for the accept caps (RAII-guarded).
+    conn_total: std::sync::atomic::AtomicUsize,
+    conn_per_ip: Mutex<std::collections::HashMap<std::net::IpAddr, usize>>,
     /// Per-worker dashboard stats (accepted/rejected, rolling hashrate,
     /// liveness) — internal/17 §17.1.
     workers: Mutex<WorkerStats>,
@@ -99,7 +151,7 @@ struct Shared<P> {
     pool_fee: Mutex<u16>,
     /// Dev-fee slice (miner id, per-myriad of the block), taken from the
     /// operator fee pot via `allocate_dev` — docs/04 §4.2. `None` = off.
-    dev_fee: Mutex<Option<(u64, u16)>>,
+    dev_fee: Mutex<Option<(String, u16)>>,
     pool_password: Option<String>,
     /// Per-worker tokens (worker -> token). When set, it is authoritative:
     /// only listed workers with a matching token may authorize. Otherwise
@@ -127,12 +179,12 @@ pub struct MinerSettings {
 
 /// Per-miner payout settings keyed by miner id (persisted with the pool
 /// state file).
-pub type PayoutSettings = std::collections::BTreeMap<u64, MinerSettings>;
+pub type PayoutSettings = std::collections::BTreeMap<String, MinerSettings>;
 
 /// One miner's dashboard row + value totals (internal/17).
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct MinerRow {
-    pub miner: u64,
+    pub miner: String,
     pub name: String,
     pub agent: String,
     pub shares: u64,
@@ -235,10 +287,119 @@ fn refresh_loop<P: TemplateProvider + 'static>(shared: Arc<Shared<P>>) {
                     net_target: tpl.net_target,
                 };
                 bc.version += 1;
+                // Prospective league overflow for this height (the node's
+                // own advisory): the accept path and the tip reconcile
+                // below share one credit-once gate, so recording here is
+                // safe even when our own find lands first.
+                {
+                    let mut pend =
+                        shared.tip_overflow.lock().expect("tip overflow");
+                    pend.insert(tpl.height, tpl.league);
+                    while pend.len() > 64 {
+                        pend.pop_first();
+                    }
+                }
+            }
+        }
+        // Tip-change reconcile: credit league overflow for heights the pool
+        // did NOT mine (staker/peer finds). The gate makes this race-free
+        // against the accept path on our own blocks; heights with no
+        // prospective record (pool was down/behind) are skipped and logged
+        // — never guessed.
+        {
+            let tip = tpl.height.saturating_sub(1);
+            let mut synced = shared.league_tip.lock().expect("league tip");
+            if *synced == 0 {
+                *synced = tip;
+            } else if tip > *synced {
+                let old = *synced;
+                let pend = shared.tip_overflow.lock().expect("tip overflow");
+                let done = shared.league_credited.lock().expect("league credited");
+                let missing = missing_league_credits(old, tip, &pend, &done);
+                // Heights neither credited nor known-prospective: the pool
+                // was down/behind for them — logged, never guessed. (Heights
+                // the accept path already credited are NOT unknown.)
+                let unknown = (old + 1..=tip)
+                    .filter(|h| !done.contains(h) && !pend.contains_key(h))
+                    .count();
+                drop(pend);
+                drop(done);
+                for (h, amount) in &missing {
+                    if *amount > 0 {
+                        credit_league_once(&shared, *h, *amount, "tip");
+                    } else {
+                        shared
+                            .league_credited
+                            .lock()
+                            .expect("league credited")
+                            .insert(*h);
+                    }
+                }
+                if unknown > 0 {
+                    eprintln!(
+                        "pool: tip {old}->{tip}: {unknown} heights had no prospective league record (skipped)"
+                    );
+                }
+                let mut done = shared.league_credited.lock().expect("league credited");
+                done.retain(|&h| h + 128 > tip);
+                *synced = tip;
+            } else if tip < *synced {
+                // Reorg: drop prospective records above the new tip.
+                // Already-credited heights stand (same no-rollback rule
+                // as miner balances).
+                let old = *synced;
+                shared
+                    .tip_overflow
+                    .lock()
+                    .expect("tip overflow")
+                    .retain(|&h, _| h <= tip + 1);
+                *synced = tip;
+                eprintln!("pool: reorg? tip {tip} below synced {old} — prospective league map reset");
             }
         }
         std::thread::sleep(Duration::from_millis(REFRESH_TICK_MS));
     }
+}
+
+/// Heights in (old_tip, new_tip] whose league overflow still needs
+/// crediting: known prospectively and not yet credited by either path.
+/// Pure (unit-tested); the caller holds no locks while computing.
+fn missing_league_credits(
+    old_tip: u64,
+    new_tip: u64,
+    pending: &BTreeMap<u64, u64>,
+    credited: &HashSet<u64>,
+) -> Vec<(u64, u64)> {
+    if new_tip <= old_tip {
+        return Vec::new();
+    }
+    (old_tip + 1..=new_tip)
+        .filter_map(|h| {
+            if credited.contains(&h) {
+                return None;
+            }
+            pending.get(&h).map(|&o| (h, o))
+        })
+        .collect()
+}
+
+/// Credit a height's league overflow exactly once (the accept thread and
+/// the refresh thread race on our own finds). Returns true when this
+/// call performed the credit.
+fn credit_league_once<P>(shared: &Shared<P>, height: u64, amount: u64, source: &str) -> bool {
+    {
+        let mut done = shared.league_credited.lock().expect("league credited");
+        if !done.insert(height) {
+            return false;
+        }
+    }
+    shared
+        .ledger
+        .lock()
+        .expect("ledger")
+        .credit_league(amount);
+    eprintln!("pool: league +{amount} @height {height} ({source})");
+    true
 }
 
 /// Shared money path for an accepted block-finding share (V1 and V2 call
@@ -249,7 +410,7 @@ fn refresh_loop<P: TemplateProvider + 'static>(shared: Arc<Shared<P>>) {
 /// chain's authoritative, and only the chain mints money.
 fn apply_block_found<P: TemplateProvider + 'static>(
     shared: &Shared<P>,
-    miner_id: u64,
+    miner_id: String,
     job: &Job,
     nonce: u64,
 ) {
@@ -260,27 +421,30 @@ fn apply_block_found<P: TemplateProvider + 'static>(
         .submit_block(&job.header, job.height, nonce);
     if outcome.accepted {
         let now = now_secs();
-        let mut ledger = shared.ledger.lock().expect("ledger");
-        ledger.credit_league(outcome.league_overflow);
+        // League credit goes through the credit-once gate: the refresh
+        // thread may reconcile this same height if it sees the new tip
+        // before this thread runs.
+        credit_league_once(shared, job.height, outcome.league_overflow, "accept");
+        let ledger = shared.ledger.lock().expect("ledger");
         // Both claimed amounts split over the PPLNS window (each with the
         // reference sqrt/cap rules); the combined list is what pays out.
-        let mut payouts = ledger.jackpot_payout(outcome.bonus, LEDGER_PPLNS, now);
-        payouts.extend(ledger.jackpot_payout(outcome.pot, LEDGER_PPLNS, now));
+        let mut payouts = ledger.jackpot_payout_shares(outcome.bonus, LEDGER_PPLNS, now);
+        payouts.extend(ledger.jackpot_payout_shares(outcome.pot, LEDGER_PPLNS, now));
         // Per-miner value accounting (internal/17 §17.4): the normal block
         // value by PPLNS weight plus the block's own split payouts.
-        let weights: Vec<(u64, u64)> = ledger
-            .aggregate(LEDGER_PPLNS, now)
+        let weights: Vec<(String, u64)> = ledger
+            .aggregate_shares(LEDGER_PPLNS, now)
             .iter()
-            .map(|a| (a.miner, a.eff_work))
+            .map(|a| (a.miner.clone(), a.eff_work))
             .collect();
         let mut balances = shared.balances.lock().expect("balances");
         let fee = *shared.pool_fee.lock().expect("pool fee");
         balances.credit_block(outcome.coinbase, &weights, fee);
         balances.credit_split(&payouts);
-        if let Some((dev_id, pp)) = *shared.dev_fee.lock().expect("dev fee") {
+        if let Some((dev_id, pp)) = shared.dev_fee.lock().expect("dev fee").clone() {
             let dev = outcome.coinbase as u128 * u64::from(pp) as u128
                 / lm_pool::payout::FEE_DENOM_PERMYRIAD as u128;
-            let moved = balances.allocate_dev(dev_id, dev as u64);
+            let moved = balances.allocate_dev(&dev_id, dev as u64);
             if moved > 0 {
                 eprintln!(
                     "dev fee: {} -> miner {} ({} blocks paid)",
@@ -324,7 +488,7 @@ fn handle_conn<P: TemplateProvider + 'static>(stream: TcpStream, shared: Arc<Sha
     // 16 jobs at 30s rotation = 8 minutes of job lifetime: a slow find
     // (p=1/65536 has a long tail) must still be submittable.
     let mut registry = JobRegistry::new(16);
-    let mut authorized: Option<(String, u64)> = None;
+    let mut authorized: Option<String> = None;
     // Agent string from subscribe (params[0]); labels the worker's device
     // on the dashboard.
     let mut agent = String::new();
@@ -335,6 +499,8 @@ fn handle_conn<P: TemplateProvider + 'static>(stream: TcpStream, shared: Arc<Sha
     let mut seen_version = 0u64;
     let mut sent_height = 0u64;
     let mut line = String::new();
+    let connected_at = std::time::Instant::now();
+    let mut last_msg = connected_at;
 
     // Seed the registry so the first job is evaluable even before broadcast.
     let (first, _) = broadcast_job(&shared);
@@ -370,11 +536,26 @@ fn handle_conn<P: TemplateProvider + 'static>(stream: TcpStream, shared: Arc<Sha
                 if e.kind() == std::io::ErrorKind::WouldBlock
                     || e.kind() == std::io::ErrorKind::TimedOut =>
             {
+                // Deadlines (review fix 2026-10-17): authorize promptly,
+                // and no connection may sit silent forever.
+                if authorized.is_none()
+                    && connected_at.elapsed().as_secs() > AUTH_DEADLINE_SECS
+                {
+                    break; // never authorized — free the thread
+                }
+                if last_msg.elapsed().as_secs() > IDLE_DEADLINE_SECS {
+                    break;
+                }
                 continue;
             }
             Err(_) => break,
         }
+        if line.len() > MAX_LINE_BYTES {
+            // Slowloris / memory guard: no legitimate message is this big.
+            break;
+        }
         let msg_line = std::mem::take(&mut line);
+        last_msg = std::time::Instant::now();
         let trimmed = msg_line.trim();
         if trimmed.is_empty() {
             continue;
@@ -433,14 +614,15 @@ fn handle_conn<P: TemplateProvider + 'static>(stream: TcpStream, shared: Arc<Sha
                     );
                     continue;
                 }
-                let mid = worker_id(&worker);
+                // Money identity = the worker name itself (review fix
+                // 2026-10-17): FNV-1a worker ids were forgeable and the
+                // payout ledger keyed by them could be redirected.
                 shared.workers.lock().expect("workers").authorized(
-                    mid,
                     &worker,
                     &agent,
                     now_secs(),
                 );
-                authorized = Some((worker, mid));
+                authorized = Some(worker);
                 _vd_target = Some((cur.pool_target, cur.height));
                 // Immediately push the current job (clean start).
                 registry.issue(cur.clone());
@@ -453,7 +635,7 @@ fn handle_conn<P: TemplateProvider + 'static>(stream: TcpStream, shared: Arc<Sha
                 }
             }
             "mining.submit" => {
-                let Some((worker_name, miner_id)) = authorized.clone() else {
+                let Some(miner_id) = authorized.clone() else {
                     let _ = writeln!(stream.get_mut(), "{}", error_response(&id, -32600, "authorize first"));
                     continue;
                 };
@@ -473,18 +655,16 @@ fn handle_conn<P: TemplateProvider + 'static>(stream: TcpStream, shared: Arc<Sha
                     }
                 };
                 // Worker field is informational; the authorized identity pays.
-                let _ = worker_name;
-                let (verdict, submit) = {
-                    let mut dedupe = shared.dedupe.lock().expect("dedupe");
-                    registry.evaluate(&job_id, &nonce_hex, &mut dedupe)
-                };
+                // Hash runs outside the pool-wide dedupe lock (the lock
+                // is taken only for the brief peek/insert inside).
+                let (verdict, submit) = registry.evaluate(&job_id, &nonce_hex, &shared.dedupe);
                 let (accept, err) = verdict.response();
                 match (accept, submit) {
                     (true, Some(s)) => {
                         let now = now_secs();
                         let work = work_for_share(&s.job.pool_target);
                         shared.ledger.lock().expect("ledger").submit(ShareRec {
-                            miner: miner_id,
+                            miner: miner_id.clone(),
                             ts: now,
                             work,
                             overnight: false,
@@ -494,7 +674,7 @@ fn handle_conn<P: TemplateProvider + 'static>(stream: TcpStream, shared: Arc<Sha
                             .workers
                             .lock()
                             .expect("workers")
-                            .accepted(miner_id, work, now);
+                            .accepted(&miner_id, work, now);
                         // Vardiff: adapt this connection's pool target, same template.
                         if let Some(new_work) = vardiff.record(now, work) {
                             let new_target = target_for_work(new_work);
@@ -511,7 +691,7 @@ fn handle_conn<P: TemplateProvider + 'static>(stream: TcpStream, shared: Arc<Sha
                             let _ = writeln!(stream.get_mut(), "{}", notify(&derived, false));
                         }
                         if matches!(verdict, Verdict::Accept { block: true }) {
-                            apply_block_found(&shared, miner_id, &s.job, s.nonce);
+                            apply_block_found(&shared, miner_id.clone(), &s.job, s.nonce);
                         }
                         let _ =
                             writeln!(stream.get_mut(), "{}", response(&id, serde_json::Value::Bool(true)));
@@ -522,7 +702,7 @@ fn handle_conn<P: TemplateProvider + 'static>(stream: TcpStream, shared: Arc<Sha
                             .workers
                             .lock()
                             .expect("workers")
-                            .rejected(miner_id, now_secs());
+                            .rejected(&miner_id, now_secs());
                         let (code, text) = err.unwrap_or((-32600, "invalid submit".to_string()));
                         let _ = writeln!(stream.get_mut(), "{}", error_response(&id, code, &text));
                     }
@@ -581,7 +761,7 @@ fn issue_lucky_job(
 /// pool-wide.
 struct V2Channel {
     channel_id: u32,
-    miner_id: u64,
+    miner_id: String,
     vardiff: Vardiff,
     /// Active target override (target, template height).
     vd_target: Option<([u8; 32], u64)>,
@@ -717,10 +897,9 @@ fn handle_v2_conn<P: TemplateProvider + 'static>(
                     }));
                     continue;
                 }
-                let miner_id = worker_id(&open.user_identity);
+                let miner_id = open.user_identity.clone();
                 shared.workers.lock().expect("workers").authorized(
-                    miner_id,
-                    &open.user_identity,
+                    &miner_id,
                     &format!("v2 {} {}", setup.vendor, setup.hardware_version),
                     now_secs(),
                 );
@@ -772,12 +951,11 @@ fn handle_v2_conn<P: TemplateProvider + 'static>(
                     continue;
                 };
                 let channel_id = ch.channel_id;
-                let miner_id = ch.miner_id;
+                let miner_id = ch.miner_id.clone();
                 let id = format!("v2-{:08x}", sub.job_id);
                 let nonce_hex = format!("{:016x}", sub.nonce);
                 let (verdict, submit) = {
-                    let mut dedupe = shared.dedupe.lock().expect("dedupe");
-                    registry.evaluate(&id, &nonce_hex, &mut dedupe)
+                    registry.evaluate(&id, &nonce_hex, &shared.dedupe)
                 };
                 let (accept, err) = verdict.response();
                 match (accept, submit) {
@@ -785,7 +963,7 @@ fn handle_v2_conn<P: TemplateProvider + 'static>(
                         let now = now_secs();
                         let work = work_for_share(&s.job.pool_target);
                         shared.ledger.lock().expect("ledger").submit(ShareRec {
-                            miner: miner_id,
+                            miner: miner_id.clone(),
                             ts: now,
                             work,
                             overnight: false,
@@ -795,7 +973,7 @@ fn handle_v2_conn<P: TemplateProvider + 'static>(
                             .workers
                             .lock()
                             .expect("workers")
-                            .accepted(miner_id, work, now);
+                            .accepted(&miner_id, work, now);
                         let ack = SubmitSharesSuccess {
                             channel_id,
                             last_sequence_number: sub.sequence_number,
@@ -833,7 +1011,7 @@ fn handle_v2_conn<P: TemplateProvider + 'static>(
                             }
                         }
                         if matches!(verdict, Verdict::Accept { block: true }) {
-                            apply_block_found(&shared, miner_id, &s.job, s.nonce);
+                            apply_block_found(&shared, miner_id.clone(), &s.job, s.nonce);
                         }
                     }
                     _ => {
@@ -842,7 +1020,7 @@ fn handle_v2_conn<P: TemplateProvider + 'static>(
                             .workers
                             .lock()
                             .expect("workers")
-                            .rejected(miner_id, now_secs());
+                            .rejected(&miner_id, now_secs());
                         let (_, code) = err.unwrap_or((-32600, "invalid submit".to_string()));
                         let nack = SubmitSharesError {
                             channel_id,
@@ -914,13 +1092,13 @@ impl<P: TemplateProvider + 'static> RunningServer<P> {
     }
 
     /// Persisted worker-name map (miner id → payout address).
-    pub fn names(&self) -> Vec<(u64, String)> {
+    pub fn names(&self) -> Vec<(String, String)> {
         self.shared.workers.lock().expect("workers").names()
     }
 
     /// Restore persisted worker names (payout destinations survive a
     /// restart even before miners reconnect).
-    pub fn restore_names(&self, names: &[(u64, String)]) {
+    pub fn restore_names(&self, names: &[(String, String)]) {
         self.shared
             .workers
             .lock()
@@ -952,14 +1130,35 @@ impl<P: TemplateProvider + 'static> RunningServer<P> {
         self.shared.ledger.lock().expect("ledger").league_balance()
     }
 
+    /// Spend from the league prize pool (draw payments); returns what was
+    /// actually debited, capped at the credited balance.
+    pub fn debit_league(&self, amount: u64) -> u64 {
+        self.shared.ledger.lock().expect("ledger").debit_league(amount)
+    }
+
+    /// Restore the persisted league-pool balance (state-file load).
+    pub fn restore_league(&self, balance: u64) {
+        self.shared
+            .ledger
+            .lock()
+            .expect("ledger")
+            .set_league_balance(balance);
+    }
+
     /// Per-worker snapshots for the dashboard/API (internal/17 §17.1).
+    /// Workers idle past `WORKER_HIDE_SECS` (6 h) drop off this list; the
+    /// unfiltered `snapshot`/`names` still back accounting and payouts.
     pub fn workers(&self, now: u64) -> Vec<WorkerSnapshot> {
-        self.shared.workers.lock().expect("workers").snapshot(now)
+        self.shared
+            .workers
+            .lock()
+            .expect("workers")
+            .snapshot_visible(now)
     }
 
     /// All miner balances (owed) for the dashboard/API, miner-ascending.
     /// Payout selection itself lives in the payout path.
-    pub fn balances(&self) -> Vec<(u64, u64)> {
+    pub fn balances(&self) -> Vec<(String, u64)> {
         self.shared
             .balances
             .lock()
@@ -970,7 +1169,7 @@ impl<P: TemplateProvider + 'static> RunningServer<P> {
     }
 
     /// Debit after a successful on-chain send.
-    pub fn record_paid(&self, miner: u64, amount: u64) {
+    pub fn record_paid(&self, miner: &str, amount: u64) {
         self.shared
             .balances
             .lock()
@@ -979,13 +1178,13 @@ impl<P: TemplateProvider + 'static> RunningServer<P> {
     }
 
     /// Lifetime paid to one miner (stats reconciliation).
-    pub fn paid(&self, miner: u64) -> u64 {
+    pub fn paid(&self, miner: &str) -> u64 {
         self.shared.balances.lock().expect("balances").paid(miner)
     }
 
     /// One miner's row (worker stats + owed/paid). `None` when unknown.
     #[must_use]
-    pub fn miner_row(&self, miner: u64, now: u64) -> Option<MinerRow> {
+    pub fn miner_row(&self, miner: &str, now: u64) -> Option<MinerRow> {
         let snap = self
             .shared
             .workers
@@ -996,7 +1195,7 @@ impl<P: TemplateProvider + 'static> RunningServer<P> {
             .find(|w| w.miner == miner)?;
         let bal = self.shared.balances.lock().expect("balances");
         Some(MinerRow {
-            miner,
+            miner: miner.to_string(),
             name: snap.name,
             agent: snap.agent,
             shares: snap.shares,
@@ -1021,7 +1220,7 @@ impl<P: TemplateProvider + 'static> RunningServer<P> {
     }
 
     /// Set one miner's payout settings (replaces the whole entry).
-    pub fn set_payout_settings(&self, miner: u64, settings: MinerSettings) {
+    pub fn set_payout_settings(&self, miner: String, settings: MinerSettings) {
         self.shared
             .payout_settings
             .lock()
@@ -1030,12 +1229,12 @@ impl<P: TemplateProvider + 'static> RunningServer<P> {
     }
 
     /// Remove one miner's settings entirely. Returns whether one existed.
-    pub fn clear_payout_settings(&self, miner: u64) -> bool {
+    pub fn clear_payout_settings(&self, miner: &str) -> bool {
         self.shared
             .payout_settings
             .lock()
             .expect("settings")
-            .remove(&miner)
+            .remove(miner)
             .is_some()
     }
 
@@ -1043,7 +1242,7 @@ impl<P: TemplateProvider + 'static> RunningServer<P> {
     /// miner-facing HTTP endpoints. `None` when auth is off or the token is
     /// unknown.
     #[must_use]
-    pub fn miner_for_token(&self, token: &str) -> Option<u64> {
+    pub fn miner_for_token(&self, token: &str) -> Option<String> {
         if token.is_empty() {
             return None;
         }
@@ -1077,8 +1276,9 @@ impl<P: TemplateProvider + 'static> RunningServer<P> {
         if addr.is_empty() || pp == 0 {
             return;
         }
-        let id = worker_id(addr);
-        *self.shared.dev_fee.lock().expect("dev fee") = Some((id, pp));
+        // The dev worker is a name like any other (money identity).
+        let id = addr.to_string();
+        *self.shared.dev_fee.lock().expect("dev fee") = Some((id.clone(), pp));
         self.restore_names(&[(id, addr.to_string())]);
     }
 
@@ -1178,6 +1378,9 @@ pub fn spawn_server<P: TemplateProvider + 'static>(
         stats: Mutex::new(Stats::default()),
         broadcast: Mutex::new(JobState { job, version: 1 }),
         dedupe: Mutex::new(Dedupe::default()),
+        tip_overflow: Mutex::new(BTreeMap::new()),
+        league_credited: Mutex::new(HashSet::new()),
+        league_tip: Mutex::new(0),
         workers: Mutex::new(WorkerStats::default()),
         balances: Mutex::new(PayoutLedger::default()),
         payout_settings: Mutex::new(PayoutSettings::new()),
@@ -1188,14 +1391,52 @@ pub fn spawn_server<P: TemplateProvider + 'static>(
         tls,
         job_counter: AtomicU64::new(1),
         shutdown: AtomicBool::new(false),
+        conn_total: std::sync::atomic::AtomicUsize::new(0),
+        conn_per_ip: Mutex::new(std::collections::HashMap::new()),
     });
+    // Seed the prospective league map with the startup template: the
+    // first block after a (re)start would otherwise have no record and
+    // an external find's overflow would leak through the reconcile.
+    {
+        let mut pend = shared.tip_overflow.lock().expect("tip overflow");
+        pend.insert(tpl.height, tpl.league);
+        *shared.league_tip.lock().expect("league tip") = tpl.height.saturating_sub(1);
+    }
     let accept_shared = shared.clone();
     let accept = std::thread::spawn(move || {
+        use std::sync::atomic::Ordering as AtomicOrdering;
         while !accept_shared.shutdown.load(Ordering::Relaxed) {
             match listener.accept() {
-                Ok((stream, _)) => {
+                Ok((stream, peer)) => {
+                    // Caps (review fix 2026-10-17): bounded threads per
+                    // pool, bounded share per IP. Over-cap connections are
+                    // dropped at accept — no thread, no TLS, no state.
+                    let ip = peer.ip();
+                    let total = accept_shared.conn_total.load(AtomicOrdering::SeqCst);
+                    let per_ip = accept_shared
+                        .conn_per_ip
+                        .lock()
+                        .expect("per-ip")
+                        .get(&ip)
+                        .copied()
+                        .unwrap_or(0);
+                    if total >= MAX_CONNS || per_ip >= MAX_CONNS_PER_IP {
+                        drop(stream);
+                        continue;
+                    }
+                    accept_shared.conn_total.fetch_add(1, AtomicOrdering::SeqCst);
+                    {
+                        let mut m = accept_shared.conn_per_ip.lock().expect("per-ip");
+                        *m.entry(ip).or_insert(0) += 1;
+                    }
                     let s = accept_shared.clone();
-                    std::thread::spawn(move || handle_conn(stream, s));
+                    std::thread::spawn(move || {
+                        let _guard = ConnGuard {
+                            shared: s.clone(),
+                            ip,
+                        };
+                        handle_conn(stream, s);
+                    });
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                     std::thread::sleep(Duration::from_millis(20));
@@ -1390,7 +1631,7 @@ mod auth_tests {
 
         // Settings round-trip + clear.
         server.set_payout_settings(
-            miner,
+            miner.clone(),
             MinerSettings {
                 address: Some("addr-x".to_string()),
                 threshold: Some(42),
@@ -1398,16 +1639,16 @@ mod auth_tests {
         );
         let s = server.payout_settings();
         assert_eq!(
-            s.get(&miner).and_then(|s| s.address.as_deref()),
+            s.get(miner.as_str()).and_then(|s| s.address.as_deref()),
             Some("addr-x")
         );
-        assert_eq!(s.get(&miner).and_then(|s| s.threshold), Some(42));
-        assert!(server.clear_payout_settings(miner));
-        assert!(!server.clear_payout_settings(miner));
+        assert_eq!(s.get(miner.as_str()).and_then(|s| s.threshold), Some(42));
+        assert!(server.clear_payout_settings(&miner));
+        assert!(!server.clear_payout_settings(&miner));
         assert!(server.payout_settings().is_empty());
 
         // The miner row is visible once connected.
-        let row = server.miner_row(miner, now_secs()).expect("row");
+        let row = server.miner_row(&miner, now_secs()).expect("row");
         assert_eq!(row.name, "worker-a");
         assert_eq!(row.shares, 0);
         assert_eq!(row.owed, 0);
@@ -1645,5 +1886,63 @@ mod auth_tests {
         assert_eq!(server.stats().shares, 3);
         assert_eq!(server.stats().rejects, 0);
         server.stop();
+    }
+}
+
+#[cfg(test)]
+mod league_tests {
+    use super::*;
+    use crate::provider::MockProvider;
+    use crate::provider::TemplateProvider;
+
+    fn pending(pairs: &[(u64, u64)]) -> BTreeMap<u64, u64> {
+        pairs.iter().copied().collect()
+    }
+
+    fn credited(heights: &[u64]) -> HashSet<u64> {
+        heights.iter().copied().collect()
+    }
+
+    #[test]
+    fn missing_credits_covers_the_whole_advance() {
+        let m = missing_league_credits(100, 103, &pending(&[(101, 10), (102, 20), (103, 30)]), &credited(&[]));
+        assert_eq!(m, vec![(101, 10), (102, 20), (103, 30)]);
+    }
+
+    #[test]
+    fn missing_credits_skips_already_credited_heights() {
+        let m = missing_league_credits(100, 103, &pending(&[(101, 10), (102, 20)]), &credited(&[101]));
+        assert_eq!(m, vec![(102, 20)]);
+    }
+
+    #[test]
+    fn missing_credits_skips_heights_with_no_prospective_record() {
+        // Pool was down/behind for 102: never guess, leave it unmarked.
+        let m = missing_league_credits(100, 103, &pending(&[(101, 10), (103, 30)]), &credited(&[]));
+        assert_eq!(m, vec![(101, 10), (103, 30)]);
+    }
+
+    #[test]
+    fn missing_credits_never_goes_backward() {
+        let p = pending(&[(99, 10)]);
+        assert!(missing_league_credits(100, 100, &p, &credited(&[])).is_empty());
+        assert!(missing_league_credits(100, 99, &p, &credited(&[])).is_empty());
+    }
+
+    #[test]
+    fn missing_credits_passes_zero_amounts_through_for_marking() {
+        // Zero-overflow heights still get marked done so the range never
+        // rescans them (the caller inserts rather than credits).
+        let m = missing_league_credits(100, 101, &pending(&[(101, 0)]), &credited(&[]));
+        assert_eq!(m, vec![(101, 0)]);
+    }
+
+    #[test]
+    fn mock_template_carries_the_prospective_league_advisory() {
+        let mut p = MockProvider::new([0xffu8; 32], [0xffu8; 32], 1_000_000, 0);
+        assert_eq!(p.current().league, 0);
+        p.set_league(876_192);
+        let t = p.current();
+        assert_eq!((t.height, t.league), (1, 876_192));
     }
 }

@@ -8,6 +8,7 @@ description = "Luckynode registry, heartbeat liveness, tenure-weighted draws, an
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 ed25519-dalek = "2.2"
+lm-keys = { path = "../lm-keys" }
 
 [[bin]]
 name = "luckynode"

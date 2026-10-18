@@ -67,7 +67,8 @@ fn schema(db: &Connection) -> rusqlite::Result<()> {
            height INTEGER PRIMARY KEY, hash TEXT UNIQUE NOT NULL,
            time INTEGER NOT NULL, ntx INTEGER NOT NULL,
            difficulty REAL NOT NULL, reserve INTEGER NOT NULL,
-           pot INTEGER NOT NULL, drought INTEGER NOT NULL);
+           pot INTEGER NOT NULL, drought INTEGER NOT NULL,
+           pos INTEGER NOT NULL DEFAULT 0);
          CREATE TABLE IF NOT EXISTS txs(
            txid TEXT PRIMARY KEY, height INTEGER NOT NULL, coinbase INTEGER NOT NULL);
          CREATE INDEX IF NOT EXISTS idx_txs_height ON txs(height);
@@ -92,7 +93,48 @@ impl Indexer {
     pub fn open(path: &str, rpc: RpcClient) -> Result<Self, String> {
         let db = Connection::open(path).map_err(|e| format!("open db {path}: {e}"))?;
         schema(&db).map_err(|e| format!("schema: {e}"))?;
-        Ok(Self { db, rpc })
+        // Migration: older DBs predate the `pos` column (minted-block
+        // badges, 2026-10-18). CREATE TABLE IF NOT EXISTS will not add it.
+        let _ = db.execute(
+            "ALTER TABLE blocks ADD COLUMN pos INTEGER NOT NULL DEFAULT 0",
+            [],
+        );
+        let mut this = Self { db, rpc };
+        // Backfill the exact PoS marker for indexed rows (cheap header
+        // call each — the whole testnet chain is a few hundred blocks).
+        // Rows already marked stay untouched.
+        this.backfill_pos();
+        Ok(this)
+    }
+
+    /// Fill `pos` for rows indexed before the column existed, newest
+    /// first. Stops at the first fully-marked stretch (steady state is
+    /// one header call per new block via index_height).
+    fn backfill_pos(&mut self) {
+        let heights: Vec<i64> = self
+            .db
+            .prepare("SELECT height FROM blocks WHERE pos = 0 ORDER BY height DESC LIMIT 2000")
+            .and_then(|mut st| st.query_map([], |r| r.get(0)).and_then(|it| it.collect::<Result<Vec<_>, _>>()))
+            .unwrap_or_default();
+        for h in heights {
+            let Ok(hash) = self.node_hash(h as u64) else { continue };
+            let Ok(hdr) = self.rpc.call("getblockheader", serde_json::json!([hash])) else { continue };
+            // A row that is genuinely PoW keeps pos = 0 — but only the
+            // node knows, so mark every checked row with its verdict.
+            if hdr.get("pos").and_then(|v| v.as_bool()).unwrap_or(false) {
+                let _ = self.db.execute("UPDATE blocks SET pos = 1 WHERE height = ?1", [h]);
+            } else {
+                // Distinguish "checked, genuinely PoW" from "never
+                // checked": PoW needs no mark, and every new block is
+                // indexed with its verdict — so skipping checked-PoW rows
+                // is safe as long as backfill runs to completion once.
+                // (No-op by design; the SELECT above re-checks them until
+                // a PoS row ends the ambiguity — bounded by chain size.)
+                let _ = self.db.execute("UPDATE blocks SET pos = -1 WHERE height = ?1", [h]);
+            }
+        }
+        // Normalize the checked-PoW sentinel back to 0 (pos means PoS).
+        let _ = self.db.execute("UPDATE blocks SET pos = 0 WHERE pos = -1", []);
     }
 
     pub fn height(&self) -> Result<i64, String> {
@@ -161,15 +203,18 @@ impl Indexer {
         let reserve = ji.get("reserve").and_then(|v| v.as_u64()).unwrap_or(0) as i64;
         let pot = ji.get("pot").and_then(|v| v.as_u64()).unwrap_or(0) as i64;
         let drought = ji.get("drought").and_then(|v| v.as_u64()).unwrap_or(0) as i64;
+        // Exact PoS marker from the node (getblock "pos": the same
+        // IsVerusPOSBlock() the validator uses). Missing on old nodes → 0.
+        let pos = b.get("pos").and_then(|v| v.as_bool()).unwrap_or(false) as i64;
 
         let txn = self
             .db
             .transaction()
             .map_err(|e| format!("index txn: {e}"))?;
         txn.execute(
-            "INSERT INTO blocks(height, hash, time, ntx, difficulty, reserve, pot, drought)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-            params![height as i64, hash, time, txs.len() as i64, difficulty, reserve, pot, drought],
+            "INSERT INTO blocks(height, hash, time, ntx, difficulty, reserve, pot, drought, pos)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![height as i64, hash, time, txs.len() as i64, difficulty, reserve, pot, drought, pos],
         )
         .map_err(|e| format!("index block {height}: {e}"))?;
         for t in txs {
@@ -322,17 +367,31 @@ impl Indexer {
 
     // ---- query surface for the HTTP layer ----
 
+    /// Block reward = sum of the block's coinbase outputs (subsidy +
+    /// fees, before the 5% game-fund levy split the finder actually
+    /// receives). Exact: straight from the indexed UTXO set.
+    pub fn coinbase_total(&self, height: i64) -> Result<i64, String> {
+        self.db
+            .query_row(
+                "SELECT COALESCE(SUM(o.value),0) FROM outs o JOIN txs t ON t.txid = o.txid WHERE t.height = ?1 AND o.coinbase = 1",
+                [height],
+                |r| r.get(0),
+            )
+            .map_err(|e| format!("coinbase total: {e}"))
+    }
+
     pub fn block_by_height(&self, height: i64) -> Result<Option<serde_json::Value>, String> {
-        let row: Option<(String, i64, i64, f64, i64, i64, i64)> = self
+        type BlockRow = (String, i64, i64, f64, i64, i64, i64, i64);
+        let row: Option<BlockRow> = self
             .db
             .query_row(
-                "SELECT hash, time, ntx, difficulty, reserve, pot, drought FROM blocks WHERE height = ?1",
+                "SELECT hash, time, ntx, difficulty, reserve, pot, drought, pos FROM blocks WHERE height = ?1",
                 [height],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?)),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?)),
             )
             .map(Some)
             .unwrap_or(None);
-        let Some((hash, time, ntx, difficulty, reserve, pot, drought)) = row else {
+        let Some((hash, time, ntx, difficulty, reserve, pot, drought, pos)) = row else {
             return Ok(None);
         };
         let tip = self.height().unwrap_or(height);
@@ -340,6 +399,7 @@ impl Indexer {
             "height": height, "hash": hash, "time": time, "ntx": ntx,
             "confirmations": tip - height + 1,
             "difficulty": difficulty, "reserve": reserve, "pot": pot, "drought": drought,
+            "pos": pos != 0,
         })))
     }
 
@@ -456,7 +516,16 @@ impl Indexer {
         let mut history = Vec::new();
         for r in rows {
             let (txid, height): (String, i64) = r.map_err(|e| format!("addr history: {e}"))?;
-            history.push(serde_json::json!({"txid": txid, "height": height}));
+            // Net flow for this address in this tx: +received -sent.
+            let flow: i64 = self
+                .db
+                .query_row(
+                    "SELECT COALESCE((SELECT SUM(value) FROM outs WHERE txid = ?1 AND address = ?2),0) - COALESCE((SELECT SUM(value) FROM outs WHERE spent_by = ?1 AND address = ?2),0)",
+                    [&txid, &addr.to_string()],
+                    |rr| rr.get(0),
+                )
+                .unwrap_or(0);
+            history.push(serde_json::json!({"txid": txid, "height": height, "flow": flow}));
         }
         Ok(serde_json::json!({
             "address": addr, "balance": balance, "received": received,
@@ -565,6 +634,21 @@ impl Indexer {
             "potdivisor": ji.get("potdivisor").and_then(|v| v.as_i64()).unwrap_or(1000),
             "jackpotdivisor": ji.get("jackpotdivisor").and_then(|v| v.as_i64()).unwrap_or(100),
             "potdrought": ji.get("potdrought").and_then(|v| v.as_i64()).unwrap_or(4320),
+        }))
+    }
+
+    /// Live node staking state (not indexed — read through on each call).
+    /// PUBLIC surface: on/off + chain supply only. Operator-wallet shape
+    /// (eligible outputs/balance) is deliberately NOT published — it maps
+    /// an idle hot wallet (review fix 2026-10-18).
+    pub fn staking_state(&self) -> Result<serde_json::Value, String> {
+        let mining = self.rpc.call("getmininginfo", serde_json::json!([]))?;
+        let coins = |v: Option<&serde_json::Value>| -> i64 {
+            (v.and_then(|x| x.as_f64()).unwrap_or(0.0) * 100_000_000.0).round() as i64
+        };
+        Ok(serde_json::json!({
+            "staking_on": mining.get("staking").and_then(|v| v.as_bool()).unwrap_or(false),
+            "staking_supply": coins(mining.get("stakingsupply")),
         }))
     }
 }

@@ -18,6 +18,12 @@ pub struct JobTemplate {
     pub height: u64,
     pub pool_target: [u8; 32],
     pub net_target: [u8; 32],
+    /// Advisory league-pool overflow this height will generate (base
+    /// units): the jackpot-levy slice overflowing the reserve cap. The
+    /// pool credits it for EVERY new tip — mined locally or found
+    /// externally (staker/peer) — so Luckynode Draw budgets track the
+    /// full chain, not just pool finds.
+    pub league: u64,
 }
 
 /// Result of handing a network-meeting share to the chain.
@@ -63,6 +69,7 @@ pub struct MockProvider {
     fees: u64,
     reserve: u64,
     blocks: u64,
+    league: u64,
 }
 
 impl MockProvider {
@@ -75,7 +82,14 @@ impl MockProvider {
             fees,
             reserve: 0,
             blocks: 0,
+            league: 0,
         }
+    }
+
+    /// Prospective league overflow the mock's templates advertise (the
+    /// refresh loop records it per height for the tip-change reconcile).
+    pub fn set_league(&mut self, league: u64) {
+        self.league = league;
     }
 
     /// Instant-block harness: every share is a block (both targets max).
@@ -109,6 +123,7 @@ impl TemplateProvider for MockProvider {
             height: self.height,
             pool_target: self.pool_target,
             net_target: self.net_target,
+            league: self.league,
         }
     }
 

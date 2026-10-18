@@ -111,14 +111,24 @@ impl JobRegistry {
     }
 
     /// Pure evaluation of a submit: job lookup → cross-connection dupe
-    /// check → PoW check. Marks the work identity seen on every
-    /// *evaluable* submit (even stale or low-difficulty ones) so replays
-    /// are duplicates even when the first attempt was rejected.
+    /// peek → PoW check → dupe insert on acceptance.
+    ///
+    /// Two review fixes (2026-10-17):
+    /// - Only shares that MEET THE POOL TARGET enter the shared window. A
+    ///   flood of cheap garbage `(header, nonce)` lines used to evict real
+    ///   identities (then an old accepted share could replay for double
+    ///   credit) — rejects can no longer poison the window.
+    /// - `pow_hash` (memory-hard, ~1 ms) runs OUTSIDE the pool-wide dedupe
+    ///   lock: the mutex is taken only for the brief peek/insert, so one
+    ///   slow validation no longer serializes every connection.
+    ///
+    /// A simultaneous duplicate that races the insert resolves as
+    /// Duplicate — no double credit either way.
     pub fn evaluate(
         &mut self,
         job_id: &str,
         nonce_hex: &str,
-        dedupe: &mut Dedupe,
+        dedupe: &std::sync::Mutex<Dedupe>,
     ) -> (Verdict, Option<JobSubmit>) {
         let job = match self.jobs.get(job_id) {
             Some(j) => j.clone(),
@@ -131,7 +141,12 @@ impl JobRegistry {
             Some(n) => n,
             None => return (Verdict::BadNonce, None),
         };
-        if !dedupe.insert(&job.header, nonce) {
+        let id = work_identity(&job.header, nonce);
+        if dedupe
+            .lock()
+            .expect("dedupe")
+            .contains(&id)
+        {
             return (Verdict::Duplicate, None);
         }
         if is_stale {
@@ -142,6 +157,9 @@ impl JobRegistry {
             return (Verdict::LowDifficulty, None);
         }
         let block = meets_target(&out, &job.net_target);
+        if !dedupe.lock().expect("dedupe").insert(&job.header, nonce) {
+            return (Verdict::Duplicate, None);
+        }
         (
             Verdict::Accept { block },
             Some(JobSubmit { job, nonce, out }),
@@ -202,10 +220,15 @@ impl Dedupe {
         }
     }
 
-    /// Record a submission; `false` when this identity is already present
-    /// (a replay). Insertion is unconditional (also for stale jobs) so a
-    /// replayed share stays a duplicate even if its first attempt was
-    /// rejected.
+    /// Record an ACCEPTED submission; `false` when this identity is
+    /// already present (a replay). Only accepted shares enter the window
+    /// (review fix 2026-10-17) so cheap garbage cannot evict real
+    /// identities and replay an accepted share for double credit.
+    /// Cheap replay peek (no insertion).
+    pub fn contains(&self, id: &u64) -> bool {
+        self.seen.contains(id)
+    }
+
     pub fn insert(&mut self, header: &[u8], nonce: u64) -> bool {
         let id = work_identity(header, nonce);
         if !self.seen.insert(id) {
@@ -399,68 +422,72 @@ mod tests {
     #[test]
     fn accept_then_duplicate_then_stale() {
         let mut reg = JobRegistry::new(4);
-        let mut dedupe = Dedupe::new(16);
+        let dedupe = std::sync::Mutex::new(Dedupe::new(16));
         reg.issue(job("a"));
         reg.issue(job("b")); // same height: rotation, NOT staleness
-        let (v, s) = reg.evaluate("b", &render_nonce(0), &mut dedupe);
+        let (v, s) = reg.evaluate("b", &render_nonce(0), &dedupe);
         assert_eq!(v, Verdict::Accept { block: true }); // max targets: share + block
         assert!(s.is_some());
-        let (v, _) = reg.evaluate("b", &render_nonce(0), &mut dedupe);
+        let (v, _) = reg.evaluate("b", &render_nonce(0), &dedupe);
         assert_eq!(v, Verdict::Duplicate);
         // same-height rotation keeps the older job submittable (slow finds)
-        let (v, s) = reg.evaluate("a", &render_nonce(1), &mut dedupe);
+        let (v, s) = reg.evaluate("a", &render_nonce(1), &dedupe);
         assert_eq!(v, Verdict::Accept { block: true });
         assert!(s.is_some());
         // a NEW BLOCK (height+1) makes the old height stale
         let mut h2 = job("c");
         h2.height = 2;
         reg.issue(h2);
-        let (v, _) = reg.evaluate("a", &render_nonce(2), &mut dedupe);
+        let (v, _) = reg.evaluate("a", &render_nonce(2), &dedupe);
         assert_eq!(v, Verdict::Stale);
         // reorg to a LOWER height: the new job at that height is valid and
         // the abandoned-chain job is stale
         let mut h1b = job("d");
         h1b.height = 1;
         reg.issue(h1b);
-        let (v, s) = reg.evaluate("d", &render_nonce(3), &mut dedupe);
+        let (v, s) = reg.evaluate("d", &render_nonce(3), &dedupe);
         assert_eq!(v, Verdict::Accept { block: true });
         assert!(s.is_some());
         // the abandoned-chain job (height 2, now ABOVE the new tip) is not
         // marked stale: it may still be a valid tip+1 candidate, and the
         // node is the authority if it is not. Rejecting valid post-reorg
         // work is the worse failure.
-        let (v, _) = reg.evaluate("c", &render_nonce(4), &mut dedupe);
+        let (v, _) = reg.evaluate("c", &render_nonce(4), &dedupe);
         assert_eq!(v, Verdict::Accept { block: true });
-        let (v, _) = reg.evaluate("zzz", &render_nonce(0), &mut dedupe);
+        let (v, _) = reg.evaluate("zzz", &render_nonce(0), &dedupe);
         assert_eq!(v, Verdict::UnknownJob);
-        let (v, _) = reg.evaluate("b", "short", &mut dedupe);
+        let (v, _) = reg.evaluate("b", "short", &dedupe);
         assert_eq!(v, Verdict::BadNonce);
     }
 
     #[test]
     fn low_difficulty_rejects_without_block() {
         let mut reg = JobRegistry::new(4);
-        let mut dedupe = Dedupe::new(16);
+        let dedupe = std::sync::Mutex::new(Dedupe::new(16));
         let mut j = job("a");
         j.pool_target = [0x00u8; 32]; // nothing validates
         j.net_target = [0x00u8; 32];
         reg.issue(j);
-        let (v, s) = reg.evaluate("a", &render_nonce(0), &mut dedupe);
+        let (v, s) = reg.evaluate("a", &render_nonce(0), &dedupe);
         assert_eq!(v, Verdict::LowDifficulty);
         assert!(s.is_none());
-        // even a rejected share is marked seen: a replay is a duplicate
-        let (v, _) = reg.evaluate("a", &render_nonce(0), &mut dedupe);
-        assert_eq!(v, Verdict::Duplicate);
+        // Rejected shares do NOT enter the shared window (review fix
+        // 2026-10-17): a garbage flood can no longer evict real identities
+        // and set up a replay-for-double-credit. Re-evaluating junk is
+        // cheap-free-safe — it just rejects again.
+        let (v, _) = reg.evaluate("a", &render_nonce(0), &dedupe);
+        assert_eq!(v, Verdict::LowDifficulty);
+        assert_eq!(dedupe.lock().expect("dedupe").len(), 0);
     }
 
     #[test]
     fn registry_window_evicts_old_jobs() {
         let mut reg = JobRegistry::new(2);
-        let mut dedupe = Dedupe::new(16);
+        let dedupe = std::sync::Mutex::new(Dedupe::new(16));
         reg.issue(job("a"));
         reg.issue(job("b"));
         reg.issue(job("c"));
-        let (v, _) = reg.evaluate("a", &render_nonce(9), &mut dedupe);
+        let (v, _) = reg.evaluate("a", &render_nonce(9), &dedupe);
         assert_eq!(v, Verdict::UnknownJob); // evicted, not merely stale
     }
 
@@ -491,18 +518,18 @@ mod tests {
     fn duplicate_across_connections_shares_one_dedupe() {
         // Two connections = two JobRegistry instances with independent job
         // windows; the replay check is the shared Dedupe they both see.
-        let mut dedupe = Dedupe::new(16);
+        let dedupe = std::sync::Mutex::new(Dedupe::new(16));
         let mut reg_a = JobRegistry::new(4);
         let mut reg_b = JobRegistry::new(4);
         let j = job("a");
         reg_a.issue(j.clone());
         reg_b.issue(j);
-        let (va, _) = reg_a.evaluate("a", &render_nonce(5), &mut dedupe);
+        let (va, _) = reg_a.evaluate("a", &render_nonce(5), &dedupe);
         assert_eq!(va, Verdict::Accept { block: true });
-        let (vb, _) = reg_b.evaluate("a", &render_nonce(5), &mut dedupe);
+        let (vb, _) = reg_b.evaluate("a", &render_nonce(5), &dedupe);
         assert_eq!(vb, Verdict::Duplicate);
         // a different nonce on the fresh connection still validates
-        let (vc, _) = reg_b.evaluate("a", &render_nonce(6), &mut dedupe);
+        let (vc, _) = reg_b.evaluate("a", &render_nonce(6), &dedupe);
         assert_eq!(vc, Verdict::Accept { block: true });
     }
 

@@ -32,29 +32,33 @@ pub const CAP_PERMILLE: u64 = 250;
 /// Minimum sharers for the cap to bind.
 pub const CAP_MIN_MINERS: usize = 5;
 
-/// One miner's PPLNS-window shares. `miner` is an opaque pool-side id used
-/// only for deterministic tie-breaks.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// One miner's PPLNS-window shares. `miner` is the pool-side worker identity
+/// — the FULL name string (review fix 2026-10-17: money must never be keyed
+/// by a non-crypto 64-bit hash; FNV worker ids were forgeable).
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Share {
-    pub miner: u64,
+    pub miner: String,
     pub shares: u64,
 }
 
 /// Split `bonus` micros over `shares`. Returns `(miner, payout)` sorted by
 /// miner id ascending.
-pub fn split_jackpot(shares: &[Share], bonus: u64) -> Vec<(u64, u64)> {
-    let mut miners: Vec<(u64, u64)> = shares
-        .iter()
-        .filter(|s| s.shares > 0)
-        .map(|s| (s.miner, s.shares))
-        .collect();
+pub fn split_jackpot(shares: &[Share], bonus: u64) -> Vec<(String, u64)> {
+    // Sum duplicate miner rows first (a duplicate id used to double-pay).
+    let mut miners: Vec<(String, u64)> = Vec::new();
+    for s in shares.iter().filter(|s| s.shares > 0) {
+        match miners.iter_mut().find(|(id, _)| *id == s.miner) {
+            Some(row) => row.1 = row.1.saturating_add(s.shares),
+            None => miners.push((s.miner.clone(), s.shares)),
+        }
+    }
     if miners.is_empty() || bonus == 0 {
         return Vec::new();
     }
-    miners.sort_by_key(|(id, _)| *id);
+    miners.sort_by(|a, b| a.0.cmp(&b.0));
 
     if miners.len() == 1 {
-        return vec![(miners[0].0, bonus)];
+        return vec![(miners[0].0.clone(), bonus)];
     }
 
     let weights: Vec<u64> = miners.iter().map(|(_, s)| s.isqrt()).collect();
@@ -102,7 +106,7 @@ pub fn split_jackpot(shares: &[Share], bonus: u64) -> Vec<(u64, u64)> {
 
     // Floor each unlocked payout against the remaining pool.
     let mut payouts = vec![0u64; n];
-    let mut remainders: Vec<(u128, u64)> = Vec::new(); // (fractional numerator, miner id)
+    let mut remainders: Vec<(u128, String)> = Vec::new(); // (fractional numerator, miner id)
     let mut assigned = 0u64;
     for i in 0..n {
         if locked[i] {
@@ -114,7 +118,7 @@ pub fn split_jackpot(shares: &[Share], bonus: u64) -> Vec<(u64, u64)> {
         let den = remaining_weight as u128;
         payouts[i] = (num / den) as u64;
         assigned += payouts[i];
-        remainders.push((num % den, miners[i].0));
+        remainders.push((num % den, miners[i].0.clone()));
     }
     // Largest-remainder dust, miner-id tiebreak (miners already id-sorted).
     let mut dust = bonus - assigned;
@@ -135,7 +139,7 @@ pub fn split_jackpot(shares: &[Share], bonus: u64) -> Vec<(u64, u64)> {
     miners
         .iter()
         .zip(payouts)
-        .map(|((id, _), pay)| (*id, pay))
+        .map(|((id, _), pay)| (id.clone(), pay))
         .collect()
 }
 
@@ -143,7 +147,7 @@ pub fn split_jackpot(shares: &[Share], bonus: u64) -> Vec<(u64, u64)> {
 mod tests {
     use super::*;
 
-    fn total(payouts: &[(u64, u64)]) -> u64 {
+    fn total(payouts: &[(String, u64)]) -> u64 {
         payouts.iter().map(|(_, p)| p).sum()
     }
 
@@ -152,7 +156,7 @@ mod tests {
         assert!(split_jackpot(&[], 1_000_000).is_empty());
         assert!(split_jackpot(
             &[Share {
-                miner: 1,
+                miner: "m1".to_string(),
                 shares: 100
             }],
             0
@@ -162,29 +166,29 @@ mod tests {
         let out = split_jackpot(
             &[
                 Share {
-                    miner: 1,
+                    miner: "m1".to_string(),
                     shares: 0,
                 },
                 Share {
-                    miner: 2,
+                    miner: "m2".to_string(),
                     shares: 100,
                 },
             ],
             1000,
         );
-        assert_eq!(out, vec![(2, 1000)]);
+        assert_eq!(out, vec![("m2".to_string(), 1000)]);
     }
 
     #[test]
     fn single_miner_takes_all() {
         let out = split_jackpot(
             &[Share {
-                miner: 7,
+                miner: "m7".to_string(),
                 shares: 5,
             }],
             999_999,
         );
-        assert_eq!(out, vec![(7, 999_999)]);
+        assert_eq!(out, vec![("m7".to_string(), 999_999)]);
     }
 
     #[test]
@@ -192,23 +196,23 @@ mod tests {
         // A: w=1000, B..E: w=10 each. A uncapped = 96.15% -> capped 25%.
         let shares = vec![
             Share {
-                miner: 1,
+                miner: "m1".to_string(),
                 shares: 1_000_000,
             },
             Share {
-                miner: 2,
+                miner: "m2".to_string(),
                 shares: 100,
             },
             Share {
-                miner: 3,
+                miner: "m3".to_string(),
                 shares: 100,
             },
             Share {
-                miner: 4,
+                miner: "m4".to_string(),
                 shares: 100,
             },
             Share {
-                miner: 5,
+                miner: "m5".to_string(),
                 shares: 100,
             },
         ];
@@ -216,11 +220,11 @@ mod tests {
         assert_eq!(
             out,
             vec![
-                (1, 250_000),
-                (2, 187_500),
-                (3, 187_500),
-                (4, 187_500),
-                (5, 187_500)
+                ("m1".to_string(), 250_000),
+                ("m2".to_string(), 187_500),
+                ("m3".to_string(), 187_500),
+                ("m4".to_string(), 187_500),
+                ("m5".to_string(), 187_500)
             ]
         );
     }
@@ -229,7 +233,7 @@ mod tests {
     fn flat_five_way_split() {
         let shares: Vec<Share> = (1..=5)
             .map(|m| Share {
-                miner: m,
+                miner: format!("m{m}"),
                 shares: 400,
             })
             .collect();
@@ -237,11 +241,11 @@ mod tests {
         assert_eq!(
             out,
             vec![
-                (1, 200_000),
-                (2, 200_000),
-                (3, 200_000),
-                (4, 200_000),
-                (5, 200_000)
+                ("m1".to_string(), 200_000),
+                ("m2".to_string(), 200_000),
+                ("m3".to_string(), 200_000),
+                ("m4".to_string(), 200_000),
+                ("m5".to_string(), 200_000)
             ]
         );
     }
@@ -250,23 +254,23 @@ mod tests {
     fn dust_conserves_bonus_with_id_tiebreak() {
         let shares = vec![
             Share {
-                miner: 1,
+                miner: "m1".to_string(),
                 shares: 1_000_000,
             },
             Share {
-                miner: 2,
+                miner: "m2".to_string(),
                 shares: 100,
             },
             Share {
-                miner: 3,
+                miner: "m3".to_string(),
                 shares: 100,
             },
             Share {
-                miner: 4,
+                miner: "m4".to_string(),
                 shares: 100,
             },
             Share {
-                miner: 5,
+                miner: "m5".to_string(),
                 shares: 100,
             },
         ];
@@ -276,11 +280,11 @@ mod tests {
         assert_eq!(
             out,
             vec![
-                (1, 250_000),
-                (2, 187_501),
-                (3, 187_501),
-                (4, 187_501),
-                (5, 187_500)
+                ("m1".to_string(), 250_000),
+                ("m2".to_string(), 187_501),
+                ("m3".to_string(), 187_501),
+                ("m4".to_string(), 187_501),
+                ("m5".to_string(), 187_500)
             ]
         );
         assert_eq!(total(&out), 1_000_003);
@@ -293,12 +297,12 @@ mod tests {
         // floors of 1 plus dust 2 to the lowest ids.
         let shares: Vec<Share> = (1..=5)
             .map(|m| Share {
-                miner: m,
+                miner: format!("m{m}"),
                 shares: 400,
             })
             .collect();
         let out = split_jackpot(&shares, 7);
-        assert_eq!(out, vec![(1, 2), (2, 2), (3, 1), (4, 1), (5, 1)]);
+        assert_eq!(out, vec![("m1".to_string(), 2), ("m2".to_string(), 2), ("m3".to_string(), 1), ("m4".to_string(), 1), ("m5".to_string(), 1)]);
     }
 
     #[test]
@@ -307,20 +311,20 @@ mod tests {
         // bonus 160_000 -> exact 100k/50k/10k.
         let shares = vec![
             Share {
-                miner: 1,
+                miner: "m1".to_string(),
                 shares: 10_000,
             },
             Share {
-                miner: 2,
+                miner: "m2".to_string(),
                 shares: 2_500,
             },
             Share {
-                miner: 3,
+                miner: "m3".to_string(),
                 shares: 100,
             },
         ];
         let out = split_jackpot(&shares, 160_000);
-        assert_eq!(out, vec![(1, 100_000), (2, 50_000), (3, 10_000)]);
+        assert_eq!(out, vec![("m1".to_string(), 100_000), ("m2".to_string(), 50_000), ("m3".to_string(), 10_000)]);
     }
 
     #[test]
@@ -330,7 +334,7 @@ mod tests {
             for n in 1..=8usize {
                 let shares: Vec<Share> = (0..n)
                     .map(|i| Share {
-                        miner: i as u64,
+                        miner: format!("m{i}"),
                         shares: 1000 * (i as u64 + 1) * (i as u64 + 1),
                     })
                     .collect();

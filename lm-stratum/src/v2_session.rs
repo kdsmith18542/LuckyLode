@@ -243,8 +243,8 @@ pub fn authority_from_secret(secret: &[u8; 32]) -> Result<([u8; 32], [u8; 32]), 
 }
 
 /// 32 random bytes for an authority secret (`/dev/urandom`; a hashed
-/// time/pid fallback keeps non-unix builds working — testnet-grade, the same
-/// posture as the casino's seed generator).
+/// time/pid fallback keeps non-unix builds working — testnet-grade only,
+/// and fatal on unix would be better).
 fn random_secret() -> [u8; 32] {
     let mut key = [0u8; 32];
     #[cfg(unix)]

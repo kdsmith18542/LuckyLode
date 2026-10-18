@@ -54,6 +54,7 @@ impl TemplateProvider for GatedProvider {
             height: 1,
             pool_target: [0xffu8; 32],
             net_target: [0x00u8; 32],
+            league: 0,
         }
     }
     fn submit_block(&mut self, _header: &[u8], _height: u64, _nonce: u64) -> BlockOutcome {
@@ -144,6 +145,7 @@ fn background_refresh_publishes_new_templates() {
                 height: 1 + n / 5,
                 pool_target: [0xffu8; 32],
                 net_target: [0x00u8; 32],
+                league: 0,
             }
         }
         fn submit_block(&mut self, _h: &[u8], _ht: u64, _n: u64) -> BlockOutcome {
@@ -191,5 +193,70 @@ fn background_refresh_publishes_new_templates() {
         second.height
     );
 
+    server.stop();
+}
+
+/// League overflow on externally-found blocks: the pool must credit the
+/// node's per-height advisory for tips it did not mine (staker/peer
+/// finds). Before the fix only the accept path credited, so every
+/// externally-found block's overflow leaked and Luckynode Draw budgets
+/// understated the chain.
+#[test]
+fn external_finds_credit_league_without_pool_submit() {
+    struct ExternalChain {
+        tip: Arc<Mutex<u64>>,
+        per_height: u64,
+    }
+    impl TemplateProvider for ExternalChain {
+        fn current(&self) -> JobTemplate {
+            let tip = *self.tip.lock().expect("tip");
+            JobTemplate {
+                // Distinct bytes per tip so each advance publishes.
+                header: vec![tip as u8; 80],
+                height: tip + 1,
+                pool_target: [0xffu8; 32],
+                net_target: [0x00u8; 32],
+                league: self.per_height,
+            }
+        }
+        fn submit_block(&mut self, _h: &[u8], _ht: u64, _n: u64) -> BlockOutcome {
+            panic!("no submits in the external-find test");
+        }
+    }
+
+    const PER_HEIGHT: u64 = 876_192; // block-138 regtest shape
+    let tip = Arc::new(Mutex::new(100u64));
+    let server = spawn_server(
+        ExternalChain {
+            tip: Arc::clone(&tip),
+            per_height: PER_HEIGHT,
+        },
+        "127.0.0.1:0",
+        None,
+        None,
+        None,
+    )
+    .expect("bind");
+
+    // Advance the tip one height at a time (as the refresh loop would see
+    // it live) and require the exact advisory credit per height.
+    for step in 1..=3u64 {
+        *tip.lock().expect("tip") += 1;
+        let want = PER_HEIGHT * step;
+        let deadline = std::time::Instant::now() + Duration::from_secs(15);
+        loop {
+            if server.league_balance() == want {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "tip {} never credited: balance {} != {want}",
+                100 + step,
+                server.league_balance()
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+    assert_eq!(server.league_balance(), PER_HEIGHT * 3);
     server.stop();
 }

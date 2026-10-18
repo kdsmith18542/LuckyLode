@@ -12,6 +12,11 @@ pub const RATE_WINDOWS: [u64; 4] = [60, 600, 3_600, 86_400];
 pub const SHARE_LOG_CAP: usize = 100_000;
 /// A worker with no share in this long renders offline.
 pub const ONLINE_WINDOW_SECS: u64 = 300;
+/// Workers idle longer than this disappear from the workers display
+/// (dashboard/API). Purely cosmetic: they reappear the moment they
+/// authorize or submit again, and accounting (`names`, `miner_row`,
+/// payouts) is never filtered by it.
+pub const WORKER_HIDE_SECS: u64 = 6 * 3_600;
 
 #[derive(Debug, Clone, Default)]
 pub struct WorkerStat {
@@ -25,7 +30,7 @@ pub struct WorkerStat {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct WorkerSnapshot {
-    pub miner: u64,
+    pub miner: String,
     pub name: String,
     pub agent: String,
     pub shares: u64,
@@ -39,20 +44,21 @@ pub struct WorkerSnapshot {
 
 #[derive(Debug, Default)]
 pub struct WorkerStats {
-    workers: HashMap<u64, WorkerStat>,
+    workers: HashMap<String, WorkerStat>,
     /// (ts_secs, miner, work) accepted-share log; FIFO-capped and
     /// lazily trimmed past the longest window.
-    log: VecDeque<(u64, u64, u64)>,
+    log: VecDeque<(u64, String, u64)>,
 }
 
 impl WorkerStats {
     /// Register/refresh a worker at authorize time. `agent` comes from the
     /// connection's subscribe (empty when the client sent none).
-    pub fn authorized(&mut self, miner: u64, name: &str, agent: &str, now: u64) {
-        let w = self.workers.entry(miner).or_default();
-        if !name.is_empty() {
-            w.name = name.to_string();
-        }
+    pub fn authorized(&mut self, miner: &str, agent: &str, now: u64) {
+        // The worker NAME is the money identity (review fix 2026-10-17):
+        // it keys the payout ledger and doubles as the payout address, so
+        // a later authorize can never redirect someone else's balance.
+        let w = self.workers.entry(miner.to_string()).or_default();
+        w.name = miner.to_string();
         if !agent.is_empty() {
             w.agent = agent.to_string();
         }
@@ -63,14 +69,14 @@ impl WorkerStats {
     }
 
     /// Record an accepted share with its work (base-unit hashes).
-    pub fn accepted(&mut self, miner: u64, work: u64, now: u64) {
-        let w = self.workers.entry(miner).or_default();
+    pub fn accepted(&mut self, miner: &str, work: u64, now: u64) {
+        let w = self.workers.entry(miner.to_string()).or_default();
         w.shares += 1;
         if w.first_seen == 0 {
             w.first_seen = now;
         }
         w.last_seen = now;
-        self.log.push_back((now, miner, work));
+        self.log.push_back((now, miner.to_string(), work));
         while self.log.len() > SHARE_LOG_CAP {
             self.log.pop_front();
         }
@@ -87,22 +93,22 @@ impl WorkerStats {
     /// Persistable miner-id → worker-name map (payout destinations must
     /// survive a pool restart before miners reconnect).
     #[must_use]
-    pub fn names(&self) -> Vec<(u64, String)> {
-        let mut out: Vec<(u64, String)> = self
+    pub fn names(&self) -> Vec<(String, String)> {
+        let mut out: Vec<(String, String)> = self
             .workers
             .iter()
             .filter(|(_, w)| !w.name.is_empty())
-            .map(|(&id, w)| (id, w.name.clone()))
+            .map(|(id, w)| (id.clone(), w.name.clone()))
             .collect();
-        out.sort_by_key(|(id, _)| *id);
+        out.sort_by(|a, b| a.0.cmp(&b.0));
         out
     }
 
     /// Restore names from a persisted snapshot (offline until the miner
     /// reconnects; rates and shares start fresh by design).
-    pub fn restore_names(&mut self, names: &[(u64, String)]) {
+    pub fn restore_names(&mut self, names: &[(String, String)]) {
         for (miner, name) in names {
-            let w = self.workers.entry(*miner).or_default();
+            let w = self.workers.entry(miner.clone()).or_default();
             w.name = name.clone();
         }
     }
@@ -110,43 +116,56 @@ impl WorkerStats {
     /// Miner id currently registered under `name` (worker names double as
     /// payout addresses and are unique per live worker).
     #[must_use]
-    pub fn miner_for_name(&self, name: &str) -> Option<u64> {
+    pub fn miner_for_name(&self, name: &str) -> Option<String> {
         self.workers
             .iter()
             .find(|(_, w)| w.name == name)
-            .map(|(&id, _)| id)
+            .map(|(id, _)| id.clone())
     }
 
     /// Record a rejected share (duplicate/stale/bad): keeps liveness.
-    pub fn rejected(&mut self, miner: u64, now: u64) {
-        let w = self.workers.entry(miner).or_default();
+    pub fn rejected(&mut self, miner: &str, now: u64) {
+        let w = self.workers.entry(miner.to_string()).or_default();
         w.rejects += 1;
         w.last_seen = now;
     }
 
     /// Snapshot sorted by 10-minute hashrate (desc), miner id tiebreak.
     pub fn snapshot(&self, now: u64) -> Vec<WorkerSnapshot> {
-        let mut sums: HashMap<u64, [u64; 4]> = HashMap::new();
-        for &(ts, miner, work) in self.log.iter() {
-            let age = now.saturating_sub(ts);
-            let e = sums.entry(miner).or_insert([0; 4]);
+        self.snapshot_filtered(now, None)
+    }
+
+    /// Dashboard/API list: like [`Self::snapshot`], but workers idle past
+    /// [`WORKER_HIDE_SECS`] are omitted (they come back on their next
+    /// share or authorize). Accounting callers must use the unfiltered
+    /// snapshot so idle-but-owed miners stay payable.
+    pub fn snapshot_visible(&self, now: u64) -> Vec<WorkerSnapshot> {
+        self.snapshot_filtered(now, Some(WORKER_HIDE_SECS))
+    }
+
+    fn snapshot_filtered(&self, now: u64, hide_after: Option<u64>) -> Vec<WorkerSnapshot> {
+        let mut sums: HashMap<String, [u64; 4]> = HashMap::new();
+        for (ts, miner, work) in self.log.iter() {
+            let age = now.saturating_sub(*ts);
+            let e = sums.entry(miner.clone()).or_insert([0; 4]);
             for (i, window) in RATE_WINDOWS.iter().enumerate() {
                 if age <= *window {
-                    e[i] += work;
+                    e[i] += *work;
                 }
             }
         }
         let mut out: Vec<WorkerSnapshot> = self
             .workers
             .iter()
-            .map(|(&miner, w)| {
-                let sums = sums.get(&miner).copied().unwrap_or([0; 4]);
+            .filter(|(_, w)| hide_after.is_none_or(|h| now.saturating_sub(w.last_seen) <= h))
+            .map(|(miner, w)| {
+                let sums = sums.get(miner).copied().unwrap_or([0; 4]);
                 let mut rates = [0.0f64; 4];
                 for (i, window) in RATE_WINDOWS.iter().enumerate() {
                     rates[i] = sums[i] as f64 / *window as f64;
                 }
                 WorkerSnapshot {
-                    miner,
+                    miner: miner.clone(),
                     name: w.name.clone(),
                     agent: w.agent.clone(),
                     shares: w.shares,
@@ -179,9 +198,9 @@ mod tests {
     #[test]
     fn windows_sum_and_decay() {
         let mut s = WorkerStats::default();
-        s.authorized(7, "rig", "lm-miner/0.2 opencl", 1_000);
-        s.accepted(7, 60_000, 1_000);
-        s.accepted(7, 120_000, 1_030);
+        s.authorized("rig", "lm-miner/0.2 opencl", 1_000);
+        s.accepted("rig", 60_000, 1_000);
+        s.accepted("rig", 120_000, 1_030);
         // At t=1060: both shares are inside 60s? No — ages 60 and 30.
         // 60s window: age<=60 includes both (inclusive boundary).
         let snap = s.snapshot(1_060);
@@ -200,8 +219,8 @@ mod tests {
     #[test]
     fn offline_after_quiet_window() {
         let mut s = WorkerStats::default();
-        s.authorized(1, "a", "", 0);
-        s.accepted(1, 1, 100);
+        s.authorized("a", "", 0);
+        s.accepted("rig", 1, 100);
         assert!(!s.snapshot(100 + ONLINE_WINDOW_SECS).is_empty());
         assert!(!s.snapshot(100 + ONLINE_WINDOW_SECS + 1)[0].online);
     }
@@ -209,9 +228,9 @@ mod tests {
     #[test]
     fn old_entries_trimmed_past_longest_window() {
         let mut s = WorkerStats::default();
-        s.accepted(1, 10, 1_000);
+        s.accepted("rig", 10, 1_000);
         // A much later share drops the 24h-stale entry on insert.
-        s.accepted(1, 20, 1_000 + RATE_WINDOWS[3] + 5);
+        s.accepted("rig", 20, 1_000 + RATE_WINDOWS[3] + 5);
         let snap = s.snapshot(1_000 + RATE_WINDOWS[3] + 5);
         assert_eq!(snap[0].rates[3], 20.0 / 86_400.0);
     }
@@ -219,7 +238,7 @@ mod tests {
     #[test]
     fn rejects_track_liveness_without_work() {
         let mut s = WorkerStats::default();
-        s.rejected(9, 500);
+        s.rejected("rig", 500);
         let snap = s.snapshot(500);
         assert_eq!((snap[0].shares, snap[0].rejects), (0, 1));
         assert!(snap[0].online);
@@ -229,10 +248,46 @@ mod tests {
     #[test]
     fn snapshot_sorted_by_ten_minute_rate() {
         let mut s = WorkerStats::default();
-        s.accepted(1, 1_000, 0);
-        s.accepted(2, 10_000, 0);
+        s.accepted("m1", 1_000, 0);
+        s.accepted("m2", 10_000, 0);
         let snap = s.snapshot(0);
-        assert_eq!(snap[0].miner, 2);
-        assert_eq!(snap[1].miner, 1);
+        assert_eq!(snap[0].miner, "m2");
+        assert_eq!(snap[1].miner, "m1");
+    }
+
+    #[test]
+    fn stale_workers_hidden_from_visible_snapshot() {
+        let mut s = WorkerStats::default();
+        s.authorized("rig", "", 0);
+        s.accepted("rig", 1, 100);
+        let edge = 100 + WORKER_HIDE_SECS;
+        assert_eq!(s.snapshot_visible(edge).len(), 1, "visible at the 6h edge");
+        assert!(s.snapshot_visible(edge + 1).is_empty(), "hidden past 6h");
+        assert_eq!(s.snapshot(edge + 1).len(), 1, "accounting keeps it");
+        // Returning to mining brings it straight back.
+        s.accepted("rig", 2, edge + 5);
+        let snap = s.snapshot_visible(edge + 5);
+        assert_eq!(snap.len(), 1);
+        assert!(snap[0].online);
+    }
+
+    #[test]
+    fn authorizing_revives_hidden_worker() {
+        let mut s = WorkerStats::default();
+        s.authorized("rig", "", 0);
+        s.accepted("rig", 1, 100);
+        let t = 100 + WORKER_HIDE_SECS + 1;
+        assert!(s.snapshot_visible(t).is_empty());
+        s.authorized("rig", "", t);
+        assert_eq!(s.snapshot_visible(t).len(), 1);
+    }
+
+    #[test]
+    fn hidden_worker_keeps_its_name_for_payouts() {
+        let mut s = WorkerStats::default();
+        s.authorized("addr", "", 0);
+        let t = WORKER_HIDE_SECS + 1;
+        assert!(s.snapshot_visible(t).is_empty());
+        assert_eq!(s.names(), vec![("addr".to_string(), "addr".to_string())]);
     }
 }

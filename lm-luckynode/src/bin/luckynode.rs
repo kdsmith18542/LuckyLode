@@ -13,10 +13,11 @@ use std::net::TcpStream;
 use std::time::Duration;
 
 use lm_luckynode::notarize;
+use lm_luckynode::register_body;
 
 fn usage() -> ! {
     eprintln!(
-        "usage:\n  luckynode --pool HOST:PORT --address ADDR --key-file PATH [--heartbeat-interval SECS] [--register-only] [--once]"
+        "usage:\n  luckynode --pool HOST:PORT --address ADDR --key-file PATH --payout-key-hex <32-byte hex secret> [--heartbeat-interval SECS] [--register-only] [--once]"
     );
     std::process::exit(2);
 }
@@ -83,6 +84,7 @@ fn main() {
     let mut pool = String::new();
     let mut address = String::new();
     let mut key_file = String::new();
+    let mut payout_key_hex = String::new();
     let mut interval: u64 = 60;
     let mut register_only = false;
     let mut once = false;
@@ -100,6 +102,10 @@ fn main() {
             "--key-file" => {
                 i += 1;
                 key_file = args.get(i).unwrap_or_else(|| usage()).clone();
+            }
+            "--payout-key-hex" => {
+                i += 1;
+                payout_key_hex = args.get(i).unwrap_or_else(|| usage()).clone();
             }
             "--heartbeat-interval" => {
                 i += 1;
@@ -130,15 +136,37 @@ fn main() {
         use ed25519_dalek::SigningKey;
         notarize::hex(&SigningKey::from_bytes(&secret).verifying_key().to_bytes())
     };
+    // The pool proves payout-address ownership at registration: without the
+    // address's key there is no Sybil resistance.
+    let payout_secret = if payout_key_hex.is_empty() {
+        eprintln!(
+            "luckynode: this pool requires payout-address ownership proof.\n\
+             pass --payout-key-hex <32-byte hex secret of the payout address>, or register from the Lucky Lode wallet."
+        );
+        std::process::exit(1);
+    } else {
+        match notarize::unhex(&payout_key_hex) {
+            Ok(b) if b.len() == 32 => {
+                let mut s = [0u8; 32];
+                s.copy_from_slice(&b);
+                s
+            }
+            _ => {
+                eprintln!("luckynode: --payout-key-hex must be 64 hex chars (32 bytes)");
+                std::process::exit(1);
+            }
+        }
+    };
     println!("luckynode {id} -> pool {pool} (payout {address})");
 
-    let reg = serde_json::json!({
-        "id": id,
-        "address": address,
-        "pubkey": id,
-    })
-    .to_string();
-    match http(&pool, "POST", "/api/luckynode/register", Some(&reg)) {
+    let reg = match register_body(&id, &address, &payout_secret) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("luckynode: register sign failed: {e}");
+            std::process::exit(1);
+        }
+    };
+    match http(&pool, "POST", "/api/luckynode/register", Some(&reg.to_string())) {
         Ok(b) => println!("register: {b}"),
         Err(e) => {
             eprintln!("luckynode: register failed: {e}");
@@ -166,9 +194,12 @@ fn main() {
                 eprintln!("luckynode: heartbeat failed: {e}");
                 // Pool restarted (registry wiped): re-register, then retry.
                 if e.contains("unknown node") {
-                    match http(&pool, "POST", "/api/luckynode/register", Some(&reg)) {
-                        Ok(b) => println!("re-register: {b}"),
-                        Err(e) => eprintln!("luckynode: re-register failed: {e}"),
+                    match register_body(&id, &address, &payout_secret) {
+                        Ok(reg) => match http(&pool, "POST", "/api/luckynode/register", Some(&reg.to_string())) {
+                            Ok(b) => println!("re-register: {b}"),
+                            Err(e) => eprintln!("luckynode: re-register failed: {e}"),
+                        },
+                        Err(e) => eprintln!("luckynode: re-register sign failed: {e}"),
                     }
                 }
             }

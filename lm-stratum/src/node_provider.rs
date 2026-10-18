@@ -507,6 +507,10 @@ pub fn parse_gbt(gbt: &serde_json::Value) -> Result<(JobTemplate, Vec<Vec<u8>>),
             height,
             pool_target: share_target,
             net_target: target,
+            // Prospective league overflow for this height, from the
+            // node's own advisory — the pool credits it when the height
+            // lands, whoever found the block.
+            league: parse_league_overflow(gbt),
         },
         txs,
     ))
@@ -1072,6 +1076,10 @@ mod tests {
         let mut gbt2 = gbt.clone();
         gbt2["leagueoverflow"] = serde_json::json!(50794u64);
         assert_eq!(parse_league_overflow(&gbt2), 50794);
+        // ... and into the template, where the refresh loop records it
+        // per height for the tip-change reconcile.
+        let (tpl, ..) = build_template(&gbt2, true, true, 100, 1000).expect("tpl");
+        assert_eq!(tpl.league, 50794);
     }
 
     #[test]
