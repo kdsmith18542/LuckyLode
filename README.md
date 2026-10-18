@@ -3,9 +3,8 @@
 [![CI](https://github.com/kdsmith18542/LuckyLode/actions/workflows/ci.yml/badge.svg)](https://github.com/kdsmith18542/LuckyLode/actions/workflows/ci.yml)
 [![License: GPL-3.0](https://img.shields.io/badge/License-GPL--3.0--only-blue.svg)](LICENSE)
 
-A fair-launch, hybrid PoW/PoS mineable coin for the hardware people
-already own — phones, miniPCs, laptops old and new — with mining
-designed as a game you keep playing. Website: **<https://luckylode.cc>**
+A fair-launch, hybrid PoW/PoS mineable coin with masternodes for the lower end hardware and gpus — miniPCs, laptops old and new — with mining
+designed as a exciting Lcuky adventure. Website: **<https://luckylode.cc>**
 
 New here? Read [the coin at a glance](docs/00-lucky-lode-at-a-glance.md)
 — supply, consensus, the game layer, and current status on one page.
