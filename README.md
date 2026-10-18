@@ -4,7 +4,7 @@
 [![License: GPL-3.0](https://img.shields.io/badge/License-GPL--3.0--only-blue.svg)](LICENSE)
 
 A fair-launch, hybrid PoW/PoS mineable coin with masternodes for the lower end hardware and gpus — miniPCs, laptops old and new — with mining
-designed as a exciting Lcuky adventure. Website: **<https://luckylode.cc>**
+designed as a exciting lucky crypto adventure. Website: **<https://luckylode.cc>**
 
 New here? Read [the coin at a glance](docs/00-lucky-lode-at-a-glance.md)
 — supply, consensus, the game layer, and current status on one page.
