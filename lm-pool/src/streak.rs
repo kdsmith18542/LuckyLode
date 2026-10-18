@@ -121,6 +121,27 @@ impl Comeback {
     }
 }
 
+/// Longest consecutive-day run in a sorted unique day list (the "best
+/// streak" tile — a miner can be off-streak now and still hold a
+/// record).
+#[must_use]
+pub fn best_streak(days: &[u64]) -> u32 {
+    if days.is_empty() {
+        return 0;
+    }
+    let mut best = 1u32;
+    let mut run = 1u32;
+    for i in 1..days.len() {
+        if days[i] == days[i - 1] + 1 {
+            run += 1;
+            best = best.max(run);
+        } else {
+            run = 1;
+        }
+    }
+    best.max(run)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -230,3 +251,4 @@ mod tests {
         assert_eq!(c.weight_for(d(210)), 100); // another long lapse
     }
 }
+

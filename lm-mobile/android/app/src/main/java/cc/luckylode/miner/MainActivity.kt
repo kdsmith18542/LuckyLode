@@ -284,7 +284,16 @@ class MainActivity : Activity() {
                     .map { d.optJSONArray("workers").optJSONObject(it) }
                     .firstOrNull { it?.optString("name") == worker }
                 if (me != null) {
-                    sb.append("pool-side: ${me.optLong("shares")} shares · ${me.optLong("rejects")} rejected\n")
+                    val streak = me.optInt("streak", 0)
+                    val best = me.optInt("best_streak", 0)
+                    sb.append("pool-side: ${me.optLong("shares")} shares · ${me.optLong("rejects")} rejected")
+                    if (streak > 0) {
+                        sb.append(" · streak ${streak}d")
+                        if (best > streak) sb.append(" (best $best)")
+                        sb.append("\n")
+                    } else {
+                        sb.append(" · no active streak\n")
+                    }
                 }
                 sb.append("pool: ${pool.optInt("workers")} workers · ${pool.optLong("shares")} shares\n")
             }

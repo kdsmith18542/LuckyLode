@@ -25,7 +25,8 @@
 
 use crate::league::{classify, DeviceClass};
 use crate::streak::{
-    current_streak, day_index, streak_bonus_per_mille, Comeback, DAY_SECS, OVERNIGHT_PERMILLE,
+    best_streak, current_streak, day_index, streak_bonus_per_mille, Comeback, DAY_SECS,
+    OVERNIGHT_PERMILLE,
 };
 use lm_rewards::{split_jackpot, Share};
 use std::collections::{HashMap, VecDeque};
@@ -517,6 +518,42 @@ mod tests {
         assert_eq!(board[0].class, DeviceClass::Farm); // …but flagged
     }
 
+
+    #[test]
+    fn streaks_serve_full_history_without_a_window() {
+        let mut l = Ledger::new();
+        // m1: 5 consecutive days, then a 3-day gap, then active today —
+        // current streak 1, best 5, 6 active days total.
+        for d in 10..=14u64 {
+            l.submit(rec("m1", d, 100));
+        }
+        l.submit(rec("m1", 18, 100));
+        // m2: same days as m1's first run but silent since — the 48 h
+        // gap rule zeroes the current streak; the record survives.
+        for d in 10..=13u64 {
+            l.submit(rec("m2", d, 100));
+        }
+        let out = l.streaks(18 * D + 100);
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].miner, "m1");
+        assert_eq!((out[0].days_active, out[0].streak_days, out[0].best_streak_days), (6, 1, 5));
+        assert_eq!(out[1].miner, "m2");
+        assert_eq!((out[1].days_active, out[1].streak_days, out[1].best_streak_days), (4, 0, 4));
+    }
+
+    #[test]
+    fn streaks_survive_retention_pruning() {
+        let mut l = Ledger::new();
+        for d in 1..=80u64 {
+            l.submit(rec("m1", d, 100));
+        }
+        assert!(l.raw_share_count() <= 34, "precondition: raw log pruned");
+        let out = l.streaks(80 * D + 100);
+        assert_eq!(out[0].days_active, 80);
+        assert_eq!(out[0].streak_days, 80);
+        assert_eq!(out[0].best_streak_days, 80);
+    }
+
     #[test]
     fn retention_bounds_raw_shares_but_keeps_streaks() {
         let mut l = Ledger::new();
@@ -577,5 +614,42 @@ mod tests {
         );
         // …while the ancient ledger's raw log stayed bounded.
         assert!(with_ancient.raw_share_count() <= 2 * 34);
+    }
+}
+
+/// Full-history streak state per miner — the compacted day rollup only,
+/// no raw-share scan and no window: O(miners), so the public API can
+/// serve it on every stats poll. Streaks survive raw-log pruning by
+/// construction (the rollup is kept forever).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StreakState {
+    pub miner: String,
+    /// Active UTC days over the miner's full history.
+    pub days_active: u32,
+    /// Current streak (0 once the 48 h gap rule fires).
+    pub streak_days: u32,
+    /// Longest consecutive-day run ever recorded.
+    pub best_streak_days: u32,
+}
+
+impl Ledger {
+    /// Streak state for every miner the rollup knows (sorted by miner).
+    #[must_use]
+    pub fn streaks(&self, now_ts: u64) -> Vec<StreakState> {
+        let mut out: Vec<StreakState> = self
+            .days
+            .iter()
+            .map(|(miner, days)| {
+                let last_ts = self.last_seen.get(miner).copied().unwrap_or(0);
+                StreakState {
+                    miner: miner.clone(),
+                    days_active: days.len() as u32,
+                    streak_days: current_streak(days, last_ts, now_ts),
+                    best_streak_days: best_streak(days),
+                }
+            })
+            .collect();
+        out.sort_by(|a, b| a.miner.cmp(&b.miner));
+        out
     }
 }

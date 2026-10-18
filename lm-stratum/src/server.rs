@@ -1178,6 +1178,12 @@ impl<P: TemplateProvider + 'static> RunningServer<P> {
         self.shared.ledger.lock().expect("ledger").league_balance()
     }
 
+    /// Full-history streak state per miner (doc 07 §7.4 dashboard tile):
+    /// the compacted day rollup only — O(miners), safe on every stats poll.
+    pub fn streaks(&self, now: u64) -> Vec<lm_pool::ledger::StreakState> {
+        self.shared.ledger.lock().expect("ledger").streaks(now)
+    }
+
     /// Spend from the league prize pool (draw payments); returns what was
     /// actually debited, capped at the credited balance.
     pub fn debit_league(&self, amount: u64) -> u64 {

@@ -86,7 +86,7 @@ footer{margin-top:26px;color:var(--dim);font-size:12px;line-height:1.5}
 <div class="grid" id="cards"></div>
 <h2>Workers</h2>
 <input type="search" id="wfilter" placeholder="filter by worker / payout address">
-<table><thead><tr><th></th><th>worker</th><th>device</th><th>60s</th><th>10m</th><th>1h</th><th>24h</th><th>shares</th><th>rejects</th><th>last share</th></tr></thead><tbody id="workers"></tbody></table>
+<table><thead><tr><th></th><th>worker</th><th>device</th><th>60s</th><th>10m</th><th>1h</th><th>24h</th><th>shares</th><th>streak</th><th>rejects</th><th>last share</th></tr></thead><tbody id="workers"></tbody></table>
 <h2>Blocks</h2>
 <table><thead><tr><th>height</th><th>finder</th><th>block reward</th><th>jackpot bonus</th><th>pot splash</th><th>league inflow</th><th>pplns payouts</th></tr></thead><tbody id="blocks"></tbody></table>
 <h2>Balances due</h2>
@@ -218,7 +218,7 @@ async function tick(){
     : '';
   document.getElementById('updated').textContent='updated '+new Date().toLocaleTimeString();
   document.getElementById('workers').innerHTML=(j.workers||[]).map(w=>
-    `<tr class="${w.online?'':'off'}"><td><span class="dot"></span></td><td>${esc(w.name||w.miner)}</td><td>${esc(device(w.agent))}</td><td>${hs(w.rate60)}</td><td>${hs(w.rate10m)}</td><td>${hs(w.rate1h)}</td><td>${hs(w.rate24h)}</td><td>${esc(w.shares)}</td><td>${esc(w.rejects)}</td><td>${ago(w.last_seen)}</td></tr>`).join('')
+    `<tr class="${w.online?'':'off'}"><td><span class="dot"></span></td><td>${esc(w.name||w.miner)}</td><td>${esc(device(w.agent))}</td><td>${hs(w.rate60)}</td><td>${hs(w.rate10m)}</td><td>${hs(w.rate1h)}</td><td>${hs(w.rate24h)}</td><td>${esc(w.shares)}</td><td>${w.streak?`${esc(w.streak)}d${w.best_streak>w.streak?` <span class="dim">(best ${esc(w.best_streak)})</span>`:''}`:'—'}</td><td>${esc(w.rejects)}</td><td>${ago(w.last_seen)}</td></tr>`).join('')
     || '<tr><td colspan="10">no workers yet</td></tr>';
   applyWF();
   document.getElementById('blocks').innerHTML=(j.last_blocks||[]).map(b=>
@@ -307,6 +307,12 @@ fn stats_json<P: TemplateProvider + 'static>(
     let workers = server.workers(now);
     // miner id -> payout address (persisted names), for block finders.
     let names_map: HashMap<String, String> = server.names().into_iter().collect();
+    // Full-history streak state (day rollup; survives raw-log pruning).
+    let streak_map: HashMap<String, lm_pool::ledger::StreakState> = server
+        .streaks(now)
+        .into_iter()
+        .map(|s| (s.miner.clone(), s))
+        .collect();
     let online = workers.iter().filter(|w| w.online).count();
     let mut totals = [0.0f64; 4];
     for w in &workers {
@@ -317,6 +323,13 @@ fn stats_json<P: TemplateProvider + 'static>(
     let workers_json: Vec<serde_json::Value> = workers
         .iter()
         .map(|w| {
+            // Streak tiles come from the full-history day rollup (0 when
+            // the miner has no streak or it lapsed via the 48 h rule).
+            let st = streak_map.get(&w.miner);
+            let (days, streak, best) = match st {
+                Some(s) => (s.days_active, s.streak_days, s.best_streak_days),
+                None => (0, 0, 0),
+            };
             serde_json::json!({
                 "miner": w.miner,
                 "name": w.name,
@@ -325,6 +338,9 @@ fn stats_json<P: TemplateProvider + 'static>(
                 "rejects": w.rejects,
                 "last_seen": w.last_seen,
                 "online": w.online,
+                "days_active": days,
+                "streak": streak,
+                "best_streak": best,
                 "rate60": w.rates[0],
                 "rate10m": w.rates[1],
                 "rate1h": w.rates[2],
