@@ -1,0 +1,15 @@
+[package]
+name = "lm-mobile"
+version = "0.1.0"
+edition = "2021"
+description = "JNI facade for the Lucky Lode Android miner: the frozen thermal scheduler (lm-sched), LuckyHash probes, and the pool mining runtime — one Rust core, shared vectors with the desktop stack"
+license = "GPL-3.0-only"
+
+[lib]
+crate-type = ["cdylib", "lib"]
+
+[dependencies]
+lm-sched = { path = "../lm-sched" }
+lm-pow = { path = "../lm-pow" }
+jni = "0.21"
+

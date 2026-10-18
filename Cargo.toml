@@ -1,3 +1,3 @@
 [workspace]
-members = ["lm-pow", "lm-rewards", "lm-sched", "lm-miner", "lm-pool", "lm-stratum", "lm-explorer", "lm-luckynode", "lm-sync", "lm-keys"]
+members = ["lm-pow", "lm-rewards", "lm-sched", "lm-miner", "lm-pool", "lm-stratum", "lm-explorer", "lm-luckynode", "lm-sync", "lm-keys", "lm-mobile"]
 resolver = "2"
