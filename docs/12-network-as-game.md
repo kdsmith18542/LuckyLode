@@ -7,14 +7,11 @@ is frozen; every mechanic carries a funding rule and a legal gate.
 
 ## 12.1 The one law: variance-dressed labor, never wagering
 
-> **Update 2026-10-14 (owner-directed):** the project now operates a
-> first-party LKYL casino at `luckylode.cc/casino` (slots, small wagers, wins
-> in LKYL), specified in [doc 14](14-casino-and-slots.md). That product is an
-> **explicit exception** to §12.1/§12.6 and does *not* change the law below for
-> the network-as-game mechanics in this doc (jackpots, pots, leagues, rebate
-> lottery, draws), which remain no-wager. §12.6's "never casino" branding rule
-> applies to network surfaces, not to the casino section, which is age/geo
-> gated and separated.
+> **Update 2026-10-17 (owner-directed):** the first-party casino that was
+> briefly an exception to §12.1/§12.6 is **withdrawn** (doc 14 deleted —
+> tech-debt and risk outweighed the upside). The no-wager law is absolute
+> again: nothing in the product lets a player lose coins to the game.
+> §12.6's "never casino" branding rule now covers every surface.
 
 Every mechanic in this doc obeys:
 
@@ -109,19 +106,17 @@ Bring doc 11 §11.6 together with §12.3:
   presentation parameters.
 - **P3+ (deep version): Luckynodes** — bonded staking nodes that
   notarize draws, replicate verification, and hold the game layer honest.
-  The casino's dealers are bonded by the same PoS that secures the chain:
-  misbehave and the bond burns; behave and the fun-layer budget pays you.
-  Nobody has shipped "the game's trust anchors are stake-bonded luckynodes"
-  as a first-class role. That is the unique thing — and it exists *because*
-  of the hybrid consensus decision (2026-10-11), not despite it.
+  Bonded by the same PoS that secures the chain: misbehave and the bond
+  burns; behave and the fun-layer budget pays you. Nobody has shipped
+  "the game's trust anchors are stake-bonded luckynodes" as a first-class
+  role. That is the unique thing — and it exists *because* of the hybrid
+  consensus decision (2026-10-11), not despite it.
 
 ## 12.6 Legal & platform posture (honest, non-negotiable gates)
 
-> **Exception (2026-10-14):** the first-party casino (doc 14) *is* wagering and
-> therefore **must** carry its own gambling licence, 18+/geo gating, KYC
-> thresholds and responsible-gaming surfaces before real value is enabled
-> (testnet play-money first). The gates below still govern every network-side
-> game mechanic.
+> **Withdrawn 2026-10-17:** the first-party casino exception (doc 14) is
+> gone. The gates below govern **every** surface — there is no wagering
+> product.
 
 - No-wager design targets prize-competition framing, but **chance-based
   prizes are still regulated in many jurisdictions**; skill/chance mixes

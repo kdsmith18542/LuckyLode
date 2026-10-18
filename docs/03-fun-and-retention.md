@@ -5,12 +5,11 @@ This doc designs mining as a **game with seasons, leagues, streaks, and
 jackpots** — most of it *without* consensus changes (pool-side + sidecar),
 so it ships fast and iterates faster.
 
-> **Update 2026-10-14 (owner-directed):** the project now also ships a
-> first-party **casino** at `luckylode.cc/casino` where LKYL is wagered in
-> themed slots. That is a deliberate, scoped exception to the "no-wager"
-> posture this doc and docs 12 assumed; it is specified in
-> [doc 14](14-casino-and-slots.md). Mining leagues/streaks/jackpots here are
-> unchanged and remain consensus-neutral.
+> **Update 2026-10-17 (owner-directed):** the first-party casino that was
+> briefly specified in doc 14 is **withdrawn** — tech-debt and risk outweigh
+> the upside, and the crate/deployment are removed. The "no-wager" posture of
+> this doc stands absolute again: the excitement layer is mining leagues,
+> streaks, jackpots, the Lucky Pot, and the Luckynode Draw only.
 
 ## 3.1 Design principles
 
