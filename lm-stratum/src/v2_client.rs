@@ -281,8 +281,7 @@ mod tests {
         assert_eq!(err.as_deref(), Some("duplicate share"));
         // Money moved through the shared ledger.
         assert_eq!(server.blocks().len(), 1);
-        let miner = crate::v1::worker_id("worker-v2");
-        assert!(server.paid(miner) + server.balances().iter().map(|(_, o)| o).sum::<u64>() > 0);
+        assert!(server.paid("worker-v2") + server.balances().iter().map(|(_, o)| o).sum::<u64>() > 0);
         server.stop();
     }
 

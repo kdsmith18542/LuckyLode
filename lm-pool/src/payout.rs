@@ -20,8 +20,8 @@ pub const COIN_BASE: u64 = 100_000_000;
 
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct PayoutLedger {
-    owed: HashMap<u64, u64>,
-    paid: HashMap<u64, u64>,
+    owed: HashMap<String, u64>,
+    paid: HashMap<String, u64>,
     fees: u64,
 }
 
@@ -34,27 +34,27 @@ impl PayoutLedger {
     pub fn credit_block(
         &mut self,
         total: u64,
-        weights: &[(u64, u64)],
+        weights: &[(String, u64)],
         fee_permyriad: u16,
     ) {
         let fee = total as u128 * u64::from(fee_permyriad) as u128 / FEE_DENOM_PERMYRIAD as u128;
         self.fees = self.fees.saturating_add(fee as u64);
         let distributable = total.saturating_sub(fee as u64);
-        let mut rows: Vec<(u64, u64)> = weights.to_vec();
-        rows.sort_by_key(|(id, _)| *id);
+        let mut rows: Vec<(String, u64)> = weights.to_vec();
+        rows.sort_by(|a, b| a.0.cmp(&b.0));
         let weight_total: u128 = rows.iter().map(|(_, w)| *w as u128).sum();
         if rows.is_empty() || weight_total == 0 || distributable == 0 {
             self.fees = self.fees.saturating_add(distributable);
             return;
         }
         let mut pays = vec![0u64; rows.len()];
-        let mut fracs: Vec<(u128, u64)> = Vec::new();
+        let mut fracs: Vec<(u128, String)> = Vec::new();
         let mut assigned = 0u64;
         for (i, (_, w)) in rows.iter().enumerate() {
             let num = distributable as u128 * *w as u128;
             pays[i] = (num / weight_total) as u64;
             assigned += pays[i];
-            fracs.push((num % weight_total, rows[i].0));
+            fracs.push((num % weight_total, rows[i].0.clone()));
         }
         fracs.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
         let mut dust = distributable - assigned;
@@ -67,16 +67,16 @@ impl PayoutLedger {
             dust -= 1;
         }
         for ((id, _), pay) in rows.iter().zip(pays) {
-            let e = self.owed.entry(*id).or_default();
+            let e = self.owed.entry(id.clone()).or_default();
             *e = e.saturating_add(pay);
         }
     }
 
     /// Credit an already-split distribution verbatim (jackpot/pot/league
     /// splits from the pool's own rules).
-    pub fn credit_split(&mut self, payouts: &[(u64, u64)]) {
+    pub fn credit_split(&mut self, payouts: &[(String, u64)]) {
         for (id, amount) in payouts {
-            let e = self.owed.entry(*id).or_default();
+            let e = self.owed.entry(id.clone()).or_default();
             *e = e.saturating_add(*amount);
         }
     }
@@ -85,11 +85,11 @@ impl PayoutLedger {
     /// balance (the reference-pool dev-fee slice, docs/04 §4.2). Capped by
     /// what's actually in the pot — a zero pool fee means zero dev accrual,
     /// never a silent miner haircut. Returns the amount moved.
-    pub fn allocate_dev(&mut self, dev_id: u64, amount: u64) -> u64 {
+    pub fn allocate_dev(&mut self, dev_id: &str, amount: u64) -> u64 {
         let take = amount.min(self.fees);
         if take > 0 {
             self.fees -= take;
-            let e = self.owed.entry(dev_id).or_default();
+            let e = self.owed.entry(dev_id.to_string()).or_default();
             *e = e.saturating_add(take);
         }
         take
@@ -97,14 +97,14 @@ impl PayoutLedger {
 
     /// Currently owed to a miner.
     #[must_use]
-    pub fn owed(&self, miner: u64) -> u64 {
-        self.owed.get(&miner).copied().unwrap_or(0)
+    pub fn owed(&self, miner: &str) -> u64 {
+        self.owed.get(miner).copied().unwrap_or(0)
     }
 
     /// Lifetime paid out to a miner (via [`PayoutLedger::record_paid`]).
     #[must_use]
-    pub fn paid(&self, miner: u64) -> u64 {
-        self.paid.get(&miner).copied().unwrap_or(0)
+    pub fn paid(&self, miner: &str) -> u64 {
+        self.paid.get(miner).copied().unwrap_or(0)
     }
 
     /// Lifetime pool-fee take.
@@ -129,24 +129,24 @@ impl PayoutLedger {
 
     /// Balances at/above `threshold`, miner id ascending (payout candidates).
     #[must_use]
-    pub fn select_due(&self, threshold: u64) -> Vec<(u64, u64)> {
-        let mut due: Vec<(u64, u64)> = self
+    pub fn select_due(&self, threshold: u64) -> Vec<(String, u64)> {
+        let mut due: Vec<(String, u64)> = self
             .owed
             .iter()
             .filter(|(_, &v)| v >= threshold)
-            .map(|(&id, &v)| (id, v))
+            .map(|(id, &v)| (id.clone(), v))
             .collect();
-        due.sort_by_key(|(id, _)| *id);
+        due.sort_by(|a, b| a.0.cmp(&b.0));
         due
     }
 
     /// Debit after a successful on-chain send (nothing debits on dry runs
     /// or send failures — balances only move when money does).
-    pub fn record_paid(&mut self, miner: u64, amount: u64) {
-        let owed = self.owed.get(&miner).copied().unwrap_or(0);
+    pub fn record_paid(&mut self, miner: &str, amount: u64) {
+        let owed = self.owed.get(miner).copied().unwrap_or(0);
         let pay = amount.min(owed);
-        self.owed.insert(miner, owed - pay);
-        let e = self.paid.entry(miner).or_default();
+        self.owed.insert(miner.to_string(), owed - pay);
+        let e = self.paid.entry(miner.to_string()).or_default();
         *e = e.saturating_add(pay);
     }
 }
@@ -182,27 +182,27 @@ mod tests {
         let mut p = PayoutLedger::default();
         // 1:400, 2:200 → floors 667/333, dust 1 to the largest
         // remainder (miner 2: 400 vs miner 1: 200).
-        p.credit_block(1001, &[(1, 400), (2, 200)], 0);
-        assert_eq!(p.owed(1), 667);
-        assert_eq!(p.owed(2), 334);
-        assert_eq!(p.owed(1) + p.owed(2) + p.fees(), 1001);
+        p.credit_block(1001, &[("m1".to_string(), 400), ("m2".to_string(), 200)], 0);
+        assert_eq!(p.owed("m1"), 667);
+        assert_eq!(p.owed("m2"), 334);
+        assert_eq!(p.owed("m1") + p.owed("m2") + p.fees(), 1001);
         // A second block accumulates; miner order is id-sorted.
-        p.credit_block(300, &[(2, 1)], 0);
-        assert_eq!(p.owed(2), 634);
+        p.credit_block(300, &[("m2".to_string(), 1)], 0);
+        assert_eq!(p.owed("m2"), 634);
         // Conservation against the conservation sweep below covers totals.
     }
 
     #[test]
     fn fee_skimmed_first_floored() {
         let mut p = PayoutLedger::default();
-        p.credit_block(10_000, &[(1, 1)], 100); // 1% fee
+        p.credit_block(10_000, &[("m1".to_string(), 1)], 100); // 1% fee
         assert_eq!(p.fees(), 100);
-        assert_eq!(p.owed(1), 9_900);
+        assert_eq!(p.owed("m1"), 9_900);
         // Empty weights / zero value: everything lands in fees, nothing lost.
         p.credit_block(500, &[], 0);
         assert_eq!(p.fees(), 600);
-        p.credit_block(0, &[(1, 1)], 0);
-        assert_eq!(p.owed(1), 9_900);
+        p.credit_block(0, &[("m1".to_string(), 1)], 0);
+        assert_eq!(p.owed("m1"), 9_900);
     }
 
     #[test]
@@ -210,13 +210,13 @@ mod tests {
         // Pool restart persistence (--state-file): the exact ledger must
         // come back byte-for-byte.
         let mut p = PayoutLedger::default();
-        p.credit_block(7_000_000, &[(1, 3), (2, 1)], 500);
-        p.record_paid(1, 1_000_000);
+        p.credit_block(7_000_000, &[("m1".to_string(), 3), ("m2".to_string(), 1)], 500);
+        p.record_paid("m1", 1_000_000);
         let json = serde_json::to_string(&p).expect("serialize");
         let back: PayoutLedger = serde_json::from_str(&json).expect("deserialize");
-        assert_eq!(back.owed(1), p.owed(1));
-        assert_eq!(back.owed(2), p.owed(2));
-        assert_eq!(back.paid(1), p.paid(1));
+        assert_eq!(back.owed("m1"), p.owed("m1"));
+        assert_eq!(back.owed("m2"), p.owed("m2"));
+        assert_eq!(back.paid("m1"), p.paid("m1"));
         assert_eq!(back.fees(), p.fees());
         assert_eq!(back.totals(), p.totals());
     }
@@ -224,16 +224,16 @@ mod tests {
     #[test]
     fn totals_reconcile_credits_owed_paid_and_fees() {
         let mut p = PayoutLedger::default();
-        p.credit_block(1_000_000, &[(1, 1), (2, 1)], 0);
-        p.credit_block(500_000, &[(1, 1)], 1_000); // 10% fee
-        p.record_paid(1, 600_000);
+        p.credit_block(1_000_000, &[("m1".to_string(), 1), ("m2".to_string(), 1)], 0);
+        p.credit_block(500_000, &[("m1".to_string(), 1)], 1_000); // 10% fee
+        p.record_paid("m1", 600_000);
         let (owed, paid, fees) = p.totals();
         assert_eq!(paid, 600_000);
         assert_eq!(fees, 50_000);
         assert_eq!(owed + paid + fees, 1_500_000, "every credited unit is owed, paid, or fee");
         // A fully paid-out miner still counts in the totals; overpay
         // attempts are capped at what is owed (2 only had 500k).
-        p.record_paid(2, 1_000_000);
+        p.record_paid("m2", 1_000_000);
         let (owed2, paid2, _) = p.totals();
         assert_eq!(paid2, 1_100_000);
         assert_eq!(owed2, 350_000);
@@ -243,24 +243,24 @@ mod tests {
     #[test]
     fn threshold_selects_and_paid_debits() {
         let mut p = PayoutLedger::default();
-        p.credit_split(&[(1, 5_000_000), (2, 500_000)]);
-        assert_eq!(p.select_due(1_000_000), vec![(1, 5_000_000)]);
+        p.credit_split(&[("m1".to_string(), 5_000_000), ("m2".to_string(), 500_000)]);
+        assert_eq!(p.select_due(1_000_000), vec![("m1".to_string(), 5_000_000)]);
         // Partial payment debits only what moved.
-        p.record_paid(1, 2_000_000);
-        assert_eq!(p.owed(1), 3_000_000);
-        assert_eq!(p.paid(1), 2_000_000);
-        assert_eq!(p.select_due(1_000_000), vec![(1, 3_000_000)]);
+        p.record_paid("m1", 2_000_000);
+        assert_eq!(p.owed("m1"), 3_000_000);
+        assert_eq!(p.paid("m1"), 2_000_000);
+        assert_eq!(p.select_due(1_000_000), vec![("m1".to_string(), 3_000_000)]);
         // Overpayment clamps to the owed balance (no negative money).
-        p.record_paid(2, 999_999_999);
-        assert_eq!((p.owed(2), p.paid(2)), (0, 500_000));
+        p.record_paid("m2", 999_999_999);
+        assert_eq!((p.owed("m2"), p.paid("m2")), (0, 500_000));
     }
 
     #[test]
     fn block_credits_conserve_exactly() {
         for &(total, fee) in &[(1u64, 0u16), (7, 100), (999, 333), (80_000_000, 50), (u64::MAX / 2, 0)] {
             let mut p = PayoutLedger::default();
-            p.credit_block(total, &[(1, 3), (2, 2), (3, 1)], fee);
-            let owed: u64 = [1, 2, 3].iter().map(|m| p.owed(*m)).sum();
+            p.credit_block(total, &[("m1".to_string(), 3), ("m2".to_string(), 2), ("m3".to_string(), 1)], fee);
+            let owed: u64 = ["m1", "m2", "m3"].iter().map(|m| p.owed(m)).sum();
             assert_eq!(owed + p.fees(), total, "total={total} fee={fee}");
             assert_eq!(p.select_due(0).iter().map(|(_, v)| v).sum::<u64>(), owed);
         }
@@ -300,26 +300,26 @@ mod tests {
     #[test]
     fn dev_slice_moves_from_fees_not_miners() {
         let mut p = PayoutLedger::default();
-        p.credit_block(10_000, &[(1, 1)], 200); // 2% pool fee = 200
+        p.credit_block(10_000, &[("m1".to_string(), 1)], 200); // 2% pool fee = 200
         assert_eq!(p.fees(), 200);
-        assert_eq!(p.owed(1), 9_800);
+        assert_eq!(p.owed("m1"), 9_800);
         // Dev takes 50 (0.5pp of the block) out of the operator's 200.
-        assert_eq!(p.allocate_dev(99, 50), 50);
+        assert_eq!(p.allocate_dev("m99", 50), 50);
         assert_eq!(p.fees(), 150);
-        assert_eq!(p.owed(99), 50);
-        assert_eq!(p.owed(1), 9_800); // miners untouched
-        assert_eq!(p.owed(1) + p.owed(99) + p.fees(), 10_000);
+        assert_eq!(p.owed("m99"), 50);
+        assert_eq!(p.owed("m1"), 9_800); // miners untouched
+        assert_eq!(p.owed("m1") + p.owed("m99") + p.fees(), 10_000);
         // Capped by the pot: asking for more moves only what's there.
-        assert_eq!(p.allocate_dev(99, 500), 150);
+        assert_eq!(p.allocate_dev("m99", 500), 150);
         assert_eq!(p.fees(), 0);
-        assert_eq!(p.owed(99), 200);
+        assert_eq!(p.owed("m99"), 200);
     }
 
     #[test]
     fn dev_slice_empty_when_pool_fee_zero() {
         let mut p = PayoutLedger::default();
-        p.credit_block(10_000, &[(1, 1)], 0);
-        assert_eq!(p.allocate_dev(99, 50), 0);
-        assert_eq!(p.owed(99), 0);
-        assert_eq!(p.owed(1), 10_000);
+        p.credit_block(10_000, &[("m1".to_string(), 1)], 0);
+        assert_eq!(p.allocate_dev("m99", 50), 0);
+        assert_eq!(p.owed("m99"), 0);
+        assert_eq!(p.owed("m1"), 10_000);
     }

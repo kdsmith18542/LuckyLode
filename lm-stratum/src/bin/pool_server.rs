@@ -81,17 +81,16 @@ footer{margin-top:26px;color:var(--dim);font-size:12px;line-height:1.5}
   <button data-tab="miner">My miner</button>
   <a class="badge" href="https://luckylode.cc/" target="_blank" rel="noopener">luckylode.cc</a>
   <a class="badge" href="https://luckylode.cc/explorer/" target="_blank" rel="noopener">explorer</a>
-  <a class="badge" href="https://luckylode.cc/casino/" target="_blank" rel="noopener">casino · free FUN</a>
 </nav>
 <section id="tab-dashboard" class="active">
 <div class="grid" id="cards"></div>
 <h2>Workers</h2>
 <input type="search" id="wfilter" placeholder="filter by worker / payout address">
-<table><thead><tr><th></th><th>worker</th><th>device</th><th>60s</th><th>10m</th><th>1h</th><th>shares</th><th>rej</th><th>last share</th></tr></thead><tbody id="workers"></tbody></table>
+<table><thead><tr><th></th><th>worker</th><th>device</th><th>60s</th><th>10m</th><th>1h</th><th>24h</th><th>shares</th><th>rejects</th><th>last share</th></tr></thead><tbody id="workers"></tbody></table>
 <h2>Blocks</h2>
-<table><thead><tr><th>height</th><th>finder</th><th>jackpot split</th><th>pot splash</th><th>league</th><th>pplns payouts</th></tr></thead><tbody id="blocks"></tbody></table>
+<table><thead><tr><th>height</th><th>finder</th><th>block reward</th><th>jackpot bonus</th><th>pot splash</th><th>league inflow</th><th>pplns payouts</th></tr></thead><tbody id="blocks"></tbody></table>
 <h2>Balances due</h2>
-<table><thead><tr><th>worker</th><th>owed</th></tr></thead><tbody id="balances"></tbody></table>
+<table><thead><tr><th>worker</th><th>owed</th><th>paid</th></tr></thead><tbody id="balances"></tbody></table><div class="muted" id="balances-foot"></div>
 <h2>Payouts</h2>
 <table><thead><tr><th>time</th><th>worker</th><th>amount</th><th>txid</th></tr></thead><tbody id="payouts"></tbody></table>
 <h2>Luckynodes</h2>
@@ -101,7 +100,7 @@ footer{margin-top:26px;color:var(--dim);font-size:12px;line-height:1.5}
 <h2>Mine to the official pool</h2>
 <p>Lucky Lode is CPU/GPU-first. The reference miner <code>lm-miner</code> speaks Stratum V1 to this pool:</p>
 <pre id="cmd">&hellip;</pre>
-<p>Use <b>your own tLKYL address</b> (testnet prefixes <code>m</code>, <code>n</code>, <code>2</code>) as the worker name &mdash; that is where the pool pays you. Every share is verified against the pool's pre-committed job; nothing is withheld.</p>
+<p>Use <b>your own <span id="gs-ticker">tLKYL</span> address</b> (<span id="gs-net">testnet</span> prefixes <code id="gs-prefixes">m, n, 2</code>) as the worker name &mdash; that is where the pool pays you. Every share is verified against the pool's pre-committed job; nothing is withheld.</p>
 <h2>Options worth knowing</h2>
 <table><thead><tr><th>flag</th><th>what it does</th></tr></thead><tbody>
 <tr><td><code>--device cpu|opencl|auto</code></td><td>hash on CPU threads or an OpenCL GPU (auto prefers the GPU when present)</td></tr>
@@ -110,7 +109,7 @@ footer{margin-top:26px;color:var(--dim);font-size:12px;line-height:1.5}
 <tr><td><code>--max-temp C</code></td><td>pause when the package/GPU sensor reaches C (80 recommended)</td></tr>
 <tr><td><code>--job-timeout S</code></td><td>reconnect if no new job arrives within S seconds</td></tr>
 </tbody></table>
-<p>Stratum endpoint: <code id="stratum">:3346</code> (plaintext; TLS available on request). Testnet coins have no value &mdash; this is the public burn-in.</p>
+<p>Stratum endpoint: <code id="stratum">:3346</code> (plaintext; TLS available on request). <span id="gs-worthless">Testnet coins have no value &mdash; this is the public burn-in.</span></p>
 </section>
 <section id="tab-faq">
 <h2>FAQ</h2>
@@ -122,11 +121,11 @@ footer{margin-top:26px;color:var(--dim);font-size:12px;line-height:1.5}
 <dt>How do payouts work?</dt>
 <dd>Block rewards are credited with PPLNS weights (sqrt-weighted, 25% cap) and sent from the pool wallet to your worker address once mature and above the payout threshold. Balances due and sent payouts are on the dashboard.</dd>
 <dt>What are the jackpot and the Lucky Pot?</dt>
-<dd>Every PoW block carries a pre-committed draw: <code>SHA256D(parent hash + height)</code>. Jackpot: draw below 2^256/100 (~1%) &mdash; the finder gets a reserve bonus (up to 5&#215;R). Pot: draw below 2^256/1000 with 10/25/50% tiers and a pity timer; the splash goes to the finder and is split by PPLNS. Pools can advertise the exact bonus before committing a coinbase, so every find lands.</dd>
+<dd>Every PoW block carries a pre-committed draw: <code>SHA256D(parent hash + height)</code> &mdash; the ticket is fixed before any grinding, so nothing can be withheld. Jackpot: draw below 2^256/100 (~1%) &mdash; the block's reward gains a reserve bonus (up to 5× the block reward). Pot: draw below 2^256/1000 with 10/25/50% tiers and a pity timer that forces a splash after a long dry run. Both land only on PoW finds, and the whole block (bonus included) is split among contributors by PPLNS.</dd>
 <dt>What is a Luckynode?</dt>
-<dd>A staker running the <code>luckynode</code> daemon, bonded and online. Luckynodes cosign draws and take part in the Luckynode Draw &mdash; stakers' game-layer luck; PoW finders keep the jackpot/pot.</dd>
+<dd>A staker running the <code>luckynode</code> daemon with the required bond balance, heartbeating to stay active. Luckynodes cosign draws and enter the Luckynode Draw &mdash; a raffle every ~48 h that is the stakers' game-layer luck. PoW finders keep the jackpot and the Lucky Pot. Serious nodes designate a locked bond UTXO at registration (spending it evicts them immediately) instead of relying on a drifting balance.</dd>
 <dt>Is this real money?</dt>
-<dd>No. This is the Lucky Lode public testnet; coins are worthless by design. The point is to break things before mainnet.</dd>
+<dd id="faq-testnet">No. This is the Lucky Lode public testnet; coins are worthless by design. The point is to break things before mainnet.</dd>
 </dl>
 </section>
 <section id="tab-api">
@@ -136,7 +135,7 @@ footer{margin-top:26px;color:var(--dim);font-size:12px;line-height:1.5}
 <tr><td><code>GET api/stats</code></td><td>pool, workers, blocks, balances, payouts, game state (JSON)</td></tr>
 <tr><td><code>GET api/luckynodes</code></td><td>luckynode registry + draw state</td></tr>
 <tr><td><code>GET api/luckynode/pending</code></td><td>draws/events awaiting cosigns</td></tr>
-<tr><td><code>POST api/luckynode/register</code></td><td>register a luckynode: <code>{id,address,pubkey}</code></td></tr>
+<tr><td><code>POST api/luckynode/register</code></td><td>register a luckynode: <code>{id,address,pubkey,msg,sig,ts}</code> (msg must rebuild canonically; sig proves payout-address ownership via node <code>verifymessage</code>)</td></tr>
 <tr><td><code>POST api/luckynode/heartbeat</code></td><td>signed liveness: <code>{id,timestamp,sig}</code></td></tr>
 <tr><td><code>POST api/luckynode/notarize</code></td><td>cosign a draw: <code>{draw_id,id,sig}</code></td></tr>
 <tr><td><code>GET api/miner?token=…</code></td><td>your own row + payout settings (worker-token auth)</td></tr>
@@ -157,7 +156,7 @@ footer{margin-top:26px;color:var(--dim);font-size:12px;line-height:1.5}
   <h3 style="margin:6px 0">Payout settings</h3>
   <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
     <label>payout address <input id="maddr" placeholder="default: your worker name" style="max-width:300px"></label>
-    <label>threshold (tLKYL) <input id="mthr" placeholder="pool default" style="max-width:130px"></label>
+    <label>threshold (<span class="mtick">tLKYL</span>) <input id="mthr" placeholder="pool default" style="max-width:130px"></label>
     <button class="tabbtn" id="msave">Save</button>
   </div>
   <p style="color:var(--dim);font-size:12px">Payouts send automatically once your balance reaches the threshold. Leave the address empty (or the threshold at 0) to use the defaults.</p>
@@ -167,13 +166,14 @@ footer{margin-top:26px;color:var(--dim);font-size:12px;line-height:1.5}
 <div class="err" id="err"></div>
 <script>
 const esc=v=>String(v??'-');
-const coin=v=>typeof v==='number'?(v/1e8).toLocaleString(undefined,{maximumFractionDigits:2}):'-';
-const coin8=v=>typeof v==='number'?(v/1e8).toLocaleString(undefined,{maximumFractionDigits:8}):'-';
+let TICK='tLKYL';
+const coin=v=>typeof v==='number'?(v/1e8).toLocaleString(undefined,{maximumFractionDigits:8})+' '+TICK:'-';
+const coin8=v=>typeof v==='number'?(v/1e8).toLocaleString(undefined,{maximumFractionDigits:8})+' '+TICK:'-';
  const hs=v=>{v=Number(v)||0;if(v>=1e6)return (v/1e6).toFixed(2)+' MH/s';if(v>=1e3)return (v/1e3).toFixed(1)+' kH/s';return v.toFixed(0)+' H/s';};
  const num=v=>{v=Number(v)||0;if(v>=1e6)return (v/1e6).toFixed(2)+'M';if(v>=1e3)return (v/1e3).toFixed(1)+'k';return v.toFixed(2);};
 const ago=s=>{if(!s)return '-';const d=Math.max(0,Math.floor(Date.now()/1000-s));if(d<60)return d+'s';if(d<3600)return Math.floor(d/60)+'m';return Math.floor(d/3600)+'h';};
 const tstr=t=>new Date(t*1000).toLocaleTimeString();
-const device=a=>{const p=String(a||'').split(' ');return p.length>1?p.slice(1).join(' '):'-';};
+const device=a=>{const p=String(a||'').split(' ').filter(Boolean);return p.length>1?p.slice(1).join(' '):(p[0]||'-');};
 // Tabs + miner lookup + endpoint fill.
 document.querySelectorAll('nav button').forEach(b=>b.addEventListener('click',()=>{
   document.querySelectorAll('nav button').forEach(x=>x.classList.toggle('active',x===b));
@@ -181,7 +181,7 @@ document.querySelectorAll('nav button').forEach(b=>b.addEventListener('click',()
 }));
 const stratum=location.hostname+':3346';
 document.getElementById('stratum').textContent=stratum;
-document.getElementById('cmd').textContent='lm-miner pool --pool '+stratum+' --worker <your tLKYL payout address> --device auto';
+document.getElementById('cmd').textContent='lm-miner pool --pool '+stratum+' --worker <your '+TICK+' payout address> --device auto';
 const wf=document.getElementById('wfilter');
 const applyWF=()=>{const q=wf.value.trim().toLowerCase();
   document.querySelectorAll('#workers tr').forEach(tr=>{
@@ -193,47 +193,62 @@ async function tick(){
   const c=[]; const add=(k,v)=>c.push(`<div class="card"><div class="k">${k}</div><div class="v">${esc(v)}</div></div>`);
   if(j.jackpot) add('height', j.jackpot.height);
   if(j.mining) add('difficulty', num(j.mining.difficulty));
-  add('pool 10m', hs(j.pool.hashrate10m));
+  add('pool hashrate 10m', hs(j.pool.hashrate10m));
   add('workers', `${j.pool.online}/${j.pool.workers}`);
   add('shares', j.pool.shares); add('rejects', j.pool.rejects);
   add('blocks found', j.pool.blocks); add('league pool', coin(j.pool.league_pool));
-  if(j.jackpot){add('jackpot reserve', coin(j.jackpot.reserve)); add('lucky pot', coin(j.jackpot.pot)); add('pot drought', j.jackpot.drought+' / '+(j.jackpot.potdrought||4320));}
+  if(j.jackpot){add('jackpot reserve', coin(j.jackpot.reserve)); add('lucky pot', coin(j.jackpot.pot)); add('pot drought', j.jackpot.drought+' / '+(j.jackpot.potdrought||4320)+' blocks');}
+  const NET=(j.network&&j.network.ticker)?j.network:{ticker:'tLKYL',name:'testnet',prefixes:'m, n, 2'};
+  TICK=NET.ticker;
+  const setT=(id,v)=>{const e=document.getElementById(id);if(e)e.textContent=v;};
+  setT('gs-ticker',NET.ticker); setT('gs-net',NET.name); setT('gs-prefixes',NET.prefixes); setT('foot-net',NET.name);
+  document.querySelectorAll('.mtick').forEach(e=>e.textContent=NET.ticker);
+  document.getElementById('cmd').textContent='lm-miner pool --pool '+location.hostname+':3346 --worker <your '+NET.ticker+' payout address> --device auto';
+  setT('faq-testnet',NET.name==='mainnet'
+    ? 'Yes — mainnet coins are real value. This pool is the official reference pool.'
+    : 'No. This is the Lucky Lode public testnet; coins are worthless by design. The point is to break things before mainnet.');
+  setT('gs-worthless',NET.name==='mainnet'
+    ? 'Mainnet coins are real value.'
+    : 'Testnet coins have no value — this is the public burn-in.');
+  if(j.staking){add('node staking', j.staking.staking_on ? 'on' : 'off'); add('stake supply', coin(j.staking.staking_supply ?? 0));}
   document.getElementById('cards').innerHTML=c.join('');
   document.getElementById('mode').textContent=j.mode||'';
   document.getElementById('payoutmode').textContent=j.payout
-    ? (j.payout.exec ? `payouts: EXEC ≥ ${j.payout.threshold}` : `payouts: dry-run ≥ ${j.payout.threshold}`)
+    ? (j.payout.exec ? `payouts: EXEC ≥ ${coin(j.payout.threshold)} ${NET.ticker}` : `payouts: dry-run ≥ ${coin(j.payout.threshold)} ${NET.ticker}`)
     : '';
   document.getElementById('updated').textContent='updated '+new Date().toLocaleTimeString();
   document.getElementById('workers').innerHTML=(j.workers||[]).map(w=>
-    `<tr class="${w.online?'':'off'}"><td><span class="dot"></span></td><td>${esc(w.name||w.miner)}</td><td>${esc(device(w.agent))}</td><td>${hs(w.rate60)}</td><td>${hs(w.rate10m)}</td><td>${hs(w.rate1h)}</td><td>${esc(w.shares)}</td><td>${esc(w.rejects)}</td><td>${ago(w.last_seen)}</td></tr>`).join('')
-    || '<tr><td colspan="9">no workers yet</td></tr>';
+    `<tr class="${w.online?'':'off'}"><td><span class="dot"></span></td><td>${esc(w.name||w.miner)}</td><td>${esc(device(w.agent))}</td><td>${hs(w.rate60)}</td><td>${hs(w.rate10m)}</td><td>${hs(w.rate1h)}</td><td>${hs(w.rate24h)}</td><td>${esc(w.shares)}</td><td>${esc(w.rejects)}</td><td>${ago(w.last_seen)}</td></tr>`).join('')
+    || '<tr><td colspan="10">no workers yet</td></tr>';
   applyWF();
   document.getElementById('blocks').innerHTML=(j.last_blocks||[]).map(b=>
-    `<tr><td>${esc(b.height)}</td><td>${esc(b.finder_name||b.finder)}</td><td>${coin(b.bonus)}</td><td>${coin(b.pot)}</td><td>${coin(b.league_overflow)}</td><td>${coin(b.pplns_total)} (${esc(b.pplns_count)})</td></tr>`).join('')
+    `<tr><td>${esc(b.height)}</td><td>${esc(b.finder_name||b.finder)}</td><td>${coin(b.value)}</td><td>${b.bonus>0?coin(b.bonus):'–'}</td><td>${b.pot>0?coin(b.pot):'–'}</td><td>${b.league_overflow>0?coin(b.league_overflow):'–'}</td><td>${b.pplns_total>0?coin(b.pplns_total)+' ('+esc(b.pplns_count)+')':'–'}</td></tr>`).join('')
     || '<tr><td colspan="6">no blocks yet</td></tr>';
   document.getElementById('balances').innerHTML=(j.balances||[]).map(b=>
-    `<tr><td>${esc(b.name||b.miner)}</td><td>${coin(b.owed)}</td></tr>`).join('')
-    || '<tr><td colspan="2">nothing due</td></tr>';
+    `<tr><td>${esc(b.name||b.miner)}</td><td>${coin(b.owed)}</td><td>${coin(b.paid)}</td></tr>`).join('')
+    || '<tr><td colspan="3">nothing due</td></tr>';
+  if(j.payout_totals){document.getElementById('balances-foot').textContent=
+    `total owed ${coin(j.payout_totals.owed)} ${NET.ticker} · total paid ${coin(j.payout_totals.paid)} ${NET.ticker} · tx fees ${coin(j.payout_totals.fees)} ${NET.ticker}`;}
   document.getElementById('payouts').innerHTML=(j.payouts||[]).map(p=>
     `<tr><td>${tstr(p.time)}</td><td>${esc(p.name)}</td><td>${coin(p.amount)}</td><td>${esc(p.txid)}</td></tr>`).join('')
     || '<tr><td colspan="4">no payouts sent yet</td></tr>';
   if(j.luckynode){
     const L=j.luckynode;
     const draws=(L.recent_draws||[]).map(d=>
-      `<tr><td>${esc(d.epoch)}</td><td>${esc((d.winner||'').slice(0,12))}&hellip;</td><td>${coin8(d.budget)}</td><td>${esc(d.cosigns||0)}</td><td>${esc(d.txid)}</td></tr>`).join('')
-      || '<tr><td colspan="5">no draws yet</td></tr>';
+      `<tr><td>${esc(d.epoch)}</td><td>${esc(d.height)}</td><td>${esc((d.winner||'').slice(0,12))}&hellip;</td><td>${coin8(d.budget)}</td><td>${esc(d.cosigns||0)}</td><td>${esc(d.txid)}</td></tr>`).join('')
+      || '<tr><td colspan="6">no draws yet</td></tr>';
     document.getElementById('luckynodes').innerHTML=
       `<div class="grid"><div class="card"><div class="k">nodes</div><div class="v">${esc(L.nodes)}</div></div>`+
       `<div class="card"><div class="k">active</div><div class="v">${esc(L.active)}</div></div>`+
       `<div class="card"><div class="k">pending cosigns</div><div class="v">${esc(L.pending_cosigns)}</div></div></div>`+
-      `<table><thead><tr><th>epoch</th><th>winner</th><th>budget</th><th>cosigns</th><th>txid</th></tr></thead><tbody>${draws}</tbody></table>`;
+      `<table><thead><tr><th>epoch</th><th>height</th><th>winner</th><th>budget</th><th>cosigns</th><th>txid</th></tr></thead><tbody>${draws}</tbody></table>`;
   }
   const mode=j.mode||'';
   const claimNote = (mode.includes('pot') || mode.includes('jackpot'))
     ? 'Claim mode: draws are pre-committed per height (SHA256D of the parent hash); every find lands — no withholding.'
     : '';
   document.getElementById('note').textContent =
-    'Official Lucky Lode reference pool · testnet · no operator fee; the dev-funding policy (miner 1%, pool 0.5pp — docs/04 §4.2) applies at mainnet. '
+    'Official Lucky Lode reference pool · <span id="foot-net">testnet</span> · no operator fee (1% miner + 0.5pp pool dev slice applies at mainnet). '
     + claimNote;
   document.getElementById('err').textContent='';
  }catch(e){document.getElementById('err').textContent='stats fetch failed: '+e;}
@@ -291,7 +306,7 @@ fn stats_json<P: TemplateProvider + 'static>(
     let now = now_secs();
     let workers = server.workers(now);
     // miner id -> payout address (persisted names), for block finders.
-    let names_map: HashMap<u64, String> = server.names().into_iter().collect();
+    let names_map: HashMap<String, String> = server.names().into_iter().collect();
     let online = workers.iter().filter(|w| w.online).count();
     let mut totals = [0.0f64; 4];
     for w in &workers {
@@ -317,7 +332,7 @@ fn stats_json<P: TemplateProvider + 'static>(
             })
         })
         .collect();
-    let by_name: HashMap<u64, String> = workers.iter().map(|w| (w.miner, w.name.clone())).collect();
+    let by_name: HashMap<String, String> = workers.iter().map(|w| (w.miner.clone(), w.name.clone())).collect();
     let payout_totals = server.payout_totals();
     let balances_json: Vec<serde_json::Value> = server
         .balances()
@@ -327,7 +342,7 @@ fn stats_json<P: TemplateProvider + 'static>(
                 "miner": miner,
                 "name": by_name.get(&miner).cloned().unwrap_or_default(),
                 "owed": owed,
-                "paid": server.paid(miner),
+                "paid": server.paid(&miner),
             })
         })
         .collect();
@@ -365,6 +380,7 @@ fn stats_json<P: TemplateProvider + 'static>(
                 "finder_name": finder_name,
                 "bonus": b.bonus,
                 "pot": b.pot,
+                "value": b.value,
                 "league_overflow": b.league_overflow,
                 "pplns_total": total,
                 "pplns_count": b.payouts.len(),
@@ -373,6 +389,11 @@ fn stats_json<P: TemplateProvider + 'static>(
         .collect();
     let mut obj = serde_json::json!({
         "mode": mode,
+        "network": {
+            "name": ctx.network,
+            "ticker": if ctx.network == "mainnet" { "LKYL" } else { "tLKYL" },
+            "prefixes": if ctx.network == "mainnet" { "L" } else { "m, n, 2" },
+        },
         "payout": {
             "exec": ctx.exec,
             "threshold": ctx.threshold,
@@ -406,6 +427,20 @@ fn stats_json<P: TemplateProvider + 'static>(
         }
         if let Ok(v) = rpc.call("getmininginfo", serde_json::json!([])) {
             obj["mining"] = v;
+        }
+        // Node-side staking state (the pool mines PoW; staking lives in
+        // the node's wallet). PUBLIC surface: on/off + chain supply only.
+        // Operator-wallet shape (eligible outputs/balance, unlock time) is
+        // deliberately NOT published — it maps an idle hot wallet (review
+        // fix 2026-10-18). The wallet serves it to the node owner.
+        {
+            let coins = |v: Option<&serde_json::Value>| -> u64 {
+                (v.and_then(|x| x.as_f64()).unwrap_or(0.0) * 100_000_000.0).round() as u64
+            };
+            obj["staking"] = serde_json::json!({
+                "staking_on": obj.get("mining").and_then(|m| m.get("staking")).cloned().unwrap_or(serde_json::Value::Null),
+                "staking_supply": coins(obj.get("mining").and_then(|m| m.get("stakingsupply"))),
+            });
         }
     }
     if let Some(shared) = &ctx.luckynode {
@@ -625,7 +660,7 @@ fn miner_api<P: TemplateProvider + 'static>(
             serde_json::json!({"error": "unknown token"}).to_string(),
         );
     };
-    let Some(row) = server.miner_row(miner, now_secs()) else {
+    let Some(row) = server.miner_row(&miner, now_secs()) else {
         return (
             "404 Not Found",
             serde_json::json!({"error": "miner has not connected yet"}).to_string(),
@@ -705,9 +740,9 @@ fn payout_settings_api<P: TemplateProvider + 'static>(
     let settings = lm_stratum::server::MinerSettings { address, threshold };
     let cleared = settings == lm_stratum::server::MinerSettings::default();
     if cleared {
-        server.clear_payout_settings(miner);
+        server.clear_payout_settings(&miner);
     } else {
-        server.set_payout_settings(miner, settings.clone());
+        server.set_payout_settings(miner.clone(), settings.clone());
     }
     (
         "200 OK",
@@ -748,7 +783,7 @@ fn http_serve<P: TemplateProvider + 'static>(
 #[derive(Debug, Clone)]
 struct PayoutRecord {
     time: u64,
-    miner: u64,
+    miner: String,
     name: String,
     amount: u64,
     txid: String,
@@ -775,6 +810,9 @@ struct HttpCtx {
     threshold: u64,
     history: Arc<Mutex<VecDeque<PayoutRecord>>>,
     luckynode: Option<Arc<LuckynodeShared>>,
+    /// Chain label for the dashboard (review fix 2026-10-18: no hardcoded
+    /// testnet strings — "testnet" | "mainnet").
+    network: String,
 }
 
 fn now_secs() -> u64 {
@@ -817,7 +855,7 @@ fn coins_to_base(v: &serde_json::Value) -> u64 {
 struct PoolState {
     version: u32,
     ledger: lm_pool::payout::PayoutLedger,
-    names: Vec<(u64, String)>,
+    names: Vec<(String, String)>,
     blocks: Vec<lm_stratum::server::BlockRecord>,
     /// Luckynode draw history (node mode; empty otherwise). `default` so
     /// state files written before this field still load.
@@ -826,9 +864,16 @@ struct PoolState {
     /// Draws/events awaiting cosigns (node mode; empty otherwise).
     #[serde(default)]
     pending: Vec<PendingCosign>,
+    /// Luckynode registry snapshot (tenure survives pool restarts).
+    #[serde(default)]
+    luckynodes: Vec<lm_luckynode::Node>,
     /// Per-miner payout settings (address/threshold overrides, internal/17).
     #[serde(default)]
     payout_settings: lm_stratum::server::PayoutSettings,
+    /// League prize-pool balance (feeds the Luckynode draw budgets).
+    /// `default` so state files written before this field still load.
+    #[serde(default)]
+    league_pool: u64,
 }
 
 /// Load `--state-file` into a freshly spawned server (missing file = a
@@ -839,47 +884,61 @@ fn load_state<P: TemplateProvider + 'static>(
     server: &RunningServer<P>,
     luckynode: Option<&Arc<LuckynodeShared>>,
     path: &Path,
-) {
+) -> Result<(), String> {
     let raw = match std::fs::read_to_string(path) {
         Ok(r) => r,
-        Err(_) => return,
+        Err(_) => return Ok(()),
     };
     match serde_json::from_str::<PoolState>(&raw) {
         Ok(st) => {
             server.restore_ledger(st.ledger);
             server.restore_names(&st.names);
+            server.restore_league(st.league_pool);
             let settings = st.payout_settings.len();
             server.restore_payout_settings(st.payout_settings);
             let n = st.blocks.len();
             server.restore_blocks(st.blocks);
             let (owed, paid, fees) = server.payout_totals();
             let (mut draws, mut pend) = (0usize, 0usize);
+            let mut lnodes = 0usize;
             if let Some(ln) = luckynode {
                 draws = st.recent_draws.len();
                 pend = st.pending.len();
+                lnodes = st.luckynodes.len();
                 *ln.recent_draws.lock().expect("draws") = st.recent_draws.into();
                 *ln.pending.lock().expect("pending") = st.pending;
+                ln.registry.lock().expect("registry").restore(st.luckynodes);
             }
             println!(
-                "state loaded from {}: {n} blocks, owed {owed}, paid {paid}, fees {fees}{}{}",
+                "state loaded from {}: {n} blocks, owed {owed}, paid {paid}, fees {fees}, league {} {}{}",
                 path.display(),
+                lm_pool::payout::format_coins(st.league_pool),
                 if settings > 0 {
                     format!(", {settings} payout setting(s)")
                 } else {
                     String::new()
                 },
                 if luckynode.is_some() {
-                    format!(", {draws} draws, {pend} pending cosigns")
+                    format!(", {draws} draws, {pend} pending cosigns, {lnodes} luckynodes")
                 } else {
                     String::new()
                 }
             );
         }
-        Err(e) => eprintln!(
-            "warning: state file {} unreadable ({e}); starting fresh (old file left in place)",
-            path.display()
-        ),
+        Err(e) => {
+            // Review fix 2026-10-17: a corrupt ledger must NOT silently
+            // "start fresh" — that zeroes balances and double-pays. Move
+            // the file aside and refuse to boot; the operator decides.
+            let corrupt = path.with_extension("corrupt");
+            let _ = std::fs::rename(path, &corrupt);
+            return Err(format!(
+                "state file {} is unreadable ({e}); moved to {} — refusing to start with a zeroed ledger. Restore the file or start with --force-fresh.",
+                path.display(),
+                corrupt.display()
+            ));
+        }
     }
+    Ok(())
 }
 
 /// Atomic snapshot write (tmp + rename) so a crash mid-save never leaves
@@ -889,12 +948,19 @@ fn save_state<P: TemplateProvider + 'static>(
     luckynode: Option<&Arc<LuckynodeShared>>,
     path: &Path,
 ) {
-    let (recent_draws, pending) = match luckynode {
+    let (recent_draws, pending, luckynodes) = match luckynode {
         Some(ln) => (
             ln.recent_draws.lock().expect("draws").iter().cloned().collect(),
             ln.pending.lock().expect("pending").clone(),
+            ln.registry
+                .lock()
+                .expect("registry")
+                .all_nodes()
+                .iter()
+                .map(|n| (*n).clone())
+                .collect(),
         ),
-        None => (Vec::new(), Vec::new()),
+        None => (Vec::new(), Vec::new(), Vec::new()),
     };
     let st = PoolState {
         version: 1,
@@ -904,6 +970,8 @@ fn save_state<P: TemplateProvider + 'static>(
         recent_draws,
         pending,
         payout_settings: server.payout_settings(),
+        league_pool: server.league_balance(),
+        luckynodes,
     };
     let bytes = match serde_json::to_vec(&st) {
         Ok(b) => b,
@@ -913,7 +981,22 @@ fn save_state<P: TemplateProvider + 'static>(
         }
     };
     let tmp = path.with_extension("tmp");
-    if let Err(e) = std::fs::write(&tmp, &bytes).and_then(|_| std::fs::rename(&tmp, path)) {
+    // Review fix 2026-10-17: write → fsync file → rename → fsync dir.
+    // Without the syncs a power loss can leave a truncated/empty state
+    // file after a "successful" rename.
+    let result = std::fs::File::create(&tmp).and_then(|mut f| {
+        use std::io::Write;
+        f.write_all(&bytes)?;
+        f.sync_all()?;
+        std::fs::rename(&tmp, path)?;
+        if let Some(dir) = path.parent() {
+            if let Ok(d) = std::fs::File::open(dir) {
+                let _ = d.sync_all();
+            }
+        }
+        Ok(())
+    });
+    if let Err(e) = result {
         eprintln!("warning: cannot write state file {}: {e}", path.display());
     }
 }
@@ -940,18 +1023,18 @@ fn state_saver<P: TemplateProvider + 'static>(
 /// Miners due for a payout: balance at or above their own threshold, else
 /// the pool's global one (internal/17 payout settings).
 fn due_miners(
-    balances: Vec<(u64, u64)>,
+    balances: Vec<(String, u64)>,
     settings: &lm_stratum::server::PayoutSettings,
     global_threshold: u64,
-) -> Vec<(u64, u64)> {
+) -> Vec<(String, u64)> {
     balances
         .into_iter()
         .filter(|(miner, v)| {
             let t = settings
-                .get(miner)
+                .get(miner.as_str())
                 .and_then(|s| s.threshold)
                 .unwrap_or(global_threshold);
-            *v >= t
+            *v > 0 && *v >= t
         })
         .collect()
 }
@@ -959,15 +1042,16 @@ fn due_miners(
 /// Payout destination for one miner: their own address override, else the
 /// worker name (which doubles as an address).
 fn payout_destination(
-    miner: u64,
+    miner: &str,
     settings: &lm_stratum::server::PayoutSettings,
-    names: &HashMap<u64, String>,
 ) -> String {
+    // The worker name IS the payout identity (review fix 2026-10-17) —
+    // it doubles as the address unless the miner set an override.
     settings
-        .get(&miner)
+        .get(miner)
         .and_then(|s| s.address.clone())
         .filter(|a| !a.is_empty())
-        .unwrap_or_else(|| names.get(&miner).cloned().unwrap_or_default())
+        .unwrap_or_else(|| miner.to_string())
 }
 
 fn payout_loop<P: TemplateProvider + 'static>(
@@ -975,6 +1059,10 @@ fn payout_loop<P: TemplateProvider + 'static>(
     node: (String, String, String),
     cfg: PayoutCfg,
     history: Arc<Mutex<VecDeque<PayoutRecord>>>,
+    // Persist immediately after each real send (review fix 2026-10-17):
+    // the old 10 s snapshot window could restore a spent balance after a
+    // crash and pay the same miner twice.
+    state: Option<(PathBuf, Option<Arc<LuckynodeShared>>)>,
 ) {
     // Kept for tx fees: never drain the wallet to the last satoshi.
     const FEE_BUFFER: u64 = 100_000;
@@ -982,30 +1070,31 @@ fn payout_loop<P: TemplateProvider + 'static>(
     loop {
         std::thread::sleep(std::time::Duration::from_secs(cfg.interval_secs.max(10)));
         let settings = server.payout_settings();
-        let due: Vec<(u64, u64)> =
+        let due: Vec<(String, u64)> =
             due_miners(server.balances(), &settings, cfg.threshold);
         if due.is_empty() {
             continue;
         }
         // Spendable cap: owed keeps growing with immature blocks while the
         // wallet only holds mature funds — pay in due order up to the
-        // spendable balance (partials included), the rest waits.
+        // spendable balance (partials included), the rest waits. The league
+        // prize pool is reserved for Luckynode Draws, so miner payouts may
+        // never eat it (draws debit the ledger; this keeps the wallet
+        // honest against that claim).
+        let league_reserve = server.league_balance();
         let mut budget = match rpc.call("getbalance", serde_json::json!([])) {
-            Ok(v) => coins_to_base(&v).saturating_sub(FEE_BUFFER),
+            Ok(v) => coins_to_base(&v)
+                .saturating_sub(FEE_BUFFER)
+                .saturating_sub(league_reserve),
             Err(e) => {
                 eprintln!("payout: getbalance failed: {e}; holding this round");
                 continue;
             }
         };
-        let names: HashMap<u64, String> = server
-            .workers(now_secs())
-            .into_iter()
-            .map(|w| (w.miner, w.name))
-            .collect();
         for (miner, amount) in due {
             // Payout destination: the miner's own override, else the worker
             // name (which doubles as an address).
-            let name = payout_destination(miner, &settings, &names);
+            let name = payout_destination(&miner, &settings);
             if !lm_pool::payout::valid_payout_address(&name) {
                 println!(
                     "payout: miner {miner} owed {} but '{name}' is not a payout address; holding",
@@ -1029,12 +1118,15 @@ fn payout_loop<P: TemplateProvider + 'static>(
             match rpc.call("sendtoaddress", serde_json::json!([name, coins])) {
                 Ok(v) => {
                     let txid = v.as_str().unwrap_or("").to_string();
-                    server.record_paid(miner, pay);
+                    server.record_paid(&miner, pay);
+                    if let Some((path, ln)) = &state {
+                        save_state(&server, ln.as_ref(), path);
+                    }
                     budget = budget.saturating_sub(pay);
                     let mut h = history.lock().expect("payout history");
                     h.push_back(PayoutRecord {
                         time: now_secs(),
-                        miner,
+                        miner: miner.clone(),
                         name: name.clone(),
                         amount: pay,
                         txid: txid.clone(),
@@ -1090,6 +1182,11 @@ struct DrawRecord {
     height: u64,
     seed_hash: String,
     winner: String,
+    /// Winner's payout address, captured at draw time (review fix
+    /// 2026-10-18: a held draw could not pay after a restart because only
+    /// the id was stored and the in-memory registry was gone).
+    #[serde(default)]
+    winner_addr: String,
     budget: u64,
     txid: String,
     time: u64,
@@ -1179,7 +1276,28 @@ fn luckynode_tick<P: TemplateProvider + 'static>(
             .map(|n| (n.id.clone(), n.address.clone()))
             .collect();
         for (id, addr) in ids {
-            let ok = bond_balance(rpc, &addr) >= cfg.bond;
+            // Bond verdict: funded AND ownership-proven at registration.
+            let owned = reg.get(&id).map(|n| n.owned).unwrap_or(false);
+            let mut ok = bond_balance(rpc, &addr) >= cfg.bond && owned;
+            // Locked-collateral check: a designated bond UTXO must still
+            // be unspent — spending it evicts immediately, even if the
+            // address balance was topped up elsewhere. gettxout needs no
+            // address index, so third-party nodes can bond too.
+            if let Some((txid, vout)) = reg
+                .get(&id)
+                .and_then(|n| n.bond_utxo.clone())
+            {
+                let spent = match rpc.call(
+                    "gettxout",
+                    serde_json::json!([txid, vout, true]),
+                ) {
+                    Ok(v) => v.is_null(),
+                    Err(_) => true, // fail closed on RPC trouble
+                };
+                if spent {
+                    ok = false;
+                }
+            }
             reg.set_bond(&id, ok, now);
         }
     }
@@ -1258,18 +1376,24 @@ fn luckynode_tick<P: TemplateProvider + 'static>(
             .and_then(|v| v.as_f64())
             .unwrap_or(0.0);
         if spendable > 0.0 {
-            let held: Vec<(String, u64, u64)> = {
+            let held: Vec<(String, u64, u64, String)> = {
                 let draws = shared.recent_draws.lock().expect("draws");
                 draws
                     .iter()
                     .filter(|d| {
                         d.txid.starts_with("held:") && d.budget > 0 && !d.winner.is_empty()
                     })
-                    .map(|d| (d.winner.clone(), d.budget, d.epoch))
+                    .map(|d| {
+                        (d.winner.clone(), d.budget, d.epoch, d.winner_addr.clone())
+                    })
                     .collect()
             };
-            for (winner_id, budget, epoch) in held {
-                let addr = {
+            for (winner_id, budget, epoch, saved_addr) in held {
+                // Prefer the address captured at draw time (survives a
+                // pool restart); fall back to the live registry.
+                let addr = if !saved_addr.is_empty() {
+                    saved_addr
+                } else {
                     let reg = shared.registry.lock().expect("registry");
                     reg.all_nodes()
                         .iter()
@@ -1287,11 +1411,12 @@ fn luckynode_tick<P: TemplateProvider + 'static>(
                         println!(
                             "luckynode: held draw {epoch} for {winner_id} ({addr}) paid {coins} tx {t}"
                         );
+                        server.debit_league(budget);
                         {
                             let mut h = history.lock().expect("payout history");
                             h.push_back(PayoutRecord {
                                 time: now,
-                                miner: u64::MAX,
+                                miner: "luckynode-draw".to_string(),
                                 name: format!("luckynode-draw:{addr}"),
                                 amount: budget,
                                 txid: t.clone(),
@@ -1322,6 +1447,17 @@ fn luckynode_tick<P: TemplateProvider + 'static>(
 }
 
 /// Run the Luckynode Draw for epoch `e` (internal/18 §34).
+/// Default Luckynode Draw slice: 10% of trailing league inflow
+/// (raised from 5% on 2026-10-17 — the draw is the only luckynode income).
+/// Pinned by `draw_budget_gates` so a silent revert fails CI.
+const DEFAULT_LUCKYNODE_SLICE_BPS: u64 = 1000;
+
+/// Draw budget for a trailing league inflow at `slice_bps` basis points.
+/// Pure + floor (u128 intermediate): the exact cut the draw can spend.
+fn draw_budget(inflow: u64, slice_bps: u64) -> u64 {
+    ((inflow as u128 * slice_bps as u128) / 10_000) as u64
+}
+
 fn run_draw<P: TemplateProvider + 'static>(
     server: &Arc<RunningServer<P>>,
     rpc: &RpcClient,
@@ -1371,13 +1507,16 @@ fn run_draw<P: TemplateProvider + 'static>(
             .unwrap_or_default();
         (ent.len(), (winner, addr))
     };
-    // Budget: slice of trailing league inflow (snapshot difference).
+    // Budget: slice of trailing league inflow (snapshot difference), capped
+    // at the credited league balance — a draw may only spend what the pool
+    // actually credited to the league ledger, never miner-owed funds.
     let league_now = server.league_balance();
     let mut snap = shared.league_snapshot.lock().expect("snapshot");
     let inflow = league_now.saturating_sub(*snap);
     *snap = league_now;
     drop(snap);
-    let budget = (inflow as u128 * cfg.slice_bps as u128 / 10_000) as u64;
+    let slice = draw_budget(inflow, cfg.slice_bps);
+    let budget = slice.min(league_now);
     let draw_id = format!("draw-{e}");
     let (winner, winner_addr) = winner_addr;
     let txid = if winner.is_empty() {
@@ -1398,11 +1537,14 @@ fn run_draw<P: TemplateProvider + 'static>(
                 println!(
                     "luckynode: draw {e} winner {winner} ({winner_addr}) paid {coins} tx {t}"
                 );
+                // Debit the league ledger only when the coins actually left
+                // the wallet (a held draw keeps its claim until a retry pays).
+                server.debit_league(budget);
                 {
                     let mut h = history.lock().expect("payout history");
                     h.push_back(PayoutRecord {
                         time: now,
-                        miner: u64::MAX,
+                        miner: "luckynode-draw".to_string(),
                         name: format!("luckynode-draw:{winner_addr}"),
                         amount: budget,
                         txid: t.clone(),
@@ -1433,6 +1575,7 @@ fn run_draw<P: TemplateProvider + 'static>(
             height,
             seed_hash: seed_h.clone(),
             winner: winner.clone(),
+            winner_addr: winner_addr.clone(),
             budget,
             txid: txid.clone(),
             time: now,
@@ -1535,9 +1678,11 @@ fn luckynode_pending(ctx: &HttpCtx) -> String {
     serde_json::json!(list).to_string()
 }
 
-/// POST /api/luckynode/register {id, address, pubkey}: id must equal the
-/// hex pubkey (32 bytes); address must be a payout address. Bond is
-/// verified on the tick (listunspent), not here.
+/// POST /api/luckynode/register {id, address, pubkey, msg, sig, ts}: id must
+/// equal the hex pubkey (32 bytes); address must be a payout address the
+/// REGISTRAR controls — proven by a node-verified `verifymessage` signature
+/// over the canonical `luckynode-register:v1:{id}:{address}:{ts}` (freshness
+/// window like heartbeats). No proof → rejected (Sybil control).
 fn luckynode_register(ctx: &HttpCtx, body: &str) -> (bool, String) {
     let Some(shared) = luckynode_shared(ctx) else {
         return (false, luckynode_disabled());
@@ -1549,6 +1694,9 @@ fn luckynode_register(ctx: &HttpCtx, body: &str) -> (bool, String) {
     let id = v.get("id").and_then(|x| x.as_str()).unwrap_or("");
     let address = v.get("address").and_then(|x| x.as_str()).unwrap_or("");
     let pubkey = v.get("pubkey").and_then(|x| x.as_str()).unwrap_or("");
+    let msg = v.get("msg").and_then(|x| x.as_str()).unwrap_or("");
+    let sig = v.get("sig").and_then(|x| x.as_str()).unwrap_or("");
+    let ts = v.get("ts").and_then(|x| x.as_u64()).unwrap_or(0);
     if id.is_empty() || id != pubkey {
         return (false, serde_json::json!({"ok": false, "error": "id must equal the hex pubkey"}).to_string());
     }
@@ -1559,14 +1707,61 @@ fn luckynode_register(ctx: &HttpCtx, body: &str) -> (bool, String) {
     if !lm_pool::payout::valid_payout_address(address) {
         return (false, serde_json::json!({"ok": false, "error": "address is not a payout address"}).to_string());
     }
+    let now = now_secs();
+    // Freshness window (anti-replay), same as heartbeats.
+    if ts == 0 || now.saturating_sub(ts) > 300 || ts > now + 60 {
+        return (false, serde_json::json!({"ok": false, "error": "stale timestamp"}).to_string());
+    }
+    // Canonical message: exact match prevents cross-context replay.
+    let expect = format!("luckynode-register:v1:{id}:{address}:{ts}");
+    if msg != expect || sig.is_empty() {
+        return (false, serde_json::json!({"ok": false, "error": "message mismatch"}).to_string());
+    }
+    // Ownership proof via the node (fail closed if RPC unavailable).
+    let owned = match &ctx.node {
+        Some((url, user, pass)) => {
+            let rpc = match RpcClient::from_url(url, user, pass) {
+                Ok(r) => r,
+                Err(e) => return (false, serde_json::json!({"ok": false, "error": format!("node rpc: {e}")}).to_string()),
+            };
+            match rpc.call("verifymessage", serde_json::json!([address, sig, msg])) {
+                Ok(v) => v.as_bool().unwrap_or(false),
+                Err(e) => return (false, serde_json::json!({"ok": false, "error": format!("verifymessage: {e}")}).to_string()),
+            }
+        }
+        None => return (false, serde_json::json!({"ok": false, "error": "pool has no node connection"}).to_string()),
+    };
+    if !owned {
+        return (false, serde_json::json!({"ok": false, "error": "payout address ownership not proven (sign the registration with the address's key)"}).to_string());
+    }
     shared
         .registry
         .lock()
         .expect("registry")
-        .register(id, address, now_secs());
+        .register(id, address, now, true);
+    // Optional designated bond UTXO (locked collateral): "txid:vout".
+    // The pool verifies it is unspent every tick; spending it evicts the
+    // node. Without one, the bond is a plain balance check (testnet).
+    let mut bond_locked = false;
+    if let Some(utxo) = v.get("bond_utxo").and_then(|x| x.as_str()) {
+        if let Some((txid, vout)) = utxo.split_once(':') {
+            if let Ok(vout) = vout.parse::<u32>() {
+                if !txid.is_empty() && txid.len() == 64 {
+                    bond_locked = shared
+                        .registry
+                        .lock()
+                        .expect("registry")
+                        .designate_bond(id, txid, vout);
+                }
+            }
+        }
+        if !bond_locked {
+            return (false, serde_json::json!({"ok": false, "error": "bond_utxo must be txid:vout (64 hex + index)"}).to_string());
+        }
+    }
     (
         true,
-        serde_json::json!({"ok": true, "id": id, "bond_pending": true}).to_string(),
+        serde_json::json!({"ok": true, "id": id, "bond_pending": true, "bond_locked": bond_locked}).to_string(),
     )
 }
 
@@ -1708,7 +1903,7 @@ const USAGE: &str = "usage:
   [--luckynode-bond V] [--luckynode-epoch N] [--luckynode-slice-bps BPS]
   [--luckynode-hb-window SECS] [--luckynode-exec] [--luckynode-interval SECS]
   (bond in base units, default 400 LKYL; epoch in blocks, default 2880;
-  slice default 500 = 5% of trailing league inflow; draws pay the winner
+  slice default 1000 = 10% of trailing league inflow; draws pay the winner
   via sendtoaddress when --luckynode-exec, else log only)
 
 defaults: bind=127.0.0.1:3333; mock mode: reward=1000000, fees=0, both targets=max (instant blocks);
@@ -1716,7 +1911,8 @@ node mode: jobs from the node's getblocktemplate.
 claims (node mode): --claim-jackpots serves coinbases claiming the advertised
 jackpotbonus (submitted only on jackpot finds); --claim-pot claims the credited
 pot and only submits pot events; --claim-pot-tier 10|25|50 sets the claimed
-band (floor / B+ / C) — higher tiers claim more but withhold more finds.
+band (floor / B+ / C) — higher tiers claim more; draws are pre-committed per
+height, so every find lands either way (nothing is withheld).
 payouts (node mode, internal/17 §17.4): balances at/above --payout-threshold
 (base units) are sent from the node wallet every --payout-interval seconds
 (default 60); WITHOUT --payout-exec the loop only logs what it would send.
@@ -1812,6 +2008,9 @@ fn main() -> std::process::ExitCode {
     let mut jackpot_divisor = 100u64; // frozen spec; regtest may override
     let mut claim_pot_pity = false; // pity-aware claim mode (regtest proof)
     let mut payout_threshold = 0u64;
+    // Chain label for user-facing strings (default testnet; mainnet flips
+    // footer, currency, prefixes and the TLS note via /api/stats).
+    let mut network = "testnet".to_string();
     let mut payout_interval = 60u64;
     let mut payout_exec = false;
     let mut state_file: Option<PathBuf> = None;
@@ -1828,7 +2027,7 @@ fn main() -> std::process::ExitCode {
     let mut luckynode = false;
     let mut luckynode_bond = 40_000_000_000u64; // 400 LKYL (spec ~25xR)
     let mut luckynode_epoch = 2880u64; // spec ~48h; tests override shorter
-    let mut luckynode_slice_bps = 500u64; // 5% of trailing league inflow
+    let mut luckynode_slice_bps = DEFAULT_LUCKYNODE_SLICE_BPS;
     let mut luckynode_hb_window = 1800u64;
     let mut luckynode_reset_gap = 86400u64;
     let mut luckynode_exec = false;
@@ -1952,6 +2151,17 @@ fn main() -> std::process::ExitCode {
                     eprintln!("error: {e}");
                     std::process::exit(2);
                 });
+            }
+            "--network" => {
+                let v = next("network").unwrap_or_else(|e| {
+                    eprintln!("error: {e}");
+                    std::process::exit(2);
+                });
+                if v != "testnet" && v != "mainnet" {
+                    eprintln!("error: --network must be testnet|mainnet, got '{v}'");
+                    std::process::exit(2);
+                }
+                network = v;
             }
             "--luckynode-epoch" => {
                 luckynode_epoch = parse_u64(
@@ -2382,7 +2592,10 @@ fn main() -> std::process::ExitCode {
             );
         }
         if let Some(path) = &state_file {
-            load_state(&server, luckynode_shared.as_ref(), path);
+            if let Err(e) = load_state(&server, luckynode_shared.as_ref(), path) {
+                eprintln!("pool: {e}");
+                std::process::exit(1);
+            }
         }
         if pool_fee_pp > 0 {
             server.set_pool_fee(pool_fee_pp);
@@ -2420,11 +2633,15 @@ fn main() -> std::process::ExitCode {
                 threshold: payout_threshold,
                 history: Arc::clone(&history),
                 luckynode: luckynode_shared.clone(),
+                network: network.clone(),
             };
             std::thread::spawn(move || http_serve(a, srv, ctx));
         }
         // Payout loop (internal/17 §17.4): dry-run unless --payout-exec.
-        if payout_threshold > 0 {
+        // Spawned whenever payouts are armed — a 0 threshold means "pay
+        // everything", not "disabled" (the old `threshold > 0` gate
+        // silently skipped the loop for --payout-threshold 0).
+        if payout_threshold > 0 || payout_exec {
             let srv = Arc::clone(&server);
             let cfg = PayoutCfg {
                 threshold: payout_threshold,
@@ -2443,7 +2660,9 @@ fn main() -> std::process::ExitCode {
                     "dry-run: log only"
                 }
             );
-            std::thread::spawn(move || payout_loop(srv, node_cfg, cfg, hist));
+            let payout_state =
+                state_file.as_ref().map(|p| (p.clone(), luckynode_shared.clone()));
+            std::thread::spawn(move || payout_loop(srv, node_cfg, cfg, hist, payout_state));
         }
         // Luckynode draw loop (own thread; needs node RPC, so node mode).
         if let Some(shared) = luckynode_shared {
@@ -2507,7 +2726,10 @@ fn main() -> std::process::ExitCode {
             eprintln!("note: payouts need node mode (--node-rpc); flags ignored on the mock chain");
         }
         if let Some(path) = &state_file {
-            load_state(&server, None, path);
+            if let Err(e) = load_state(&server, None, path) {
+                eprintln!("pool: {e}");
+                std::process::exit(1);
+            }
         }
         if pool_fee_pp > 0 {
             server.set_pool_fee(pool_fee_pp);
@@ -2537,6 +2759,7 @@ fn main() -> std::process::ExitCode {
                 threshold: 0,
                 history: Arc::clone(&history),
                 luckynode: None,
+                network: network.clone(),
             };
             std::thread::spawn(move || http_serve(a, srv, ctx));
         }
@@ -2570,6 +2793,24 @@ mod tests {
     }
 
     #[test]
+    fn draw_budget_gates() {
+        // Pin the 10% default (review 2026-10-18): the draw is the only
+        // luckynode income; a silent revert to 5% must fail CI.
+        assert_eq!(DEFAULT_LUCKYNODE_SLICE_BPS, 1000);
+        assert_eq!(draw_budget(1_000_000, 1000), 100_000); // 10%
+        assert_eq!(draw_budget(1_000_000, 500), 50_000); // old 5%, for contrast
+        assert_eq!(draw_budget(922_000_000, 1000), 92_200_000); // spec scale
+        // floor, never round up (a draw may not spend past the slice)
+        assert_eq!(draw_budget(999, 1000), 99);
+        assert_eq!(draw_budget(0, 1000), 0);
+        // no overflow at u64-adjacent inflows
+        assert_eq!(
+            draw_budget(u64::MAX, 1000),
+            (u64::MAX as u128 * 1000 / 10_000) as u64
+        );
+    }
+
+    #[test]
     fn query_parsing_and_decoding() {
         assert_eq!(query_param("token=abc", "token").as_deref(), Some("abc"));
         assert_eq!(
@@ -2588,35 +2829,46 @@ mod tests {
     }
 
     #[test]
+    fn zero_global_threshold_makes_every_nonzero_balance_due() {
+        use lm_stratum::server::PayoutSettings;
+        // --payout-threshold 0 means "pay everything": every non-empty
+        // balance is due (empty ones are skipped so they can't stall the
+        // budget loop), with or without per-miner overrides.
+        let settings = PayoutSettings::new();
+        let due = due_miners(vec![("m1".to_string(), 5), ("m2".to_string(), 0), ("m3".to_string(), 999)], &settings, 0);
+        assert_eq!(due, vec![("m1".to_string(), 5), ("m3".to_string(), 999)]);
+    }
+
+    #[test]
     fn due_selection_honours_per_miner_thresholds() {
         use lm_stratum::server::{MinerSettings, PayoutSettings};
         let mut settings = PayoutSettings::new();
         settings.insert(
-            2,
+            "m2".to_string(),
             MinerSettings {
                 address: None,
                 threshold: Some(1_000),
             },
         );
-        let bals = vec![(1u64, 500u64), (2, 500), (3, 500)];
+        let bals = vec![("m1".to_string(), 500u64), ("m2".to_string(), 500), ("m3".to_string(), 500)];
         // Global 100: 1 and 3 are due; 2's own threshold (1000) holds it.
         assert_eq!(
             due_miners(bals.clone(), &settings, 100),
-            vec![(1, 500), (3, 500)]
+            vec![("m1".to_string(), 500), ("m3".to_string(), 500)]
         );
         // Global 600: nobody reaches their effective threshold.
         assert!(due_miners(bals, &settings, 600).is_empty());
         // A per-miner threshold below the global one pays earlier.
         settings.insert(
-            2,
+            "m2".to_string(),
             MinerSettings {
                 address: None,
                 threshold: Some(50),
             },
         );
         assert_eq!(
-            due_miners(vec![(2, 60)], &settings, 100),
-            vec![(2, 60)]
+            due_miners(vec![("m2".to_string(), 60)], &settings, 100),
+            vec![("m2".to_string(), 60)]
         );
     }
 
@@ -2625,20 +2877,45 @@ mod tests {
         use lm_stratum::server::{MinerSettings, PayoutSettings};
         let mut settings = PayoutSettings::new();
         settings.insert(
-            1,
+            "worker-name".to_string(),
             MinerSettings {
                 address: Some("override-addr".to_string()),
                 threshold: None,
             },
         );
-        let names: HashMap<u64, String> = [
-            (1u64, "worker-name".to_string()),
-            (2, "worker-2".to_string()),
-        ]
-        .into_iter()
-        .collect();
-        assert_eq!(payout_destination(1, &settings, &names), "override-addr");
-        assert_eq!(payout_destination(2, &settings, &names), "worker-2");
-        assert_eq!(payout_destination(9, &settings, &names), "");
+        settings.insert(
+            "worker-2".to_string(),
+            MinerSettings {
+                address: None,
+                threshold: None,
+            },
+        );
+        // The worker name is the payout identity: override wins when set,
+        // otherwise the name itself is the destination.
+        assert_eq!(payout_destination("worker-name", &settings), "override-addr");
+        assert_eq!(payout_destination("worker-2", &settings), "worker-2");
+        assert_eq!(payout_destination("unregistered", &settings), "unregistered");
+    }
+
+    #[test]
+    fn state_file_roundtrips_league_pool_and_defaults_old_files() {
+        let st = PoolState {
+            version: 1,
+            ledger: lm_pool::payout::PayoutLedger::default(),
+            names: Vec::new(),
+            blocks: Vec::new(),
+            recent_draws: Vec::new(),
+            pending: Vec::new(),
+            payout_settings: lm_stratum::server::PayoutSettings::new(),
+            league_pool: 260_317,
+            luckynodes: Vec::new(),
+        };
+        let json = serde_json::to_string(&st).expect("serialize");
+        let back: PoolState = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back.league_pool, 260_317);
+        // Old state files (pre-league_pool) still load: field defaults to 0.
+        let old = r#"{"version":1,"ledger":{"owed":{},"fees":0,"paid":{}},"names":[],"blocks":[]}"#;
+        let back: PoolState = serde_json::from_str(old).expect("old file");
+        assert_eq!(back.league_pool, 0);
     }
 }

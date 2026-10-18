@@ -9,7 +9,6 @@ use lm_pow::{is_jackpot, meets_target, pow_hash};
 use lm_stratum::client::PoolClient;
 use lm_stratum::provider::MockProvider;
 use lm_stratum::server::spawn_server;
-use lm_stratum::v1::worker_id;
 use primitive_types::U256;
 use std::time::Duration;
 
@@ -42,7 +41,7 @@ fn full_loop_share_block_jackpot_and_money() {
     let mut c = PoolClient::connect(server.addr()).expect("connect");
     assert!(c.subscribe("lm-miner/0.1").expect("subscribe"));
     assert!(c.authorize("alice").expect("authorize"));
-    let alice = worker_id("alice");
+    let alice = "alice".to_string();
 
     // First job + first share (also the first block on the instant chain).
     let job = c
@@ -126,7 +125,7 @@ fn share_replay_across_connections_is_rejected() {
     assert!(b.subscribe("replay").expect("sub b"));
     assert!(a.authorize("alice").expect("auth a"));
     assert!(b.authorize("bob").expect("auth b"));
-    let alice = worker_id("alice");
+    let alice = "alice".to_string();
 
     let job_a = a
         .read_job(Duration::from_secs(5))
@@ -187,7 +186,7 @@ fn blocks_credit_payout_balances() {
     assert_eq!(b.len(), 1);
     let bals = server.balances();
     assert_eq!(bals.len(), 1);
-    assert_eq!(bals[0].0, worker_id("dave"));
+    assert_eq!(bals[0].0, "dave");
     assert_eq!(
         bals.iter().map(|(_, v)| v).sum::<u64>(),
         b[0].value + b[0].bonus

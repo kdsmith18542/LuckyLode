@@ -1,32 +1,86 @@
 //! Minimal HTTP JSON-RPC client (std only — no async runtime, no HTTP deps).
 //!
-//! Speaks just enough HTTP/1.1 to talk to a local node's RPC port:
-//! `POST /` with Basic auth and `Connection: close`, then reads the whole
-//! response. JSON-RPC envelope handling matches the node's conventions
+//! Speaks just enough HTTP/1.1 to talk to a node's RPC port — plain HTTP or
+//! HTTPS (rustls, Mozilla roots) for nodes reached through a TLS reverse
+//! proxy. `POST <path>` with Basic auth and `Connection: close`, then reads
+//! the whole response (Content-Length, close-delimited, or chunked). The
+//! JSON-RPC envelope handling matches the node's conventions
 //! (`{"result":…,"error":…,"id":…}`; `error != null` → `Err(message)`).
 //!
 //! This is deliberately not a general HTTP client: it exists so the
-//! reference pool can talk to the forked node with zero new dependencies.
+//! reference pool and wallet can talk to the forked node with zero new
+//! dependencies.
 
+use crate::tls;
+use rustls::ClientConfig;
 use std::io::{Read, Write};
 use std::net::TcpStream;
+use std::sync::Arc;
 use std::time::Duration;
 
 /// Blocking JSON-RPC client for a single node endpoint.
 #[derive(Debug, Clone)]
 pub struct RpcClient {
     addr: String,
+    host: String,
+    path: String,
     user: String,
     pass: String,
+    tls: Option<Arc<ClientConfig>>,
+    server_name: String,
 }
 
 impl RpcClient {
+    /// Plain-HTTP client for `host:port` (the classic localhost node).
     pub fn new(addr: &str, user: &str, pass: &str) -> Self {
         Self {
             addr: addr.to_string(),
+            host: addr.to_string(),
+            path: "/".to_string(),
             user: user.to_string(),
             pass: pass.to_string(),
+            tls: None,
+            server_name: addr.split(':').next().unwrap_or(addr).to_string(),
         }
+    }
+
+    /// Client from a URL: `http://host[:port][/path]`,
+    /// `https://host[:port][/path]`, or a bare `host[:port]` (plain HTTP).
+    /// The path prefix lets a public endpoint live behind a reverse proxy
+    /// (e.g. `https://luckylode.cc/node/`).
+    pub fn from_url(url: &str, user: &str, pass: &str) -> Result<Self, String> {
+        let (tls_on, rest) = match url.strip_prefix("https://") {
+            Some(r) => (true, r),
+            None => (false, url.strip_prefix("http://").unwrap_or(url)),
+        };
+        let (authority, path) = match rest.find('/') {
+            Some(i) => (&rest[..i], &rest[i..]),
+            None => (rest, "/"),
+        };
+        if authority.is_empty() {
+            return Err(format!("node RPC URL has no host: '{url}'"));
+        }
+        let default_port = if tls_on { 443 } else { 80 };
+        let addr = if authority.contains(':') {
+            authority.to_string()
+        } else {
+            format!("{authority}:{default_port}")
+        };
+        let server_name = authority.split(':').next().unwrap_or(authority).to_string();
+        let tls = if tls_on {
+            Some(tls::client_config(None, false).map_err(|e| format!("tls config: {e}"))?)
+        } else {
+            None
+        };
+        Ok(Self {
+            addr,
+            host: authority.to_string(),
+            path: path.to_string(),
+            user: user.to_string(),
+            pass: pass.to_string(),
+            tls,
+            server_name,
+        })
     }
 
     /// Call `method` with `params` (array), returning the JSON `result`.
@@ -46,20 +100,21 @@ impl RpcClient {
         .to_string();
         let auth = format!("{}:{}", self.user, self.pass);
         let req = format!(
-            "POST / HTTP/1.1\r\nHost: {}\r\nAuthorization: Basic {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-            self.addr,
+            "POST {} HTTP/1.1\r\nHost: {}\r\nAuthorization: Basic {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            self.path,
+            self.host,
             base64(auth.as_bytes()),
             body.len(),
             body
         );
-        let mut stream =
+        let sock =
             TcpStream::connect(&self.addr).map_err(|e| format!("connect {}: {e}", self.addr))?;
-        stream
-            .set_read_timeout(Some(Duration::from_secs(20)))
+        sock.set_read_timeout(Some(Duration::from_secs(20)))
             .map_err(|e| format!("set timeout: {e}"))?;
-        stream
-            .set_write_timeout(Some(Duration::from_secs(10)))
+        sock.set_write_timeout(Some(Duration::from_secs(10)))
             .map_err(|e| format!("set timeout: {e}"))?;
+        let mut stream = tls::connect(sock, &self.server_name, self.tls.as_ref())
+            .map_err(|e| format!("tls {}: {e}", self.addr))?;
         stream
             .write_all(req.as_bytes())
             .map_err(|e| format!("write: {e}"))?;
@@ -67,16 +122,25 @@ impl RpcClient {
         stream
             .read_to_end(&mut resp)
             .map_err(|e| format!("read: {e}"))?;
-        let text = String::from_utf8_lossy(&resp);
-        let (head, payload) = text
-            .split_once("\r\n\r\n")
+        let split = find_subslice(&resp, b"\r\n\r\n")
             .ok_or_else(|| "malformed HTTP response (no header/body split)".to_string())?;
+        let head = String::from_utf8_lossy(&resp[..split]).to_string();
+        let mut payload: Vec<u8> = resp[split + 4..].to_vec();
+        // nginx (and other proxies) may chunk larger responses; the node
+        // itself does not.
+        if head
+            .to_ascii_lowercase()
+            .contains("transfer-encoding: chunked")
+        {
+            payload = dechunk(&payload)?;
+        }
         let ok_status = head.starts_with("HTTP/1.1 200") || head.starts_with("HTTP/1.0 200");
+        let text = String::from_utf8_lossy(&payload);
         // verusd-family nodes carry the JSON-RPC envelope on some
         // non-2xx statuses too (e.g. an over-balance `sendtoaddress`
         // returns HTTP 500 with the -6 error body) — surface it.
         if !ok_status {
-            if let Ok(msg) = serde_json::from_str::<serde_json::Value>(payload) {
+            if let Ok(msg) = serde_json::from_str::<serde_json::Value>(&text) {
                 if let Some(err) = msg.get("error") {
                     if !err.is_null() {
                         return Err(format!("rpc error: {err}"));
@@ -87,7 +151,7 @@ impl RpcClient {
             return Err(format!("rpc http status: {status}"));
         }
         let msg: serde_json::Value =
-            serde_json::from_str(payload).map_err(|e| format!("bad json-rpc body: {e}"))?;
+            serde_json::from_str(&text).map_err(|e| format!("bad json-rpc body: {e}"))?;
         if let Some(err) = msg.get("error") {
             if !err.is_null() {
                 return Err(format!("rpc error: {err}"));
@@ -96,6 +160,31 @@ impl RpcClient {
         msg.get("result")
             .cloned()
             .ok_or_else(|| "rpc response missing result".to_string())
+    }
+}
+
+fn find_subslice(hay: &[u8], needle: &[u8]) -> Option<usize> {
+    hay.windows(needle.len()).position(|w| w == needle)
+}
+
+/// Decode HTTP/1.1 chunked transfer-encoding.
+fn dechunk(mut b: &[u8]) -> Result<Vec<u8>, String> {
+    let mut out = Vec::new();
+    loop {
+        let nl = find_subslice(b, b"\r\n").ok_or("chunked body: missing chunk header")?;
+        let line = std::str::from_utf8(&b[..nl]).map_err(|_| "chunked body: bad chunk header")?;
+        let size_hex = line.split(';').next().unwrap_or("").trim();
+        let size = usize::from_str_radix(size_hex, 16)
+            .map_err(|_| format!("chunked body: bad chunk size '{size_hex}'"))?;
+        b = &b[nl + 2..];
+        if size == 0 {
+            return Ok(out);
+        }
+        if b.len() < size + 2 {
+            return Err("chunked body: truncated chunk".to_string());
+        }
+        out.extend_from_slice(&b[..size]);
+        b = &b[size + 2..];
     }
 }
 
@@ -194,5 +283,74 @@ mod tests {
         // Port 1 is reserved and nothing listens there.
         let c = RpcClient::new("127.0.0.1:1", "u", "p");
         assert!(c.call("x", serde_json::json!([])).is_err());
+    }
+
+    #[test]
+    fn from_url_parses_scheme_host_port_path() {
+        let c = RpcClient::from_url("https://luckylode.cc/node/", "u", "p").expect("https url");
+        assert_eq!(c.addr, "luckylode.cc:443");
+        assert_eq!(c.host, "luckylode.cc");
+        assert_eq!(c.path, "/node/");
+        assert_eq!(c.server_name, "luckylode.cc");
+        assert!(c.tls.is_some());
+
+        let c = RpcClient::from_url("http://127.0.0.1:9271", "u", "p").expect("http url");
+        assert_eq!(c.addr, "127.0.0.1:9271");
+        assert_eq!(c.path, "/");
+        assert!(c.tls.is_none());
+
+        // Bare host:port (legacy setting form) stays plain HTTP.
+        let c = RpcClient::from_url("127.0.0.1:9271", "u", "p").expect("bare addr");
+        assert_eq!(c.addr, "127.0.0.1:9271");
+        assert!(c.tls.is_none());
+
+        // Bare host gets the scheme default port.
+        let c = RpcClient::from_url("example.com", "u", "p").expect("bare host");
+        assert_eq!(c.addr, "example.com:80");
+
+        assert!(RpcClient::from_url("", "u", "p").is_err());
+        assert!(RpcClient::from_url("https://", "u", "p").is_err());
+    }
+
+    #[test]
+    fn url_path_prefix_is_used_in_request_line() {
+        let resp = "HTTP/1.1 200 OK\r\n\r\n{\"result\":1,\"error\":null,\"id\":\"lm\"}";
+        let (addr, h) = one_shot_server(resp);
+        let c = RpcClient::from_url(&format!("http://{addr}/node/"), "u", "p").expect("url");
+        let v = c.call("getblockcount", serde_json::json!([])).expect("ok");
+        assert_eq!(v, serde_json::json!(1));
+        let req = h.join().expect("join");
+        assert!(req.starts_with("POST /node/ HTTP/1.1"), "{req}");
+    }
+
+    #[test]
+    fn chunked_response_is_decoded() {
+        // {"result":42,"error":null,"id":"lm"} split into 3 chunks of 0xc.
+        let resp = "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\nc\r\n{\"result\":42\r\nc\r\n,\"error\":nul\r\nc\r\nl,\"id\":\"lm\"}\r\n0\r\n\r\n";
+        let (addr, h) = one_shot_server(resp);
+        let c = RpcClient::new(&addr, "u", "p");
+        let v = c.call("getblockcount", serde_json::json!([])).expect("ok");
+        assert_eq!(v, serde_json::json!(42));
+        h.join().expect("join");
+    }
+
+    /// Live check against a real endpoint (explicit runs only):
+    /// `LUCKYLODE_RPC_URL=https://luckylode.cc/node/ LUCKYLODE_RPC_USER=u \
+    ///  LUCKYLODE_RPC_PASS=p cargo test -p lm-stratum -- --ignored`
+    #[test]
+    #[ignore]
+    fn live_node_roundtrip() {
+        let url = match std::env::var("LUCKYLODE_RPC_URL") {
+            Ok(u) => u,
+            Err(_) => return,
+        };
+        let user = std::env::var("LUCKYLODE_RPC_USER").unwrap_or_default();
+        let pass = std::env::var("LUCKYLODE_RPC_PASS").unwrap_or_default();
+        let c = RpcClient::from_url(&url, &user, &pass).expect("client");
+        let v = c.call("getblockcount", serde_json::json!([])).expect("live rpc");
+        assert!(v.is_u64(), "expected a block count, got {v}");
+        // A wallet method (larger, definitely chunked behind the proxy).
+        let w = c.call("getwalletinfo", serde_json::json!([])).expect("live rpc");
+        assert!(w.get("balance").is_some(), "expected wallet info, got {w}");
     }
 }

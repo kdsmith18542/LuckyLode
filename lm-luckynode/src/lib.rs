@@ -40,6 +40,17 @@ pub struct Node {
     pub tenure_start: u64,
     pub last_heartbeat: u64,
     pub heartbeats: u64,
+    /// Payout address ownership proven at registration (signed message
+    /// verified by the pool via the node's `verifymessage`). Draw
+    /// eligibility folds this into the bond verdict each tick.
+    #[serde(default)]
+    pub owned: bool,
+    /// Designated locked-collateral UTXO (txid, vout). When set, the pool
+    /// verifies it is still unspent every tick; spending it evicts the
+    /// node immediately (review fix 2026-10-18). Balance-only checks let
+    /// funds drift in and out between ticks — a designated UTXO does not.
+    #[serde(default)]
+    pub bond_utxo: Option<(String, u32)>,
     pub bond_ok: bool,
     pub bond_checked_at: u64,
 }
@@ -56,11 +67,33 @@ impl Registry {
         Self::default()
     }
 
+    /// Restore a persisted registry verbatim (state-file load). Tenure,
+    /// heartbeat counts and ownership survive a pool restart instead of
+    /// resetting to zero (review fix 2026-10-18).
+    pub fn restore(&mut self, nodes: Vec<Node>) {
+        self.nodes = nodes.into_iter().map(|n| (n.id.clone(), n)).collect();
+    }
+
+    /// Designate (or replace) the locked bond UTXO. Returns false for
+    /// unknown ids. Spending the designated UTXO is eviction.
+    pub fn designate_bond(&mut self, id: &str, txid: &str, vout: u32) -> bool {
+        match self.nodes.get_mut(id) {
+            Some(n) => {
+                n.bond_utxo = Some((txid.to_string(), vout));
+                true
+            }
+            None => false,
+        }
+    }
+
     /// Register (or re-register) a node. Re-registration keeps tenure
     /// only if the node never went dark; a fresh id starts tenure now.
-    pub fn register(&mut self, id: &str, address: &str, now: u64) {
+    /// `owned` records whether the payout address signed the registration
+    /// (proof of control; the pool verifies it).
+    pub fn register(&mut self, id: &str, address: &str, now: u64, owned: bool) {
         if let Some(n) = self.nodes.get_mut(id) {
             n.address = address.to_string();
+            n.owned = owned;
         } else {
             self.nodes.insert(
                 id.to_string(),
@@ -71,6 +104,8 @@ impl Registry {
                     tenure_start: now,
                     last_heartbeat: 0,
                     heartbeats: 0,
+                    owned,
+                    bond_utxo: None,
                     bond_ok: false,
                     bond_checked_at: 0,
                 },
@@ -240,6 +275,35 @@ pub mod notarize {
     }
 }
 
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// Registration body proving the registrar controls the payout address:
+/// the address's key signs a canonical, timestamped message (the pool
+/// verifies via the node's `verifymessage`). Shared by the wallet's embedded
+/// service and the CLI daemon so the format never drifts.
+pub fn register_body(
+    id: &str,
+    address: &str,
+    payout_secret: &[u8; 32],
+) -> Result<serde_json::Value, String> {
+    let ts = now_secs();
+    let msg = format!("luckynode-register:v1:{id}:{address}:{ts}");
+    let sig = lm_keys::sign_message(payout_secret, &msg)?;
+    Ok(serde_json::json!({
+        "id": id,
+        "address": address,
+        "pubkey": id,
+        "msg": msg,
+        "sig": sig,
+        "ts": ts,
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -257,8 +321,8 @@ mod tests {
     #[test]
     fn registry_liveness() {
         let mut r = Registry::new();
-        r.register("a", "addr-a", 1000);
-        r.register("b", "addr-b", 1000);
+        r.register("a", "addr-a", 1000, true);
+        r.register("b", "addr-b", 1000, false);
         // No heartbeats: nobody active.
         assert!(r.active(2000, 1800).is_empty());
         assert!(r.heartbeat("a", 1500, 86400));
@@ -277,11 +341,31 @@ mod tests {
     }
 
     #[test]
+    fn designate_bond_survives_restore() {
+        // Locked-collateral UTXO: designated at register, still there
+        // after a state-file round trip; unknown ids refuse.
+        let mut r = Registry::new();
+        r.register("a", "addr-a", 1000, true);
+        assert!(r.get("a").expect("a").bond_utxo.is_none());
+        assert!(r.designate_bond("a", &"ab".repeat(32), 1));
+        assert!(!r.designate_bond("ghost", &"ab".repeat(32), 0));
+        let snap: Vec<Node> = r.all_nodes().iter().map(|n| (*n).clone()).collect();
+        let json = serde_json::to_string(&snap).expect("ser");
+        let back: Vec<Node> = serde_json::from_str(&json).expect("de");
+        let mut r2 = Registry::new();
+        r2.restore(back);
+        let n = r2.get("a").expect("a");
+        assert_eq!(n.bond_utxo, Some(("ab".repeat(32), 1)));
+        assert_eq!(n.registered_at, 1000); // tenure survived, not reset
+        assert!(n.owned);
+    }
+
+    #[test]
     fn draw_eligibles_needs_service_and_bond() {
         let mut r = Registry::new();
-        r.register("funded-active", "addr1", 1000);
-        r.register("unfunded-active", "addr2", 1000);
-        r.register("funded-idle", "addr3", 1000);
+        r.register("funded-active", "addr1", 1000, true);
+        r.register("unfunded-active", "addr2", 1000, false);
+        r.register("funded-idle", "addr3", 1000, true);
         assert!(r.heartbeat("funded-active", 1500, 86400));
         assert!(r.heartbeat("unfunded-active", 1500, 86400));
         // funded-idle never heartbeats.

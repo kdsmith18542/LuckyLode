@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::index::Indexer;
 
-const CSS: &str = "body{background:#0d1117;color:#e6edf3;font:14px ui-monospace,Menlo,monospace;margin:0 auto;padding:24px;max-width:960px}h1{font-size:20px;color:#ffd166}a{color:#7ee787}table{border-collapse:collapse;width:100%;margin:12px 0}td,th{border:1px solid #30363d;padding:6px 10px;text-align:left;font-size:13px}.dim{color:#8b949e}.card{background:#161b22;border:1px solid #30363d;border-radius:10px;padding:12px;margin:12px 0}input{width:70%;padding:8px;background:#0d1117;color:#e6edf3;border:1px solid #30363d;border-radius:6px}button{padding:8px 14px;background:#161b22;color:#ffd166;border:1px solid #ffd166;border-radius:6px}";
+const CSS: &str = "body{background:#0d1117;color:#e6edf3;font:14px ui-monospace,Menlo,monospace;margin:0 auto;padding:24px;max-width:960px}h1{font-size:20px;color:#ffd166}a{color:#7ee787}table{border-collapse:collapse;width:100%;margin:12px 0}td,th{border:1px solid #30363d;padding:6px 10px;text-align:left;font-size:13px}.dim{color:#8b949e}.pos{color:#7ee787}.card{background:#161b22;border:1px solid #30363d;border-radius:10px;padding:12px;margin:12px 0}input{width:70%;padding:8px;background:#0d1117;color:#e6edf3;border:1px solid #30363d;border-radius:6px}button{padding:8px 14px;background:#161b22;color:#ffd166;border:1px solid #ffd166;border-radius:6px}";
 
 fn page(title: &str, body: String) -> String {
     format!(
@@ -21,20 +21,24 @@ fn page(title: &str, body: String) -> String {
     )
 }
 
-fn coins(v: i64) -> String {
-    format!("{}.{:08}", v / 100_000_000, (v % 100_000_000).abs())
+/// Chain ticker (testnet now; P3 mainnet switch flips this one const).
+const TICK: &str = "tLKYL";
+
+/// Epoch seconds → UTC date. No raw timestamps in the UI.
+fn fmt_time(ts: i64) -> String {
+    chrono::DateTime::from_timestamp(ts, 0)
+        .map(|d| d.format("%Y-%m-%d %H:%M UTC").to_string())
+        .unwrap_or_else(|| "-".to_string())
 }
 
-/// Like [`coins`] but trims trailing zeros — ramp-era game amounts are
-/// sub-0.01 LKYL and 2-decimal formatting would round them to "0".
-fn coins_trim(v: i64) -> String {
-    let s = coins(v);
+fn coins(v: i64) -> String {
+    // Adaptive precision (review fix 2026-10-18): up to 8 decimals,
+    // trailing zeros trimmed — `0.33`, never `0.33000000`, and never `0`
+    // for a non-zero balance. Same rule as the wallet/pool formatters.
+    let s = format!("{}.{:08}", v / 100_000_000, (v % 100_000_000).abs());
     let t = s.trim_end_matches('0').trim_end_matches('.');
-    if t.is_empty() || t == "-" {
-        "0".to_string()
-    } else {
-        t.to_string()
-    }
+    let t = if t.is_empty() || t == "-" { "0" } else { t };
+    format!("{t} {TICK}")
 }
 
 fn tx_or_note(t: &str) -> String {
@@ -72,27 +76,64 @@ fn home(idx: &Indexer) -> String {
     let stats = idx.stats().unwrap_or(serde_json::json!({"height": -1}));
     let h = stats.get("height").and_then(|v| v.as_i64()).unwrap_or(-1);
     let mut rows = String::new();
+    // Per-block game money (home columns; pool-reported, pool-mined only).
+    // bonus = jackpot win, pot = splash paid to the finder (0 when no
+    // event — NOT the reserve balance), league = overflow credited.
+    let game_by_height: std::collections::HashMap<i64, (i64, i64, i64)> = idx
+        .game_blocks_recent(100)
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|g| {
+            let height = g.get("height")?.as_i64()?;
+            Some((
+                height,
+                (
+                    g.get("bonus")?.as_i64()?,
+                    g.get("pot")?.as_i64()?,
+                    g.get("league")?.as_i64()?,
+                ),
+            ))
+        })
+        .collect();
+    let mut pos_count = 0;
     for hh in (0.max(h - 19)..=h).rev() {
         if let Ok(Some(b)) = idx.block_by_height(hh) {
+            let is_pos = b["pos"].as_bool().unwrap_or(false);
+            if is_pos {
+                pos_count += 1;
+            }
             rows += &format!(
-                "<tr><td>{}</td><td><a href=/block/{}>{}</a></td><td>{}</td><td>{}</td></tr>",
+                "<tr><td>{}</td><td>{}</td><td><a href=/block/{}>{}</a></td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
                 hh,
+                if is_pos { "<b class=pos>PoS · minted</b>" } else { "<span class=dim>PoW</span>" },
                 b["hash"].as_str().unwrap_or(""),
                 &b["hash"].as_str().unwrap_or("")[..16],
                 b["ntx"],
-                coins(b["pot"].as_i64().unwrap_or(0)),
+                idx.coinbase_total(hh).map(coins).unwrap_or_else(|_| "<span class=dim>–</span>".to_string()),
+                game_by_height.get(&hh).filter(|v| v.0 > 0).map(|v| coins(v.0)).unwrap_or_else(|| "<span class=dim>–</span>".to_string()),
+                game_by_height.get(&hh).filter(|v| v.1 > 0).map(|v| coins(v.1)).unwrap_or_else(|| "<span class=dim>–</span>".to_string()),
+                game_by_height.get(&hh).filter(|v| v.2 > 0).map(|v| coins(v.2)).unwrap_or_else(|| "<span class=dim>–</span>".to_string()),
             );
         }
     }
+    let stake = idx.staking_state().unwrap_or(serde_json::json!({}));
+    let stake_card = format!(
+        "<div class=card>node staking <b>{}</b> · stake supply <b>{}</b> · PoS share last 20: <b>{}%</b> (target ~50%)</div>",
+        if stake.get("staking_on").and_then(|v| v.as_bool()).unwrap_or(false) { "on" } else { "off" },
+        coins(stake.get("staking_supply").and_then(|v| v.as_i64()).unwrap_or(0)),
+        if h >= 0 { pos_count * 100 / 20 } else { 0 },
+    );
     page(
         "home",
         format!(
-            "{}<div class=card>height <b>{}</b> · hash <span class=dim>{}</span> · supply <b>{}</b> · difficulty {:.2}</div><h2>Recent blocks</h2><table><tr><th>height</th><th>hash</th><th>txs</th><th>pot splash</th></tr>{rows}</table>",
+            "{}<div class=card>height <b>{}</b> · hash <span class=dim>{}</span> · supply <b>{}</b> · difficulty {:.2} · minted (PoS) in last 20: <b>{}</b></div>{}<h2>Recent blocks</h2><table><tr><th>height</th><th>type</th><th>hash</th><th>txs</th><th>block reward</th><th>jackpot bonus</th><th>pot splash</th><th>league inflow</th></tr>{rows}</table>",
             search_box(),
             h,
             esc(stats.get("hash").and_then(|v| v.as_str()).unwrap_or("")),
             coins(stats.get("supply").and_then(|v| v.as_i64()).unwrap_or(0)),
             stats.get("difficulty").and_then(|v| v.as_f64()).unwrap_or(0.0),
+            pos_count,
+            stake_card,
         ),
     )
 }
@@ -119,8 +160,8 @@ fn game_page(idx: &Indexer) -> String {
                 "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
                 link_block(h),
                 finder,
-                coins_trim(b["bonus"].as_i64().unwrap_or(0)),
-                coins_trim(b["league"].as_i64().unwrap_or(0)),
+                coins(b["bonus"].as_i64().unwrap_or(0)),
+                coins(b["league"].as_i64().unwrap_or(0)),
             );
         }
         if b["pot"].as_i64().unwrap_or(0) > 0 {
@@ -128,7 +169,7 @@ fn game_page(idx: &Indexer) -> String {
                 "<tr><td>{}</td><td>{}</td><td>{}</td></tr>",
                 link_block(h),
                 finder,
-                coins_trim(b["pot"].as_i64().unwrap_or(0)),
+                coins(b["pot"].as_i64().unwrap_or(0)),
             );
         }
     }
@@ -148,12 +189,13 @@ fn game_page(idx: &Indexer) -> String {
             esc(seed)
         };
         let winner = d["winner"].as_str().unwrap_or("");
+        let wshort = format!("{}{}", esc(&winner[..winner.len().min(12)]), if winner.len() > 12 { "…" } else { "" });
         draws += &format!(
             "<tr><td>{}</td><td>{}</td><td><span class=dim>{}</span></td><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
             d["epoch"].as_i64().unwrap_or(0),
             link_block(d["height"].as_i64().unwrap_or(0)),
-            esc(&winner[..winner.len().min(12)]),
-            coins_trim(d["budget"].as_i64().unwrap_or(0)),
+            wshort,
+            coins(d["budget"].as_i64().unwrap_or(0)),
             d["cosigns"].as_i64().unwrap_or(0),
             tx_or_note(d["txid"].as_str().unwrap_or("")),
             seed_cell,
@@ -165,7 +207,7 @@ fn game_page(idx: &Indexer) -> String {
     page(
         "game",
         format!(
-            "{}<div class=card>jackpot reserve <b>{}</b> · pot <b>{}</b> · pot drought <b>{}/{}</b> · odds: jackpot 1-in-{} blocks, pot 1-in-{} (pity splash forced at the drought limit)</div><h2>Luckynode Draws</h2><table><tr><th>epoch</th><th>height</th><th>winner</th><th>budget</th><th>cosigns</th><th>txid</th><th>seed</th></tr>{draws}</table><h2>Jackpot hits</h2><table><tr><th>height</th><th>finder</th><th>bonus</th><th>league inflow</th></tr>{hits}</table><h2>Pot splashes</h2><table><tr><th>height</th><th>finder</th><th>splash</th></tr>{splashes}</table>",
+            "{}<div class=card>jackpot reserve <b>{}</b> · pot <b>{}</b> · pot drought <b>{}/{}</b> · odds (PoW finds, pre-committed per height): jackpot 1-in-{} blocks,             pot 1-in-{} &mdash; forced splash after {} dry blocks max</div><h2>Luckynode Draws</h2><table><tr><th>epoch</th><th>height</th><th>winner</th><th>budget</th><th>cosigns</th><th>txid</th><th>seed (epoch-start block)</th></tr>{draws}</table><h2>Jackpot hits</h2><table><tr><th>height</th><th>finder</th><th>bonus</th><th>league inflow</th></tr>{hits}</table><h2>Pot splashes</h2><table><tr><th>height</th><th>finder</th><th>splash</th></tr>{splashes}</table>",
             search_box(),
             coins(reserve),
             coins(pot),
@@ -173,6 +215,7 @@ fn game_page(idx: &Indexer) -> String {
             dl,
             jd,
             pd,
+            dl,
         ),
     )
 }
@@ -197,10 +240,11 @@ fn block_page(idx: &Indexer, b: &serde_json::Value) -> String {
     page(
         &format!("block {h}"),
         format!(
-            "<table><tr><th>height</th><td>{}</td></tr><tr><th>hash</th><td>{}</td></tr><tr><th>time</th><td>{}</td></tr><tr><th>confirmations</th><td>{}</td></tr><tr><th>txs</th><td>{}</td></tr><tr><th>difficulty</th><td>{:.2}</td></tr><tr><th>jackpot reserve</th><td>{}</td></tr><tr><th>pot</th><td>{}</td></tr><tr><th>drought</th><td>{}</td></tr>{game_rows}</table><h2>Transactions</h2><table>{rows}</table>",
+            "<table><tr><th>height</th><td>{}</td></tr><tr><th>hash</th><td>{}</td></tr><tr><th>time</th><td>{}</td></tr><tr><th>type</th><td>{}</td></tr><tr><th>confirmations</th><td>{}</td></tr><tr><th>txs</th><td>{}</td></tr><tr><th>difficulty</th><td>{:.2}</td></tr><tr><th>jackpot reserve</th><td>{}</td></tr><tr><th>pot</th><td>{}</td></tr><tr><th>drought</th><td>{} blocks</td></tr>{game_rows}</table><h2>Transactions</h2><table>{rows}</table>",
             link_block(h),
             b["hash"].as_str().unwrap_or(""),
-            b["time"],
+            fmt_time(b["time"].as_i64().unwrap_or(0)),
+            if b["pos"].as_bool().unwrap_or(false) { "<b class=pos>PoS · minted</b>" } else { "<span class=dim>PoW</span>" },
             b["confirmations"],
             b["ntx"],
             b["difficulty"].as_f64().unwrap_or(0.0),
@@ -216,9 +260,10 @@ fn tx_page(_idx: &Indexer, t: &serde_json::Value) -> String {
     if t["coinbase"].as_bool().unwrap_or(false) {
         ins = "<tr><td colspan=3>coinbase (newly minted)</td></tr>".to_string();
     } else {
-        for v in t["vin"].as_array().cloned().unwrap_or_default() {
+        for (n, v) in t["vin"].as_array().cloned().unwrap_or_default().iter().enumerate() {
             ins += &format!(
-                "<tr><td>{}</td><td>{}</td><td>{}</td></tr>",
+                "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
+                n,
                 link_addr(&v["address"].as_str().map(|s| s.to_string())),
                 coins(v["value"].as_i64().unwrap_or(0)),
                 link_tx(v["txid"].as_str().unwrap_or("")),
@@ -226,9 +271,10 @@ fn tx_page(_idx: &Indexer, t: &serde_json::Value) -> String {
         }
     }
     let mut outs = String::new();
-    for v in t["vout"].as_array().cloned().unwrap_or_default() {
+    for (n, v) in t["vout"].as_array().cloned().unwrap_or_default().iter().enumerate() {
         outs += &format!(
-            "<tr><td>{}</td><td>{}</td><td>{}</td></tr>",
+            "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
+            n,
             link_addr(&v["address"].as_str().map(|s| s.to_string())),
             coins(v["value"].as_i64().unwrap_or(0)),
             if v["spent"].as_bool().unwrap_or(false) { "spent" } else { "unspent" },
@@ -237,7 +283,7 @@ fn tx_page(_idx: &Indexer, t: &serde_json::Value) -> String {
     page(
         "tx",
         format!(
-            "<table><tr><th>txid</th><td>{}</td></tr><tr><th>block</th><td>{} ({} confs)</td></tr><tr><th>fee</th><td>{}</td></tr></table><h2>Inputs</h2><table><tr><th>from</th><th>value</th><th>tx</th></tr>{ins}</table><h2>Outputs</h2><table><tr><th>to</th><th>value</th><th>state</th></tr>{outs}</table>",
+            "<table><tr><th>txid</th><td>{}</td></tr><tr><th>block</th><td>{} ({} confs)</td></tr><tr><th>fee</th><td>{}</td></tr></table><h2>Inputs</h2><table><tr><th>#</th><th>from</th><th>value</th><th>tx</th></tr>{ins}</table><h2>Outputs</h2><table><tr><th>#</th><th>to</th><th>value</th><th>state</th></tr>{outs}</table>",
             t["txid"].as_str().unwrap_or(""),
             link_block(t["height"].as_i64().unwrap_or(0)),
             t["confirmations"],
@@ -249,22 +295,36 @@ fn tx_page(_idx: &Indexer, t: &serde_json::Value) -> String {
 fn address_page(a: &serde_json::Value) -> String {
     let mut rows = String::new();
     for t in a["txs"].as_array().cloned().unwrap_or_default() {
+        let flow = t["flow"].as_i64().unwrap_or(0);
+        let dir = if flow > 0 {
+            "<span class=pos>in</span>"
+        } else if flow < 0 {
+            "<span>out</span>"
+        } else {
+            "<span class=dim>self</span>"
+        };
         rows += &format!(
-            "<tr><td>{}</td><td>{}</td></tr>",
+            "<tr><td>{}</td><td>{}</td><td>{dir}</td><td>{}</td></tr>",
             link_tx(t["txid"].as_str().unwrap_or("")),
             link_block(t["height"].as_i64().unwrap_or(0)),
+            coins(flow),
         );
     }
     if a["txs_truncated"].as_bool().unwrap_or(false) {
-        rows += "<tr><td colspan=2 class=dim>…truncated at 100</td></tr>";
+        rows += "<tr><td colspan=4 class=dim>…first 100, newest first — refine with a txid search for older</td></tr>";
     }
     page(
         "address",
         format!(
-            "<table><tr><th>address</th><td>{}</td></tr><tr><th>balance</th><td>{}</td></tr><tr><th>total received</th><td>{}</td></tr></table><h2>Transactions</h2><table><tr><th>txid</th><th>block</th></tr>{rows}</table>",
+            "<table><tr><th>address</th><td>{}</td></tr><tr><th>balance</th><td>{}</td></tr><tr><th>total received</th><td>{}</td></tr></table>{}<h2>Transactions</h2><table><tr><th>txid</th><th>block</th><th>direction</th><th>net</th></tr>{rows}</table>",
             a["address"].as_str().unwrap_or(""),
             coins(a["balance"].as_i64().unwrap_or(0)),
             coins(a["received"].as_i64().unwrap_or(0)),
+            if a["txs"].as_array().map(|t| t.is_empty()).unwrap_or(true) && a["received"].as_i64().unwrap_or(0) == 0 {
+                "<div class=card>never seen on this chain — check the address for typos before sending</div>"
+            } else {
+                ""
+            },
         ),
     )
 }
