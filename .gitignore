@@ -1,8 +1,9 @@
 # Rust build artifacts (regenerate via `cargo test --workspace` at repo root)
 target/
 
-# Verus fork working tree — lives in its own repository (fork of VerusCoin),
-# branch `lowmine-pow-eval`. Tracked separately, never inside this repo.
+# Node working tree — the node lives in its own repository
+# (github.com/kdsmith18542/LuckyLode-node); a local clone is kept here
+# for development and never tracked inside this repo.
 verus/
 
 # OS noise

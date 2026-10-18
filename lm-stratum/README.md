@@ -77,8 +77,7 @@ This is the reference implementation; run it on testnet knowing:
   7.0.0 (dev-dependency): a reference handshake against our session,
   both transport directions byte-identical, length tables agreeing.
 
-Tracked follow-ups: persistence + payout processor + auth
-(``), V2 multi-channel + interop test against
-`codec_sv2`'s Encoder/Decoder,
-`lm-miner pool` subcommand speaking
-`client`, attestation-gated league entry.
+Shipped: state-file persistence, the payout processor, pool auth
+(--pool-password / --workers-file), V2 multi-channel, and interop against
+`codec_sv2`'s Encoder/Decoder. Remaining follow-ups: a V2-speaking
+`lm-miner pool` mode, attestation-gated league entry.

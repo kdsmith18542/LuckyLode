@@ -17,7 +17,7 @@ jobs:
       - name: Bench smoke (compile only, timing is device-matrix work)
         run: cargo bench -p lm-pow -- --test
 
-  # Doc 05 §5.7 determinism gate: EmberHash's vectors must agree
+  # Doc 05 §5.7 determinism gate: LuckyHash vectors must agree
   # byte-for-byte across architectures (endianness discipline §5.1). The
   # KAT suite pins seed/mem/out for fixed (header, nonce, height), so a
   # big-endian slip or a word-size assumption fails here on aarch64 even

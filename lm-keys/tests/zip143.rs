@@ -1,6 +1,6 @@
 //! ZIP-143 KAT: replay every transparent-only overwinter v3 vector from
 //! the fork's own regenerated test set
-//! (verus/src/test/data/sighash.json, run by sighash_tests.cpp via
+//! (the node repository's src/test/data/sighash.json, run by sighash_tests.cpp via
 //! `SignatureHash(scriptCode, tx, nIn, nHashType, /*amount=*/0,
 //! consensusBranchId)`). These 45 vectors cover every hash-type shape
 //! (ALL / SINGLE / NONE / ANYONECANPAY and the odd bits the fuzz

@@ -2,23 +2,26 @@ Lucky Lode — attribution and licensing
 ======================================
 
 Lucky Lode is a fair-launch, hybrid PoW/PoS mineable coin. This repository
-contains the Rust reference crates and the design documents; the node/wallet
-software is a fork of VerusCoin maintained in the `verus/` submodule/fork
-(see `verus/NOTICE`).
+contains the Rust reference crates, the wallet, and the design documents;
+the consensus node is a fork of VerusCoin maintained in its own
+repository, [LuckyLode-node](https://github.com/kdsmith18542/LuckyLode-node)
+(see that repository's NOTICE and COPYING).
 
 Licensing
 ---------
 
-  Rust code (lm-* crates)       GNU GPL-3.0-only (see LICENSE)
-  Design documents (docs/)      CC-BY-SA-4.0
-  Node fork (verus/)            MIT — upstream license, see verus/COPYING
+  Rust code (lm-* crates, lm-wallet)   GNU GPL-3.0-only (see LICENSE)
+  Design documents (docs/)             CC-BY-SA-4.0
+  Node (LuckyLode-node repository)     upstream MIT; Lucky Lode changes
+                                       GPL-3.0-only (see that repository's
+                                       NOTICE)
 
 Upstream attribution
 --------------------
 
-The node fork derives from VerusCoin/VerusCoin, which derives from Komodo and
+The node derives from VerusCoin/VerusCoin, which derives from Komodo and
 Zcash, which derive from Bitcoin Core. Their copyright notices are retained
-verbatim in `verus/COPYING` and in source headers:
+verbatim in the node repository's COPYING and in source headers:
 
   Copyright (c) 2009-2017 The Bitcoin Core developers
   Copyright (c) 2009-2018 Bitcoin Developers
@@ -30,12 +33,12 @@ verbatim in `verus/COPYING` and in source headers:
 Lucky Lode additions:
   Copyright (c) 2026 The Lucky Lode developers
 
-Vendored components
--------------------
+Vendored components (node repository)
+-------------------------------------
 
-  verus/src/crypto/blake3/   BLAKE3 (CC0-1.0)
-  verus/src/crypto/argon2/   Argon2 reference (CC0-1.0 / Apache-2.0)
-  Rust dependencies          per-crate licenses (see Cargo.lock / crates.io)
+  src/crypto/blake3/         BLAKE3 (CC0-1.0)
+  src/crypto/argon2/         Argon2 reference (CC0-1.0 / Apache-2.0)
+  Rust dependencies           per-crate licenses (see Cargo.lock / crates.io)
 
 Fair-launch note
 ----------------

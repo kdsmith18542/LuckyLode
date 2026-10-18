@@ -2,7 +2,7 @@
 //! plus the overwintered v3/v4 envelope for the post-upgrade future.
 //!
 //! Byte layout mirrors `CTransaction::SerializationOp`
-//! (verus/src/primitives/transaction.h): a 4-byte header that is the plain
+//! (the node repository's src/primitives/transaction.h): a 4-byte header that is the plain
 //! version when not overwintered, else `version | (1 << 31)` followed by
 //! the version-group id; expiry/joinsplit sections only in the matching
 //! formats. Deserialization is deliberately tolerant of a missing

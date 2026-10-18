@@ -1,7 +1,7 @@
 //! ZIP-143/ZIP-243 signature hashing for the overwinter/sapling epochs.
 //!
 //! Byte-for-byte mirror of the fork's `SignatureHash()` overwinter/sapling
-//! leg (verus/src/script/interpreter.cpp): BLAKE2b-256 with the
+//! leg (the node repository's src/script/interpreter.cpp): BLAKE2b-256 with the
 //! `"ZcashSigHash" || le32(consensusBranchId)` personalization over
 //! header, version-group, prevouts/sequence/outputs sub-hashes
 //! (each BLAKE2b with its own personalization), the (empty ⇒ zero-256)
@@ -12,7 +12,7 @@
 //! empty (lm-keys never builds shielded sections).
 //!
 //! Validation: the fork's own regenerated vector set
-//! (verus/src/test/data/sighash.json, run by sighash_tests.cpp with
+//! (the node repository's src/test/data/sighash.json, run by sighash_tests.cpp with
 //! amount=0) — every transparent-only overwinter v3 vector is replayed
 //! in `tests/zip143.rs` (45 vectors, all hash-type shapes). Sapling v4
 //! adds exactly three constants (two zero-256 shielded digests after the
@@ -22,7 +22,7 @@
 use blake2b_simd::Params as Blake2bParams;
 use crate::tx::{put_bytes, put_i64, put_u32, Transaction, OVERWINTER_TX_VERSION, SAPLING_TX_VERSION};
 
-/// Consensus branch ids (verus/src/consensus/upgrades.cpp; live-confirmed
+/// Consensus branch ids (the node repository's src/consensus/upgrades.cpp; live-confirmed
 /// via getblockchaininfo on testnet).
 pub const OVERWINTER_BRANCH_ID: u32 = 0x5ba8_1b19;
 pub const SAPLING_BRANCH_ID: u32 = 0x76b8_09bb;

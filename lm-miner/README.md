@@ -39,5 +39,5 @@ JSON shape), `tests/search.rs` (single-thread solve pinned at KAT V1
 nonce 0, strict-less boundary, multi-thread validity, stride
 determinism), `tests/cli.rs` (flags, exit codes, output shapes).
 
-Tracked follow-ups (doc 02 §2.3): Stratum V2 pool client, `lm-sched`
+Follow-ups (doc 02 §2.3): `lm-sched`
 thread-count hookup + Android JNI, NEON-tuned kernels on measured uplift.

@@ -25,5 +25,6 @@ cargo test -p lm-pool   # unit + season-simulation tests
 `tests/season.rs` runs a 30-day story (phone loyalist, weekend warrior,
 comeback return, farm) pinning every number end to end.
 
-Tracked follow-ups: Stratum V2 server/client speaking this ledger,
+Shipped alongside this ledger: the Stratum V1 + V2 wire layer
+(`lm-stratum`) and the payout processor. Remaining follow-ups:
 attestation-gated league entry (doc 03 §3.6), stake-to-enter prize tiers.

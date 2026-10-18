@@ -44,7 +44,7 @@ what make jackpot/pot templates pay the bonus (without them you mine base
 reward only):
 
 ```sh
-./pool_server --node-rpc 127.0.0.1:9271 --rpc-user <U> --rpc-pass <P> \
+./pool_server --node-rpc 127.0.0.1:19271 --rpc-user <U> --rpc-pass <P> \
   --bind 127.0.0.1:3344 --claim-jackpots --claim-pot \
   --payout-threshold 0 --payout-interval 60 --payout-exec
 ```
