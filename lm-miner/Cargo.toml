@@ -5,6 +5,12 @@ edition = "2021"
 description = "Reference CPU/ARM miner core for LuckyHash v1 (docs 02, 05): parallel nonce search + benchmark mode"
 license = "GPL-3.0-only"
 
+[features]
+# OpenCL GPU backend (links the system libOpenCL). Default on for the
+# desktop CLI; embedded targets (Android) opt out.
+default = ["opencl"]
+opencl = []
+
 [dependencies]
 blake2 = "0.10"
 lm-pow = { path = "../lm-pow" }

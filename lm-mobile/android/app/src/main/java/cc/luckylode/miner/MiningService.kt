@@ -6,6 +6,7 @@ import android.app.NotificationManager
 import android.app.Service
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.SharedPreferences
 import android.os.BatteryManager
 import android.os.Handler
 import android.os.HandlerThread
@@ -17,19 +18,25 @@ import java.util.Calendar
  * workers, so the scheduler ticker lives here behind the persistent
  * notification, honest about why the icon stays.
  *
- * Stage note: this milestone runs the SCHEDULER live (real battery
- * temperature, the frozen policy deciding every tick). The mining
- * threads themselves land with the pool-client runtime milestone —
- * the notification says exactly that rather than faking hashrate.
+ * The scheduler is the actuator's gate: its decision starts/stops the
+ * pool miner with the decided thread count (a count change restarts
+ * the miner; the frozen lm-sched policy stays the only thermal/battery
+ * authority). The notification reports real shares from the mining
+ * loop — never a fake hashrate.
  */
 class MiningService : Service() {
     private var handle: Long = 0L
     private lateinit var thread: HandlerThread
     private lateinit var ticker: Handler
     private val channelId = "mining"
+    private lateinit var prefs: SharedPreferences
+
+    /** Thread count the running miner was started with (-1 = not mining). */
+    private var minedThreads = -1
 
     override fun onCreate() {
         super.onCreate()
+        prefs = getSharedPreferences("miner", MODE_PRIVATE)
         val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
         nm.createNotificationChannel(
             NotificationChannel(
@@ -63,20 +70,58 @@ class MiningService : Service() {
             val d = NativeCore.decode(
                 NativeCore.nativeSchedulerDecide(handle, tempDeci, battPct, charging, hour)
             )
-            val reason = when (d.reason) {
-                NativeCore.REASON_OVERHEAT -> "paused: hot (${tempDeci / 10.0}°C)"
-                NativeCore.REASON_LOW_BATTERY -> "paused: battery below floor"
-                NativeCore.REASON_NO_POWER -> "paused: charge-only outside 22:00–06:00"
-                else -> if (d.mine) {
-                    "scheduler ready: ${d.threads} threads${if (d.overnight) " · overnight" else ""}"
-                } else {
-                    "paused"
+            val running = NativeCore.nativePoolRunning()
+            when {
+                d.mine && !running -> if (startMiner(d.threads)) minedThreads = d.threads
+                !d.mine && running -> {
+                    NativeCore.nativePoolStop()
+                    minedThreads = -1
+                }
+                d.mine && running && d.threads != minedThreads -> {
+                    // A derate (thermal band) changes the count mid-session:
+                    // restart the miner at the new count.
+                    NativeCore.nativePoolStop()
+                    if (startMiner(d.threads)) minedThreads = d.threads
                 }
             }
+            val text = if (d.mine && NativeCore.nativePoolRunning()) {
+                miningLine()
+            } else {
+                pauseReason(d, tempDeci)
+            }
             val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
-            nm.notify(NOTIF_ID, buildNotification(reason))
+            nm.notify(NOTIF_ID, buildNotification(text))
             ticker.postDelayed(this, 1_000)
         }
+    }
+
+    private fun startMiner(threads: Int): Boolean = NativeCore.nativePoolStart(
+        prefs.getString(KEY_POOL, DEFAULT_POOL) ?: DEFAULT_POOL,
+        prefs.getString(KEY_WORKER, DEFAULT_WORKER) ?: DEFAULT_WORKER,
+        "",
+        threads,
+        0,
+    )
+
+    /** Real counters from the mining loop (never a fabricated rate). */
+    private fun miningLine(): String {
+        val parts = NativeCore.nativePoolStats().split(" ", limit = 6)
+        if (parts.size < 6) return "mining…"
+        val accepted = parts[1].toLongOrNull() ?: 0L
+        val connected = parts[3] == "1"
+        val hps = (parts[4].toLongOrNull() ?: 0L) / 10.0
+        return if (connected) {
+            "mining: $accepted shares · ${"%.1f".format(hps)} H/s"
+        } else {
+            parts[5]
+        }
+    }
+
+    private fun pauseReason(d: NativeCore.Decision, tempDeci: Int): String = when (d.reason) {
+        NativeCore.REASON_OVERHEAT -> "paused: hot (${tempDeci / 10.0}°C)"
+        NativeCore.REASON_LOW_BATTERY -> "paused: battery below floor"
+        NativeCore.REASON_NO_POWER -> "paused: charge-only outside 22:00–06:00"
+        else -> "paused"
     }
 
     /** Battery state via the sticky broadcast: temperature is already deci-°C. */
@@ -105,6 +150,7 @@ class MiningService : Service() {
     override fun onDestroy() {
         ticker.removeCallbacks(tick)
         thread.quitSafely()
+        NativeCore.nativePoolStop()
         if (handle != 0L) {
             NativeCore.nativeSchedulerDestroy(handle)
             handle = 0L
@@ -116,5 +162,11 @@ class MiningService : Service() {
 
     companion object {
         private const val NOTIF_ID = 1
+        const val KEY_POOL = "pool"
+        const val KEY_WORKER = "worker"
+
+        /** Public testnet pool (internal/testnet-runbook: ufw-open direct stratum). */
+        const val DEFAULT_POOL = "luckylode.cc:3346"
+        const val DEFAULT_WORKER = "android"
     }
 }

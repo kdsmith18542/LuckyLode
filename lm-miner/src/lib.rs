@@ -1,7 +1,7 @@
 //! Reference miner core for LuckyHash v1 (Lucky Lode docs 02 §2.3, 05 §5.6).
 //!
 //! Portable-first Rust: one Argon2id instance per thread (`p = 1` scales
-//! across threads, as Chukwa did). Two entry points:
+//! across threads, as Chukwa did). Three entry points:
 //!
 //! - [`search`]: parallel nonce search over `[start, start + count)` with
 //!   stride partitioning (thread `i` tries `start + i`, `+ threads`, …).
@@ -11,14 +11,24 @@
 //!   (doc 05 §5.6): per-thread and total rates, machine-readable via
 //!   [`BenchReport::to_json`].
 //!
-//! Stratum V2 pool mining and the thermal-scheduler hookup (`lm-sched`
-//! thread-count control, Android JNI) are tracked follow-ups — this crate is
-//! the solo/benchmark foundation the testnet bake-off builds on.
+//! Stride partitioning note (doc 05): one Argon2id instance per thread
+//! (`p = 1` scales across threads, as Chukwa did).
+//!
+//! - [`pool_loop`]: the pool-mining runtime (V1 + V2) shared by the CLI,
+//!   the wallet's embedded miner, and the Android JNI facade — one loop,
+//!   start/stop/stats handles for embedders, a stop-flag-aware grind
+//!   cadence.
 
 pub mod argon2_prep;
-pub mod gpu;
-pub mod opencl;
+pub mod pool_loop;
 pub mod thermal;
+// The OpenCL host links the system `libOpenCL` directly; Android (and any
+// box without an ICD) builds the workspace with `default-features = false`
+// and gets the CPU-only backend (`pool_loop::Backend` has no GPU arm).
+#[cfg(feature = "opencl")]
+pub mod gpu;
+#[cfg(feature = "opencl")]
+pub mod opencl;
 
 use lm_pow::{meets_target, CpuHasher};
 use std::sync::atomic::{AtomicBool, Ordering};

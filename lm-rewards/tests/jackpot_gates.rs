@@ -16,6 +16,10 @@
 //!
 //! RNG is xorshift64* with pinned seeds — no external crates, fully
 //! deterministic. A failing gate here fails the same way on testnet.
+//!
+//! Gates 1-3 exercise the frozen pre-split reserve rule deliberately
+//! (doc 06 rev 1.1 history); the pot split is gated separately in pot.rs.
+#![allow(deprecated)]
 
 use lm_rewards::reserve::{apply_block, levy_amount};
 use lm_rewards::{split_jackpot, Share};

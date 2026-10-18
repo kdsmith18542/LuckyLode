@@ -84,6 +84,45 @@ object NativeCore {
 
     private external fun nativeSchedulerSelfTest0(): Boolean
 
+    // Pool mining runtime (doc 07 stage 3): the shared lm-miner loop on
+    // a CPU backend. The service owns start/stop; progress crosses JNI
+    // as the stats line below.
+
+    /** Start mining. `chunk <= 0` selects the mobile default. */
+    fun nativePoolStart(pool: String, worker: String, password: String, threads: Int, chunk: Int): Boolean {
+        ensureLoaded()
+        return nativePoolStart0(pool, worker, password, threads, chunk)
+    }
+
+    private external fun nativePoolStart0(pool: String, worker: String, password: String, threads: Int, chunk: Int): Boolean
+
+    /** Stop mining and wait for the current chunk to finish. */
+    fun nativePoolStop() {
+        ensureLoaded()
+        nativePoolStop0()
+    }
+
+    private external fun nativePoolStop0()
+
+    /** True while the mining thread is alive. */
+    fun nativePoolRunning(): Boolean {
+        ensureLoaded()
+        return nativePoolRunning0()
+    }
+
+    private external fun nativePoolRunning0(): Boolean
+
+    /**
+     * `submitted accepted rejected connected hpsX10 last…` — `last` is
+     * the remainder of the line (it may contain spaces).
+     */
+    fun nativePoolStats(): String {
+        ensureLoaded()
+        return nativePoolStats0()
+    }
+
+    private external fun nativePoolStats0(): String
+
     /** Kotlin-side decoder — mirrors the Rust pack layout exactly. */
     data class Decision(
         val mine: Boolean,

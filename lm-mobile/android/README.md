@@ -18,11 +18,16 @@ key; `adb install -r` works for development.
 - `app/src/main/java/cc/luckylode/miner/MiningService.kt` — the
   foreground service: the scheduler ticker (1 Hz) reads real battery
   temperature (deci-°C straight from `ACTION_BATTERY_CHANGED`), decides
-  through the frozen policy, and keeps the notification honest.
+  through the frozen policy, and starts/stops/restarts the pool miner
+  at the decided thread count (a derate restarts it mid-session). The
+  notification reports real counters from the mining loop — never a
+  fabricated rate.
 - `app/src/main/java/cc/luckylode/miner/MainActivity.kt` — one-tap
   start with the trust anchor up front: the frozen scheduler vectors
   run natively on launch and the app says PASS or refuses to look
-  functional on FAIL.
+  functional on FAIL. Pool address + worker name are set here and
+  persist locally (defaults: the public testnet pool `luckylode.cc:3346`,
+  worker `android`).
 - `app/src/main/jniLibs/{arm64-v8a,x86_64}/liblm_mobile.so` — the Rust
   core (x86_64 is for the emulator and CI; phones load arm64-v8a).
 
@@ -69,15 +74,36 @@ KVM-backed x86_64 emulator (the jniLibs includes x86_64 for this):
 avdmanager create avd -n test34 -k "system-images;android-34;google_apis;x86_64"
 emulator -avd test34 -no-window -gpu swiftshader_indirect
 adb install -r lucky-lode-miner.apk
+adb shell pm grant cc.luckylode.miner android.permission.POST_NOTIFICATIONS
 adb shell am start -n cc.luckylode.miner/.MainActivity
 adb logcat -s LuckyLodeMiner   # → "core self-test: PASS"
 ```
+
+API 34 note: a fresh install has no runtime `POST_NOTIFICATIONS` grant,
+so the service's notification (the only progress surface) stays
+invisible until granted. The mining loop still runs and reconnects
+with capped backoff — the notification text reports its real state
+(`mining: N shares · X H/s`, `pool connect failed: …; retrying in Ns`,
+pause reasons).
+
+A no-node local pool for wire testing: `cargo run -p lm-stratum --bin
+mock_pool -- 0.0.0.0:3344`, then point the app at `10.0.2.2:3344` (the
+emulator's alias for the host loopback). Every share wins on the mock
+chain — useful for fast UI/runtime verification without testnet coins
+at stake.
 
 ## Status / next milestones
 
 - [x] Rust JNI facade + native self-test (host + in-app)
 - [x] Foreground service, scheduler live on real battery temperature
-- [ ] Pool mining runtime (V2 Noise session over the wire; the
-      scheduler's thread count gates the grind)
+- [x] Pool mining runtime (V1 stratum; the scheduler's thread count
+      gates the grind) — proven live on the emulator against the
+      reference mock pool (`lm-stratum`'s `mock_pool` on the host,
+      reached at `10.0.2.2:<port>`) and against the public testnet
+      pool `luckylode.cc:3346` (worker `android-emulator`: shares
+      accepted, 0 rejects, pool-side rate agreed with the app's
+      self-report)
+- [ ] Stratum V2 Noise session as a selectable wire (the runtime is
+      wire-agnostic; V2 rides the same loop behind a flag)
 - [ ] Dashboard (hashrate, shares, streak, league — doc 07 §7.4)
 - [ ] Battery-honesty copy + attestation hook (doc 07 §7.4/§7.6)

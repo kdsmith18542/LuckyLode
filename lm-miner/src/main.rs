@@ -14,13 +14,12 @@
 //! (portable, offline-buildable, auditable) — flags are `--name value`.
 
 use lm_miner::gpu::GpuSearcher;
+use lm_miner::pool_loop::{Backend, Event, Outcome, PoolConfig, TlsCfg};
 use lm_miner::thermal::MiningPolicy;
-use lm_miner::{bench, gpu, opencl, search_with_policy, Solution};
+use lm_miner::{bench, gpu, opencl};
 use lm_pow::difficulty::compact_to_target;
-use lm_stratum::client::PoolClient;
-use std::net::SocketAddr;
 use std::process::ExitCode;
-use std::time::Duration;
+use std::sync::atomic::AtomicBool;
 
 const USAGE: &str = "usage:
   lm-miner bench [--threads N] [--hashes N] [--height H] [--header HEX] [--json] [--device auto|cpu|opencl] [--gpu-platform N] [--gpu-device N] [--gpu-batch N]
@@ -224,30 +223,9 @@ fn apply_power_limit(watts: u32) {
     }
 }
 
-/// One of the two grind engines: CPU threads or one GPU.
-enum Backend {
-    Cpu { threads: usize },
-    Gpu(GpuSearcher),
-}
-
-impl Backend {
-    fn search(
-        &self,
-        header: &[u8],
-        height: u64,
-        target: &[u8; 32],
-        start: u64,
-        count: u64,
-        policy: &MiningPolicy,
-    ) -> Result<Option<Solution>, String> {
-        match self {
-            Backend::Cpu { threads } => Ok(search_with_policy(
-                header, height, target, start, count, *threads, policy,
-            )),
-            Backend::Gpu(g) => g.search(header, height, target, start, count, policy),
-        }
-    }
-}
+// The grind engine comes from the shared pool runtime now
+// (`lm_miner::pool_loop::Backend`): CPU threads or one GPU, the same
+// search every embedded miner uses.
 
 /// Resolve the backend from options, announcing the GPU when one is used.
 fn make_backend(cfg: &GpuCfg, threads: usize) -> Result<Backend, String> {
@@ -711,28 +689,6 @@ fn parse_pool(args: &[String]) -> Result<PoolOpts, String> {
     })
 }
 
-/// Dev-fee rotation (docs/04 §4.2): 1% of hash time mines to the dev
-/// address, visible in logs, opt-out with `--dev-fee-pct 0`. Because the
-/// pool pays the *authorized* identity (not the submit field), the fee is
-/// implemented by reconnecting as a different worker — not by relabeling
-/// shares. Returns the worker to authorize/submit as right now.
-fn dev_worker(o: &PoolOpts, t0: std::time::Instant) -> &str {
-    const PERIOD_SECS: u64 = 3600;
-    let addr = o.dev_address.as_deref().unwrap_or("");
-    if o.dev_fee_pct <= 0.0 || addr.is_empty() {
-        return &o.worker;
-    }
-    let elapsed = std::time::Instant::now()
-        .duration_since(t0)
-        .as_secs();
-    let dev_secs = (PERIOD_SECS as f64 * o.dev_fee_pct / 100.0) as u64;
-    if dev_secs == 0 || elapsed % PERIOD_SECS >= dev_secs {
-        &o.worker
-    } else {
-        addr
-    }
-}
-
 fn run_pool(o: &PoolOpts) -> ExitCode {
     let policy = match MiningPolicy::new(o.max_temp, o.duty) {
         Ok(p) => p,
@@ -741,14 +697,10 @@ fn run_pool(o: &PoolOpts) -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    let (pool_host, addr) = match resolve_pool(&o.pool) {
-        Ok(v) => v,
-        Err(e) => {
-            eprintln!("error: {e}");
-            return ExitCode::from(2);
-        }
-    };
-    let t0 = std::time::Instant::now();
+    if let Err(e) = lm_miner::pool_loop::resolve_pool(&o.pool) {
+        eprintln!("error: {e}");
+        return ExitCode::from(2);
+    }
     if o.dev_fee_pct <= 0.0 {
         eprintln!("note: dev fee disabled (--dev-fee-pct 0); consider supporting Lucky Lode development");
     } else if o.dev_address.as_deref().unwrap_or("").is_empty() {
@@ -765,24 +717,20 @@ fn run_pool(o: &PoolOpts) -> ExitCode {
     // Backend first: the default agent advertises the device to the pool
     // (dashboard labels), so connect only once it is known.
     let backend = match open_gpu(&o.gpu) {
-        Ok(Some(g)) => Backend::Gpu(g),
+        Ok(Some(g)) => {
+            println!("gpu: {} (batch {})", g.name(), g.batch());
+            Backend::Gpu(g)
+        }
         Ok(None) => Backend::Cpu { threads: o.threads },
         Err(e) => {
             eprintln!("error: {e}");
             return ExitCode::from(2);
         }
     };
-    let agent = if o.agent_set {
-        o.agent.clone()
+    let v2_authority = if !o.v2 {
+        None
     } else {
-        let device = match &backend {
-            Backend::Gpu(_) => "opencl",
-            Backend::Cpu { .. } => "cpu",
-        };
-        format!("{} {}", o.agent, device)
-    };
-    if o.v2 {
-        let authority = match &o.v2_authority {
+        match &o.v2_authority {
             Some(s) => match parse_v2_authority(s) {
                 Ok(k) => Some(k),
                 Err(e) => {
@@ -796,517 +744,91 @@ fn run_pool(o: &PoolOpts) -> ExitCode {
                 );
                 None
             }
-        };
-        return run_pool_v2(o, backend, policy, agent, pool_host, addr, authority);
-    }
-    let mut submitted = 0u64;
-    let mut accepted = 0u64;
-    // Grind each job in CHUNKS and adopt newer jobs as they arrive: one
-    // search per rotation left the GPU idle ~80% of the time (the pool's
-    // template rotates every ~20 s, the card finishes a search in ~4 s).
-    const CHUNK: u64 = 65_536;
-    let chunk = CHUNK.min(o.count);
-    let mut hashed: u64 = 0;
-    let mut report_at = std::time::Instant::now() + Duration::from_secs(30);
-    // A dropped pool connection is a normal event (pool restart, box
-    // reboot): reconnect with capped backoff and keep the session
-    // counters instead of exiting — the miner is a service.
-    let mut backoff = Duration::from_secs(1);
-    'session: loop {
-        let tls_name = o.tls_server_name.clone().unwrap_or_else(|| pool_host.clone());
-        let tls = o
-            .tls
-            .then_some((tls_name.as_str(), o.tls_ca.as_deref(), o.tls_insecure));
-        let session_worker = dev_worker(o, t0).to_string();
-        if session_worker != o.worker {
-            eprintln!("dev fee: mining as '{}' (rotating back shortly)", session_worker);
         }
-        let mut client = match connect_session(addr, &agent, &session_worker, &o.password, tls) {
-            Ok(c) => c,
-            Err(e) => {
-                if o.fail_fast {
-                    eprintln!("error: cannot reach pool: {e}");
-                    return ExitCode::from(1);
-                }
-                eprintln!(
-                    "pool connect failed: {e}; retrying in {}s",
-                    backoff.as_secs()
-                );
-                std::thread::sleep(backoff);
-                backoff = (backoff * 2).min(Duration::from_secs(30));
-                continue 'session;
-            }
-        };
-        backoff = Duration::from_secs(1);
-        match &backend {
-            Backend::Cpu { threads } => {
-                println!("pool {} as '{}' ({} threads)", o.pool, session_worker, threads)
-            }
-            Backend::Gpu(g) => println!(
-                "pool {} as '{}' (gpu: {}, batch {})",
-                o.pool,
-                session_worker,
-                g.name(),
-                g.batch()
-            ),
-        }
-        let mut current: Option<lm_stratum::v1::Job> = None;
-        let mut pos = o.start;
-        loop {
-            if dev_worker(o, t0) != session_worker {
-                eprintln!("dev fee: rotating worker (reconnecting)");
-                continue 'session;
-            }
-            if submitted >= o.max_shares {
-                println!("session complete: {accepted}/{submitted} shares accepted");
-                return ExitCode::SUCCESS;
-            }
-            if std::time::Instant::now() >= report_at {
-                let secs = 30.0;
-                let gpu_note = match &backend {
-                    Backend::Gpu(_) => match gpu::gpu_status() {
-                        (t, Some(w)) => format!(" (gpu {t}C {w}W)"),
-                        (t, None) if t >= 0 => format!(" (gpu {t}C)"),
-                        _ => String::new(),
-                    },
-                    Backend::Cpu { .. } => String::new(),
-                };
-                println!(
-                    "rate: {:.0} H/s ({} hashes/{}s window){}",
-                    hashed as f64 / secs,
-                    hashed,
-                    secs,
-                    gpu_note
-                );
-                hashed = 0;
-                report_at = std::time::Instant::now() + Duration::from_secs(30);
-            }
-            // Non-blocking: pick up any newer job sitting in the buffer.
-            // A vardiff retarget keeps the SAME header with a fresh job id —
-            // keep the nonce position then, or the range gets re-ground and
-            // the pool dedupe rejects the replayed shares (found in testing: ~10%
-            // of shares were duplicate re-finds after rotations).
-            loop {
-                match client.poll_job() {
-                    Ok(Some(j)) => {
-                        if current.as_ref().map(|c| c.id != j.id).unwrap_or(true) {
-                            let same_header = current
-                                .as_ref()
-                                .map(|c| c.header == j.header)
-                                .unwrap_or(false);
-                            current = Some(j);
-                            if !same_header {
-                                pos = o.start;
-                            }
-                        }
-                    }
-                    Ok(None) => break,
-                    Err(e) => {
-                        if o.fail_fast {
-                            eprintln!("error: pool connection lost: {e}");
-                            return ExitCode::from(1);
-                        }
-                        eprintln!("pool connection lost: {e}; reconnecting");
-                        continue 'session;
-                    }
-                }
-            }
-            if current.is_none() {
-                match client.read_job(Duration::from_secs(o.job_timeout_secs)) {
-                    Ok(Some(j)) => {
-                        current = Some(j);
-                        pos = o.start;
-                    }
-                    Ok(None) => {
-                        if o.fail_fast {
-                            eprintln!(
-                                "error: idle: no job within {}s ({accepted}/{submitted} accepted)",
-                                o.job_timeout_secs
-                            );
-                            return ExitCode::from(1);
-                        }
-                        eprintln!(
-                            "idle: no job within {}s ({accepted}/{submitted} accepted); reconnecting",
-                            o.job_timeout_secs
-                        );
-                        continue 'session;
-                    }
-                    Err(e) => {
-                        if o.fail_fast {
-                            eprintln!("error: pool connection lost: {e}");
-                            return ExitCode::from(1);
-                        }
-                        eprintln!("pool connection lost: {e}; reconnecting");
-                        continue 'session;
-                    }
-                }
-            }
-            let job = current.clone().expect("job set above");
-            let job_end = o.start.saturating_add(o.count);
-            if pos >= job_end {
-                println!("job {} exhausted, waiting for new template", job.id);
-                current = None;
-                pos = o.start;
-                continue;
-            }
-            let take = chunk.min(job_end - pos);
-            match backend.search(
-                &job.header,
-                job.height,
-                &job.pool_target,
-                pos,
-                take,
-                &policy,
-            ) {
-                Ok(Some(sol)) => {
-                    hashed += sol.nonce.saturating_sub(pos).saturating_add(1);
-                    match client.submit(&session_worker, &job.id, sol.nonce) {
-                        Ok((true, _)) => {
-                            submitted += 1;
-                            accepted += 1;
-                            println!("share accepted: job={} nonce={}", job.id, sol.nonce);
-                        }
-                        Ok((false, err)) => {
-                            submitted += 1;
-                            eprintln!("share rejected: job={} {:?}", job.id, err);
-                        }
-                        Err(e) => {
-                            if o.fail_fast {
-                                eprintln!("error: pool connection lost: {e}");
-                                return ExitCode::from(1);
-                            }
-                            eprintln!("pool connection lost: {e}; reconnecting");
-                            continue 'session;
-                        }
-                    }
-                    // Post-submit settle: an accepted block rotates the job
-                    // within the pool's refresh tick, and grinding the stale
-                    // job in the meantime submits shares the chain rejects.
-                    // Poll briefly for the rotation before carrying on.
-                    let mut rotated = false;
-                    let settle = std::time::Instant::now() + Duration::from_millis(300);
-                    while std::time::Instant::now() < settle {
-                        match client.poll_job() {
-                            Ok(Some(j)) => {
-                                if current.as_ref().map(|c| c.id != j.id).unwrap_or(true) {
-                                    let same_header = current
-                                        .as_ref()
-                                        .map(|c| c.header == j.header)
-                                        .unwrap_or(false);
-                                    current = Some(j);
-                                    if !same_header {
-                                        rotated = true;
-                                    }
-                                }
-                                break;
-                            }
-                            Ok(None) => std::thread::sleep(Duration::from_millis(20)),
-                            Err(e) => {
-                                if o.fail_fast {
-                                    eprintln!("error: pool connection lost: {e}");
-                                    return ExitCode::from(1);
-                                }
-                                eprintln!("pool connection lost: {e}; reconnecting");
-                                continue 'session;
-                            }
-                        }
-                    }
-                    pos = if rotated {
-                        o.start
-                    } else {
-                        sol.nonce.saturating_add(1)
-                    };
-                }
-                Ok(None) => {
-                    hashed += take;
-                    pos += take;
-                }
-                Err(e) => {
-                    eprintln!("error: {e}");
-                    return ExitCode::from(1);
-                }
-            }
-        }
-    }
-}
-
-/// V2 pool session (behind `--v2`): Noise handshake, version negotiation,
-/// channel open, then the same chunked grind as V1 over [`LuckyJob`]
-/// templates with u64 submits. Dev-fee rotation, backoff reconnects,
-/// thermal policy and counters mirror [`run_pool`] — the wire is the only
-/// difference.
-fn run_pool_v2(
-    o: &PoolOpts,
-    backend: Backend,
-    policy: MiningPolicy,
-    agent: String,
-    pool_host: String,
-    addr: SocketAddr,
-    authority: Option<[u8; 32]>,
-) -> ExitCode {
-    use lm_stratum::v2::{SetupConnection, PROTOCOL_MINING};
-    use lm_stratum::v2_client::V2Client;
-    let device = match &backend {
-        Backend::Gpu(_) => "opencl",
-        Backend::Cpu { .. } => "cpu",
     };
-    let setup = SetupConnection {
-        protocol: PROTOCOL_MINING,
-        min_version: 2,
-        max_version: 2,
-        flags: 0,
-        endpoint_host: pool_host.clone(),
-        endpoint_port: addr.port(),
-        vendor: "lm-miner".to_string(),
-        hardware_version: device.to_string(),
-        firmware: "0.2".to_string(),
-        // The pool authenticates the worker against the same password /
-        // worker-token map as V1; V2 has no password field, so the token
-        // rides in the free-form device id.
-        device_id: o.password.clone(),
+    let cfg = PoolConfig {
+        pool: o.pool.clone(),
+        worker: o.worker.clone(),
+        agent: o.agent_set.then(|| o.agent.clone()),
+        password: o.password.clone(),
+        threads: o.threads,
+        start: o.start,
+        count: o.count,
+        chunk: 65_536,
+        max_shares: o.max_shares,
+        job_timeout_secs: o.job_timeout_secs,
+        max_temp: o.max_temp,
+        duty: o.duty,
+        fail_fast: o.fail_fast,
+        tls: o.tls.then(|| TlsCfg {
+            server_name: o.tls_server_name.clone(),
+            ca_pem: o.tls_ca.clone(),
+            insecure: o.tls_insecure,
+        }),
+        v2: o.v2,
+        v2_authority,
+        dev_fee_pct: o.dev_fee_pct,
+        dev_address: o.dev_address.clone(),
+        report_secs: 30,
     };
-    let _ = &agent;
-    let mut submitted = 0u64;
-    let mut accepted = 0u64;
-    const CHUNK: u64 = 65_536;
-    let chunk = CHUNK.min(o.count);
-    let mut hashed: u64 = 0;
-    let mut report_at = std::time::Instant::now() + Duration::from_secs(30);
-    let mut backoff = Duration::from_secs(1);
-    let t0 = std::time::Instant::now();
-    'session: loop {
-        let mut client = match V2Client::connect(addr, authority, &setup) {
-            Ok(c) => c,
-            Err(e) => {
-                if o.fail_fast {
-                    eprintln!("error: cannot reach pool (v2): {e}");
-                    return ExitCode::from(1);
-                }
-                eprintln!("pool(v2) connect failed: {e}; retrying in {}s", backoff.as_secs());
-                std::thread::sleep(backoff);
-                backoff = (backoff * 2).min(Duration::from_secs(30));
-                continue 'session;
-            }
-        };
-        backoff = Duration::from_secs(1);
-        let session_worker = dev_worker(o, t0).to_string();
-        if session_worker != o.worker {
-            eprintln!("dev fee: mining as '{session_worker}' (rotating back shortly)");
+    // The CLI is a foreground service: no stop flag, console as the sink.
+    let stop = AtomicBool::new(false);
+    let pool = o.pool.clone();
+    let gpu_backend = matches!(backend, Backend::Gpu(_));
+    let mut sink = |ev: Event| match ev {
+        Event::Connected { v2, worker, detail } => {
+            let wire = if v2 { "pool(v2)" } else { "pool" };
+            println!("{wire} {pool} as '{worker}' ({detail})");
         }
-        let opened = match client.open_channel(1, &session_worker, 0.0, [0xffu8; 32]) {
-            Ok(opened) => opened,
-            Err(e) => {
-                if o.fail_fast {
-                    eprintln!("error: pool refused V2 channel: {e}");
-                    return ExitCode::from(1);
-                }
-                eprintln!("pool(v2) channel open failed: {e}; reconnecting");
-                continue 'session;
-            }
-        };
-        let channel_id = opened.channel_id;
-        match &backend {
-            Backend::Cpu { threads } => {
-                println!("pool(v2) {} as '{}' ({} threads)", o.pool, session_worker, threads)
-            }
-            Backend::Gpu(g) => println!(
-                "pool(v2) {} as '{}' (gpu: {}, batch {})",
-                o.pool,
-                session_worker,
-                g.name(),
-                g.batch()
-            ),
+        Event::DevFee { worker } => {
+            eprintln!("dev fee: mining as '{worker}' (rotating back shortly)");
         }
-        let mut current: Option<lm_stratum::v2::LuckyJob> = None;
-        let mut pos = o.start;
-        loop {
-            if dev_worker(o, t0) != session_worker {
-                eprintln!("dev fee: rotating worker (reconnecting)");
-                continue 'session;
-            }
-            if submitted >= o.max_shares {
-                println!("session complete: {accepted}/{submitted} shares accepted");
-                return ExitCode::SUCCESS;
-            }
-            if std::time::Instant::now() >= report_at {
-                let secs = 30.0;
-                let gpu_note = match &backend {
-                    Backend::Gpu(_) => match gpu::gpu_status() {
-                        (t, Some(w)) => format!(" (gpu {t}C {w}W)"),
-                        (t, None) if t >= 0 => format!(" (gpu {t}C)"),
-                        _ => String::new(),
-                    },
-                    Backend::Cpu { .. } => String::new(),
-                };
-                println!(
-                    "rate: {:.0} H/s ({} hashes/{}s window){}",
-                    hashed as f64 / secs,
-                    hashed,
-                    secs,
-                    gpu_note
-                );
-                hashed = 0;
-                report_at = std::time::Instant::now() + Duration::from_secs(30);
-            }
-            // Non-blocking: adopt newer jobs; a same-header rotation keeps
-            // the nonce cursor (V1's duplicate-re-find lesson applies to
-            // both wires).
-            loop {
-                match client.poll_job() {
-                    Ok(Some(j)) => {
-                        if current.as_ref().map(|c| c.job_id != j.job_id).unwrap_or(true) {
-                            let same_header = current
-                                .as_ref()
-                                .map(|c| c.header == j.header)
-                                .unwrap_or(false);
-                            current = Some(j);
-                            if !same_header {
-                                pos = o.start;
-                            }
-                        }
-                    }
-                    Ok(None) => break,
-                    Err(e) => {
-                        if o.fail_fast {
-                            eprintln!("error: pool connection lost: {e}");
-                            return ExitCode::from(1);
-                        }
-                        eprintln!("pool connection lost: {e}; reconnecting");
-                        continue 'session;
-                    }
+        Event::ShareAccepted { job, nonce } => {
+            println!("share accepted: job={job} nonce={nonce}");
+        }
+        Event::ShareRejected { job, error } => {
+            eprintln!("share rejected: job={job} ({error})");
+        }
+        Event::Rate { hps, hashes, window_secs } => {
+            let gpu_note = if gpu_backend {
+                match gpu::gpu_status() {
+                    (t, Some(w)) => format!(" (gpu {t}C {w}W)"),
+                    (t, None) if t >= 0 => format!(" (gpu {t}C)"),
+                    _ => String::new(),
                 }
+            } else {
+                String::new()
+            };
+            println!("rate: {hps:.0} H/s ({hashes} hashes/{window_secs}s window){gpu_note}");
+        }
+        Event::Reconnect { reason, wait_secs } => {
+            if wait_secs > 0 {
+                eprintln!("{reason}; retrying in {wait_secs}s");
+            } else {
+                eprintln!("{reason}; reconnecting");
             }
-            if current.is_none() {
-                match client.read_job(Duration::from_secs(o.job_timeout_secs)) {
-                    Ok(Some(j)) => {
-                        current = Some(j);
-                        pos = o.start;
-                    }
-                    Ok(None) => {
-                        if o.fail_fast {
-                            eprintln!(
-                                "error: idle: no job within {}s ({accepted}/{submitted} accepted)",
-                                o.job_timeout_secs
-                            );
-                            return ExitCode::from(1);
-                        }
-                        eprintln!(
-                            "idle: no job within {}s ({accepted}/{submitted} accepted); reconnecting",
-                            o.job_timeout_secs
-                        );
-                        continue 'session;
-                    }
-                    Err(e) => {
-                        if o.fail_fast {
-                            eprintln!("error: pool connection lost: {e}");
-                            return ExitCode::from(1);
-                        }
-                        eprintln!("pool connection lost: {e}; reconnecting");
-                        continue 'session;
-                    }
-                }
-            }
-            let job = current.clone().expect("job set above");
-            let job_end = o.start.saturating_add(o.count);
-            if pos >= job_end {
-                println!("job {} exhausted, waiting for new template", job.job_id);
-                current = None;
-                pos = o.start;
-                continue;
-            }
-            let take = chunk.min(job_end - pos);
-            match backend.search(
-                &job.header,
-                job.height,
-                &job.pool_target,
-                pos,
-                take,
-                &policy,
-            ) {
-                Ok(Some(sol)) => {
-                    hashed += sol.nonce.saturating_sub(pos).saturating_add(1);
-                    match client.submit(channel_id, job.job_id, sol.nonce) {
-                        Ok((true, _)) => {
-                            submitted += 1;
-                            accepted += 1;
-                            println!("share accepted: job={} nonce={}", job.job_id, sol.nonce);
-                        }
-                        Ok((false, err)) => {
-                            submitted += 1;
-                            eprintln!("share rejected: job={} {:?}", job.job_id, err);
-                        }
-                        Err(e) => {
-                            if o.fail_fast {
-                                eprintln!("error: pool connection lost: {e}");
-                                return ExitCode::from(1);
-                            }
-                            eprintln!("pool connection lost: {e}; reconnecting");
-                            continue 'session;
-                        }
-                    }
-                    // Post-submit settle: poll briefly for a rotation before
-                    // carrying on (same stale-job avoidance as V1).
-                    let mut rotated = false;
-                    let settle = std::time::Instant::now() + Duration::from_millis(300);
-                    while std::time::Instant::now() < settle {
-                        match client.poll_job() {
-                            Ok(Some(j)) => {
-                                if current.as_ref().map(|c| c.job_id != j.job_id).unwrap_or(true) {
-                                    let same_header = current
-                                        .as_ref()
-                                        .map(|c| c.header == j.header)
-                                        .unwrap_or(false);
-                                    current = Some(j);
-                                    if !same_header {
-                                        rotated = true;
-                                    }
-                                }
-                                break;
-                            }
-                            Ok(None) => std::thread::sleep(Duration::from_millis(20)),
-                            Err(e) => {
-                                if o.fail_fast {
-                                    eprintln!("error: pool connection lost: {e}");
-                                    return ExitCode::from(1);
-                                }
-                                eprintln!("pool connection lost: {e}; reconnecting");
-                                continue 'session;
-                            }
-                        }
-                    }
-                    pos = if rotated {
-                        o.start
-                    } else {
-                        sol.nonce.saturating_add(1)
-                    };
-                }
-                Ok(None) => {
-                    hashed += take;
-                    pos += take;
-                }
-                Err(e) => {
-                    eprintln!("error: {e}");
-                    return ExitCode::from(1);
-                }
-            }
+        }
+        Event::Idle { timeout_secs, accepted, submitted } => {
+            eprintln!(
+                "idle: no job within {timeout_secs}s ({accepted}/{submitted} accepted); reconnecting"
+            );
+        }
+        Event::JobExhausted { job } => {
+            println!("job {job} exhausted, waiting for new template");
+        }
+        Event::Note(n) => eprintln!("{n}"),
+    };
+    match lm_miner::pool_loop::run(&cfg, &backend, &policy, &stop, &mut sink) {
+        Outcome::SessionComplete { accepted, submitted } => {
+            println!("session complete: {accepted}/{submitted} shares accepted");
+            ExitCode::SUCCESS
+        }
+        Outcome::Stopped { .. } => ExitCode::SUCCESS,
+        Outcome::Failed { error } => {
+            eprintln!("error: {error}");
+            ExitCode::from(1)
         }
     }
-}
-
-/// Resolve `HOST:PORT` to (host, socket addr). Hostnames are supported so
-/// TLS can verify the certificate against the pool name.
-fn resolve_pool(pool: &str) -> Result<(String, SocketAddr), String> {
-    use std::net::ToSocketAddrs;
-    let host = pool
-        .rsplit_once(':')
-        .map(|(h, _)| h.trim_start_matches('[').trim_end_matches(']').to_string())
-        .ok_or_else(|| format!("--pool expects HOST:PORT, got '{pool}'"))?;
-    let addr = pool
-        .to_socket_addrs()
-        .map_err(|e| format!("cannot resolve '{pool}': {e}"))?
-        .next()
-        .ok_or_else(|| format!("no addresses for '{pool}'"))?;
-    Ok((host, addr))
 }
 
 /// Parse `--v2-authority`: a §4.7 base58check URL key first, else 64 hex
@@ -1324,40 +846,6 @@ fn parse_v2_authority(s: &str) -> Result<[u8; 32], String> {
     let mut k = [0u8; 32];
     k.copy_from_slice(&b);
     Ok(k)
-}
-
-/// Connect + subscribe + authorize in one step so the session loop can
-/// re-establish a dropped connection with backoff (pool restarts are
-/// routine in the live stack).
-fn connect_session(
-    addr: SocketAddr,
-    agent: &str,
-    worker: &str,
-    password: &str,
-    tls: Option<(&str, Option<&str>, bool)>,
-) -> Result<PoolClient, String> {
-    let mut client = match tls {
-        Some((name, ca, insecure)) => PoolClient::connect_tls(
-            addr,
-            name,
-            ca.map(std::path::Path::new),
-            insecure,
-            Duration::from_secs(10),
-        )
-        .map_err(|e| e.to_string())?,
-        None => PoolClient::connect(addr).map_err(|e| e.to_string())?,
-    };
-    match client.subscribe(agent) {
-        Ok(true) => {}
-        Ok(false) => return Err("pool refused subscribe".to_string()),
-        Err(e) => return Err(format!("subscribe failed: {e}")),
-    }
-    match client.authorize_with(worker, password) {
-        Ok(true) => {}
-        Ok(false) => return Err(format!("pool refused authorize for '{worker}'")),
-        Err(e) => return Err(format!("authorize failed: {e}")),
-    }
-    Ok(client)
 }
 
 fn run_gpu_test(args: &[String]) -> ExitCode {

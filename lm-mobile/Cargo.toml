@@ -13,3 +13,4 @@ lm-sched = { path = "../lm-sched" }
 lm-pow = { path = "../lm-pow" }
 jni = "0.21"
 
+lm-miner = { path = "../lm-miner", default-features = false }

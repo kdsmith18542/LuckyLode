@@ -376,8 +376,8 @@ mod tests {
         // PoS at the limit: no splash, no payout beyond the normal path.
         let p = apply_pot_block(0, state, base, 0, pos_draws());
         assert_eq!(p.pot_splash, 0, "PoS must not collect the forced splash");
-        assert_eq!(p.pot_event, false);
-        assert_eq!(p.pity, false);
+        assert!(!p.pot_event);
+        assert!(!p.pity);
         assert_eq!(
             p.pot - p.to_pot,
             pot_at_limit,

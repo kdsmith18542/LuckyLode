@@ -1092,6 +1092,7 @@ name = "lm-mobile"
 version = "0.1.0"
 dependencies = [
  "jni",
+ "lm-miner",
  "lm-pow",
  "lm-sched",
 ]

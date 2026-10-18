@@ -248,6 +248,125 @@ mod hex {
     }
 }
 
+// ---------------------------------------------------------------------
+// Pool mining runtime (doc 07 stage 3)
+//
+// The shared `lm-miner` loop (`pool_loop::PoolMiner`) on a CPU backend:
+// the scheduler's thread count gates the grind, the service owns
+// start/stop, and progress crosses JNI as one line of text (the stats
+// buffer) — no callback threading between the JVM and the mining thread.
+// The `lm-miner` dependency builds without the `opencl` feature here, so
+// the .so never links a GPU stack phones don't ship.
+// ---------------------------------------------------------------------
+
+use lm_miner::pool_loop::{PoolConfig, PoolMiner};
+use std::sync::Mutex;
+
+/// The running miner, if any. One per process — the service is the only
+/// starter, and a restart (thread-count change) replaces it under the
+/// lock after stopping the old one.
+static POOL_MINER: Mutex<Option<PoolMiner>> = Mutex::new(None);
+
+fn jstring_arg(env: &mut JNIEnv, s: JString) -> String {
+    env.get_string(&s).map(|s| s.into()).unwrap_or_default()
+}
+
+/// Start mining: `pool` = HOST:PORT, `worker` = the pool identity,
+/// `password` = the pool password ("" -> "x"), `threads` = scheduler
+/// decision, `chunk` = nonces per search (<= 0 -> mobile default 256;
+/// small chunks keep stop and job-adoption latency seconds-scale at
+/// phone hashrates). Returns false when the config is refused.
+#[no_mangle]
+pub extern "system" fn Java_cc_luckylode_miner_NativeCore_nativePoolStart0(
+    mut env: JNIEnv,
+    _class: JClass,
+    pool: JString,
+    worker: JString,
+    password: JString,
+    threads: jint,
+    chunk: jint,
+) -> jboolean {
+    let pool = jstring_arg(&mut env, pool);
+    let worker = jstring_arg(&mut env, worker);
+    let password = {
+        let p = jstring_arg(&mut env, password);
+        if p.is_empty() { "x".to_string() } else { p }
+    };
+    let mut cfg = PoolConfig {
+        agent: Some("lm-miner-mobile/0.1 android".to_string()),
+        threads: threads.max(1) as usize,
+        chunk: if chunk > 0 { chunk as u64 } else { 256 },
+        // The scheduler owns thermal policy (battery temp, charge state);
+        // the loop's own CPU guard is disabled so it cannot fight the
+        // scheduler's thread-count decisions.
+        max_temp: 0,
+        duty: 100,
+        report_secs: 5,
+        ..PoolConfig::new(pool, worker)
+    };
+    cfg.password = password;
+    match PoolMiner::spawn(cfg) {
+        Ok(mut m) => {
+            if let Ok(mut slot) = POOL_MINER.lock() {
+                if let Some(old) = slot.as_mut() {
+                    let _ = old.stop_join();
+                }
+                *slot = Some(m);
+                1
+            } else {
+                let _ = m.stop_join();
+                0
+            }
+        }
+        Err(_) => 0,
+    }
+}
+
+/// Stop mining and wait for the loop to finish its current chunk.
+#[no_mangle]
+pub extern "system" fn Java_cc_luckylode_miner_NativeCore_nativePoolStop0() {
+    if let Ok(mut slot) = POOL_MINER.lock() {
+        if let Some(m) = slot.as_mut() {
+            let _ = m.stop_join();
+        }
+        *slot = None;
+    }
+}
+
+/// True while the mining thread is alive.
+#[no_mangle]
+pub extern "system" fn Java_cc_luckylode_miner_NativeCore_nativePoolRunning0() -> jboolean {
+    match POOL_MINER.lock() {
+        Ok(slot) => slot.as_ref().map(|m| m.running()).unwrap_or(false) as jboolean,
+        Err(_) => 0,
+    }
+}
+
+/// Stats as one space-separated line for the notification:
+/// `submitted accepted rejected connected hps_x10 last…` — `last` is
+/// the remainder of the line (it can contain spaces).
+#[no_mangle]
+pub extern "system" fn Java_cc_luckylode_miner_NativeCore_nativePoolStats0(
+    env: JNIEnv,
+    _class: JClass,
+) -> jni::sys::jstring {
+    let line = match POOL_MINER.lock() {
+        Ok(slot) => match slot.as_ref() {
+            Some(m) => {
+                let s = m.stats();
+                format!(
+                    "{} {} {} {} {} {}",
+                    s.submitted, s.accepted, s.rejected, s.connected as u8,
+                    (s.hps * 10.0) as i64, s.last
+                )
+            }
+            None => "0 0 0 0 0 idle".to_string(),
+        },
+        Err(_) => "0 0 0 0 0 idle".to_string(),
+    };
+    env.new_string(line).map(|s| s.into_raw()).unwrap_or(std::ptr::null_mut())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
