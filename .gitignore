@@ -46,3 +46,9 @@ AGENTS.md
 # (the Tauri binary snapshots them at build time; never track them)
 lm-wallet/ui/node_modules/
 lm-wallet/ui/dist/
+
+# Android build outputs
+lm-mobile/android/app/build/
+lm-mobile/android/.gradle/
+lm-mobile/android/build/
+lm-mobile/android/app/src/main/jniLibs/*/

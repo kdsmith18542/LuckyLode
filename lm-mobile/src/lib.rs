@@ -61,7 +61,7 @@ fn from_handle(h: Handle) -> &'static mut Scheduler {
 /// Doc 07 §7.2 defaults as the constructor's fallback: any non-positive
 /// value selects the default for that field.
 #[no_mangle]
-pub extern "system" fn Java_cc_luckylode_miner_NativeCore_nativeSchedulerCreate(
+pub extern "system" fn Java_cc_luckylode_miner_NativeCore_nativeSchedulerCreate0(
     _env: JNIEnv,
     _class: JClass,
     pause_deci: jint,
@@ -95,7 +95,7 @@ pub extern "system" fn Java_cc_luckylode_miner_NativeCore_nativeSchedulerCreate(
 }
 
 #[no_mangle]
-pub extern "system" fn Java_cc_luckylode_miner_NativeCore_nativeSchedulerDestroy(
+pub extern "system" fn Java_cc_luckylode_miner_NativeCore_nativeSchedulerDestroy0(
     _env: JNIEnv,
     _class: JClass,
     handle: jlong,
@@ -109,7 +109,7 @@ pub extern "system" fn Java_cc_luckylode_miner_NativeCore_nativeSchedulerDestroy
 /// One scheduler decision. `temp_deci` < 0 means "sensor unavailable"
 /// (lm-sched's `None` — keep the last thermal decision, fail operational).
 #[no_mangle]
-pub extern "system" fn Java_cc_luckylode_miner_NativeCore_nativeSchedulerDecide(
+pub extern "system" fn Java_cc_luckylode_miner_NativeCore_nativeSchedulerDecide0(
     _env: JNIEnv,
     _class: JClass,
     handle: jlong,
@@ -141,7 +141,7 @@ pub extern "system" fn Java_cc_luckylode_miner_NativeCore_nativeSchedulerDecide(
 /// sideloaded binary) and benchmark device classes against the same
 /// digest every other surface computes.
 #[no_mangle]
-pub extern "system" fn Java_cc_luckylode_miner_NativeCore_nativePowHash(
+pub extern "system" fn Java_cc_luckylode_miner_NativeCore_nativePowHash0(
     mut env: JNIEnv,
     _class: JClass,
     header_hex: JString,
@@ -163,7 +163,7 @@ pub extern "system" fn Java_cc_luckylode_miner_NativeCore_nativePowHash(
 /// (the same cases the Kotlin unit tests mirror — doc 07 §7.1's
 /// shared-vector guarantee).
 #[no_mangle]
-pub extern "system" fn Java_cc_luckylode_miner_NativeCore_nativeSchedulerSelfTest(
+pub extern "system" fn Java_cc_luckylode_miner_NativeCore_nativeSchedulerSelfTest0(
     _env: JNIEnv,
     _class: JClass,
 ) -> jboolean {
@@ -227,6 +227,7 @@ pub fn scheduler_selftest() -> bool {
 // hex decode without a dependency (the probe takes hex from Kotlin).
 mod hex {
     pub fn decode(s: &str) -> Result<Vec<u8>, ()> {
+        #[allow(clippy::manual_is_multiple_of)] // odd length: not hex
         if s.len() % 2 != 0 {
             return Err(());
         }
