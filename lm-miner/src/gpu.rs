@@ -163,13 +163,13 @@ impl GpuSearcher {
         self.batch
     }
 
-    /// One full ember hash through the GPU pipeline. The cross-check
+    /// One full LuckyHash through the GPU pipeline. The cross-check
     /// surface for the randomized KAT battery (doc 15 §15.4).
     pub fn hash_nonce(&self, header: &[u8], height: u64, nonce: u64) -> Result<[u8; 32], String> {
         let seed = pow_seed(header, nonce);
         let h0 = argon2_prep::h0(
             &seed,
-            &argon2_prep::ember_salt(height),
+            &argon2_prep::lucky_salt(height),
             lm_pow::ASSOCIATED_DATA,
         );
         let inits = [argon2_prep::initial_blocks(&h0)];
@@ -186,7 +186,7 @@ impl GpuSearcher {
         start: u64,
         n: usize,
     ) -> Result<Option<Solution>, String> {
-        let salt = argon2_prep::ember_salt(height);
+        let salt = argon2_prep::lucky_salt(height);
         let mut seeds = Vec::with_capacity(n);
         let mut inits = Vec::with_capacity(n);
         for i in 0..n {
@@ -320,7 +320,7 @@ mod tests {
             let mut wants = Vec::with_capacity(chunk.len());
             for (header, nonce, height) in chunk {
                 let seed = pow_seed(header, *nonce);
-                let salt = argon2_prep::ember_salt(*height);
+                let salt = argon2_prep::lucky_salt(*height);
                 let h0 = argon2_prep::h0(&seed, &salt, lm_pow::ASSOCIATED_DATA);
                 inits.push(argon2_prep::initial_blocks(&h0));
                 seeds.push(seed);

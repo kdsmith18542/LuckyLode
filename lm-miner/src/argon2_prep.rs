@@ -346,7 +346,7 @@ pub fn mem(seed: &[u8], salt: &[u8], ad: &[u8]) -> [u8; 32] {
 }
 
 /// LuckyHash salt for a height: `"LMv1" || height_le64` (frozen, doc 05).
-pub fn ember_salt(height: u64) -> [u8; 12] {
+pub fn lucky_salt(height: u64) -> [u8; 12] {
     let mut salt = [0u8; 12];
     salt[..4].copy_from_slice(b"LMv1");
     salt[4..].copy_from_slice(&height.to_le_bytes());
@@ -381,7 +381,7 @@ mod tests {
         ];
         for (nonce, height, want_hex) in cases {
             let f = lm_pow::pow_full(&header, nonce, height);
-            let mine = mem(&f.seed, &ember_salt(height), b"lowmine-pow/v1");
+            let mine = mem(&f.seed, &lucky_salt(height), b"lowmine-pow/v1");
             assert_eq!(
                 mine.iter().map(|b| format!("{b:02x}")).collect::<String>(),
                 want_hex,
@@ -398,14 +398,14 @@ mod tests {
         // H' finalize helper to lm-pow's mem for the frozen nonce 0 case.
         let header: Vec<u8> = (0u8..80).collect();
         let f = lm_pow::pow_full(&header, 0, 1);
-        let h0v = h0(&f.seed, &ember_salt(1), b"lowmine-pow/v1");
+        let h0v = h0(&f.seed, &lucky_salt(1), b"lowmine-pow/v1");
         let last = fill(&initial_blocks(&h0v));
         assert_eq!(mem_from_last(&last), f.mem);
     }
 
     #[test]
     fn salt_is_frozen_layout() {
-        let s = ember_salt(0x0102_0304_0506_0708);
+        let s = lucky_salt(0x0102_0304_0506_0708);
         assert_eq!(&s[..4], b"LMv1");
         assert_eq!(&s[4..], &0x0102_0304_0506_0708u64.to_le_bytes());
     }

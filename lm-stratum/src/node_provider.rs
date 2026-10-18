@@ -1020,7 +1020,7 @@ mod tests {
 
     #[test]
     fn precommitted_digest_matches_the_node_kat() {
-        // Frozen vector from the DRAW KAT (ember_draw_kat.cpp): prev =
+        // Frozen vector from the DRAW KAT (lucky_draw_kat.cpp): prev =
         // internal bytes 0..31, height 12345 → digest de233f46…
         let mut prev = [0u8; 32];
         for (i, b) in prev.iter_mut().enumerate() {

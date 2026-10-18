@@ -99,7 +99,7 @@ mod tests {
 
     #[test]
     fn matches_the_node_kat_vectors() {
-        // DRAW KAT vectors (ember_draw_kat.cpp).
+        // DRAW KAT vectors (lucky_draw_kat.cpp).
         let mut prev = [0u8; 32];
         for (i, b) in prev.iter_mut().enumerate() {
             *b = i as u8;

@@ -26,11 +26,17 @@ consensus; the frozen strings below are called out precisely because they
   values) keep their identifiers — they are format, not branding.
 - **LuckyHash** (decided 2026-10-14): final name for the proof-of-work
   algorithm (previously the EmberHash working name; doc 05 title updated,
-  docs/02/04/09 swept). The name-the-algo contest is concluded. Internal
-  identifiers keep their names: `ember_*.cpp` files, `CEmberHash` /
-  `GetEmberHash`, `ASSETCHAINS_EMBERHASH`, and `-ac_algo=emberhash` stays
-  accepted as a legacy alias for `-ac_algo=luckyhash`. Parameters and KAT
-  vectors never move with a rename.
+  docs/02/04/09 swept). The name-the-algo contest is concluded.
+  **Internal identifiers renamed 2026-10-18** (owner direction): the C++
+  layer is `lucky_hash.{h,cpp}` / `lucky_difficulty.{h,cpp}` /
+  `lucky_kat.cpp` / `lucky_*_kat.cpp` / `lucky_kat.sh`,
+  `CLuckyHash`/`GetLuckyHash`, `ASSETCHAINS_LUCKYHASH`; the Rust mirror
+  names its salt builder `lucky_salt`. Renames are identifier-only — the
+  KAT vectors and construction constants never move with a rename (all
+  five gates green before and after). `-ac_algo=emberhash` stays
+  accepted as a legacy alias for `-ac_algo=luckyhash`. The fire-themed
+  luck class "ember" (docs/12 §12.10 ladder: mythic…ember, flare,
+  glint, spark) is a THEME name, not the working title — untouched.
 
 ## 13.3 Frozen strings (exempt from branding)
 
@@ -76,10 +82,14 @@ consensus; the frozen strings below are called out precisely because they
   references (Verus-or-Ethereum address fallbacks, parent-chain and
   merge-mining wording, `PROOF_PBAASMMR` Verus MMR proof), the frozen
   `verusDataSignaturePrefix`, and one legacy wallet-dump test fixture.
-- **PBaaS / Verus Vault feature names** — still upstream names; rename
-  pending (same exercise as VerusID → LuckyID). The data-dir subpaths
-  were part of this: **done 2026-10-17 for Lucky Lode chains** — Windows
-  now lands in `LuckyLode`/`LuckyLodeTest` (matching macOS/Unix; fork
-  commit `2ca319e`), and only genuine PBaaS chains keep the upstream
-  `Verus`/`VerusTest`/`Komodo` paths.
+- **PBaaS / Verus Vault feature names — RESOLVED 2026-10-18 (owner
+  direction):** the user-facing name for the vault feature is
+  **LuckyVault**. No user-facing "Verus Vault" strings exist in the node
+  (all occurrences are internal activation constants —
+  `ACTIVATE_VERUSVAULT`, `SOLUTION_VERUSV6` — which are format, not
+  branding, same policy as `VERSION_VERUSID`). **PBaaS stays PBaaS**: it
+  is the neutral upstream technical term (like "Equihash"), carries no
+  Verus branding, and names inherited machinery Lucky Lode does not
+  use. The data-dir subpaths are done for Lucky Lode chains (2026-10-17);
+  only genuine PBaaS chains keep upstream paths.
 - Name-the-algo contest — **concluded 2026-10-14: LuckyHash** (§13.2).

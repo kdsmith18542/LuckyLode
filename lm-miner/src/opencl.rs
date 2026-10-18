@@ -616,7 +616,7 @@ pub fn gpu_kat_vectors(dev: &GpuDevice) -> Result<(), String> {
     let cases: [(u64, u64); 3] = [(0, 1), (1, 1), (u64::MAX, 12345)];
     for (nonce, height) in cases {
         let f = lm_pow::pow_full(&header, nonce, height);
-        let h0 = argon2_prep::h0(&f.seed, &argon2_prep::ember_salt(height), b"lowmine-pow/v1");
+        let h0 = argon2_prep::h0(&f.seed, &argon2_prep::lucky_salt(height), b"lowmine-pow/v1");
         let pair = argon2_prep::initial_blocks(&h0);
         let outs = dev.fill_batch(std::slice::from_ref(&pair))?;
         let mut last_bytes = [0u8; 1024];
