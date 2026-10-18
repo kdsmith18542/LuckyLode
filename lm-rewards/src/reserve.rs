@@ -65,19 +65,32 @@ pub struct BlockPayout {
     pub reserve: u64,
 }
 
-/// Apply one block's money rules (doc 06 §6.2).
+/// Apply one block's money rules — the PRE-SPLIT rule (doc 06 §6.2 as of
+/// rev 1.1: the whole 5% levy credited the jackpot reserve).
+///
+/// **Deprecated:** the consensus rule since doc 06 rev 1.2 is the 4/1
+/// levy split, whose exact executable mirror is
+/// [`crate::pot::apply_pot_block`] (gated by the pot test suite).
+/// Kept because the helpers it shares with the pot path
+/// ([`levy_amount`], [`reserve_cap`], [`jackpot_bonus`]) are the live
+/// jackpot leg, and the tests below pin the legacy contract.
 ///
 /// - Normal block: `miner = R + F − levy`; `reserve += levy` (capped).
 /// - Jackpot block: `miner = (R + F − levy) + min(5R, reserve_after_levy)`.
 /// - Conservation: `miner + (reserve − reserve_before) + to_league == R + F`.
 #[must_use]
+#[deprecated(since = "0.2.0", note = "pre-split rule; use pot::apply_pot_block")]
 pub fn apply_block(reserve: u64, base: u64, fees: u64, is_jackpot: bool) -> BlockPayout {
     let levy = levy_amount(base, fees);
     let normal = base.saturating_add(fees).saturating_sub(levy);
     let cap = reserve_cap(base);
     let to_reserve = levy.min(cap.saturating_sub(reserve));
     let to_league = levy - to_reserve;
-    let credited = reserve + to_reserve;
+    // Invariant: to_reserve <= cap - reserve, so the credit cannot
+    // overflow (cap is a saturating multiple of base).
+    let credited = reserve
+        .checked_add(to_reserve)
+        .expect("invariant: reserve credit stays under the cap");
     if !is_jackpot {
         return BlockPayout {
             miner: normal,
@@ -93,11 +106,16 @@ pub fn apply_block(reserve: u64, base: u64, fees: u64, is_jackpot: bool) -> Bloc
         bonus,
         to_reserve,
         to_league,
-        reserve: credited - bonus,
+        // Invariant: bonus <= min(5R, credited) — the debit cannot
+        // underflow.
+        reserve: credited
+            .checked_sub(bonus)
+            .expect("invariant: bonus debit covered by the credit"),
     }
 }
 
 #[cfg(test)]
+#[allow(deprecated)]
 mod tests {
     use super::*;
 

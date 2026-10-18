@@ -7,9 +7,10 @@ license = "GPL-3.0-only"
 # Vendored deps in the fork tree (BLAKE3, Argon2) retain their own licenses.
 
 [dependencies]
-argon2 = "0.6.0"
-blake3 = "1.8.7"
-primitive-types = "0.14.0"
+argon2 = "=0.6.0"
+blake3 = "=1.8.7"
+primitive-types = "=0.14.0"
+sha2 = "0.10"
 
 [dev-dependencies]
 criterion = "0.5"

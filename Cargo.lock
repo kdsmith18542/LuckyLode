@@ -1040,6 +1040,7 @@ dependencies = [
  "criterion",
  "hex",
  "primitive-types",
+ "sha2",
 ]
 
 [[package]]

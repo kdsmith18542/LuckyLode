@@ -18,6 +18,7 @@ use primitive_types::U256;
 use std::sync::OnceLock;
 
 pub mod difficulty;
+pub mod draw;
 
 /// Argon2id memory cost in KiB (1 MiB — phone L2/L3 friendly).
 pub const M_COST: u32 = 1024;
@@ -100,11 +101,14 @@ pub fn pow_hash(header: &[u8], nonce: u64, height: u64) -> [u8; 32] {
     pow_full(header, nonce, height).out
 }
 
-/// Target check: `out < target`, both 256-bit big-endian (Bitcoin convention).
-/// Equal is *not* valid (matches Bitcoin semantics).
+/// Target check: `out <= target`, both 256-bit big-endian. Equal IS
+/// valid — the node rejects only `hash > target` (`CheckProofOfWork`),
+/// which is also the Bitcoin convention; a strict `<` here would make
+/// the pool reject a share the chain would accept (an exact-equality
+/// digest, ~2^-256, but the semantics must match).
 #[must_use]
 pub fn meets_target(out: &[u8; 32], target: &[u8; 32]) -> bool {
-    out < target
+    out <= target
 }
 
 /// Jackpot check (doc 06 §6.1): `out < floor(T / 100)`, digest big-endian,
@@ -125,7 +129,8 @@ mod tests {
         let mut hi = [0x00u8; 32];
         hi[31] = 0x01;
         assert!(meets_target(&lo, &hi));
-        assert!(!meets_target(&hi, &hi), "equal must not validate");
+        // Equality is VALID and pinned: the node accepts hash == target.
+        assert!(meets_target(&hi, &hi), "equal must validate (node parity)");
         assert!(!meets_target(&hi, &lo));
         // Leading byte dominates trailing bytes.
         let mut a = [0x00u8; 32];

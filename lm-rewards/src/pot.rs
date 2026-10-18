@@ -148,14 +148,22 @@ pub fn apply_pot_block(
     let cap = reserve_cap(base);
     let to_reserve = jackpot_levy.min(cap.saturating_sub(reserve));
     let to_league = jackpot_levy - to_reserve;
-    let credited_reserve = reserve + to_reserve;
+    // Invariant: to_reserve <= cap - reserve, so the credit cannot
+    // overflow (cap is a saturating multiple of base).
+    let credited_reserve = reserve
+        .checked_add(to_reserve)
+        .expect("invariant: reserve credit stays under the cap");
     let jackpot = if draws.jackpot { jackpot_bonus(base, credited_reserve) } else { 0 };
 
     // Pot leg (cap-overflow burns instead of feeding the league pool).
     let pcap = pot_cap(base);
     let to_pot = pot_levy.min(pcap.saturating_sub(state.pot));
     let to_burn = pot_levy - to_pot;
-    let credited_pot = state.pot + to_pot;
+    // Invariant: to_pot <= pcap - pot, so the credit cannot overflow.
+    let credited_pot = state
+        .pot
+        .checked_add(to_pot)
+        .expect("invariant: pot credit stays under the cap");
     // Pity: force a tier-A splash after a full drought — PoW finders only
     // (jackpots/pot are PoW-finder-only, pity included); the digest event
     // itself never forces (and a digest event at any tier resets the run).
@@ -177,8 +185,14 @@ pub fn apply_pot_block(
         to_pot,
         to_burn,
         to_league,
-        reserve: credited_reserve - jackpot,
-        pot: credited_pot - splash,
+        // Invariant: jackpot <= min(5R, credited_reserve) and
+        // splash <= credited_pot / 2 — debits cannot underflow.
+        reserve: credited_reserve
+            .checked_sub(jackpot)
+            .expect("invariant: jackpot debit covered by the credit"),
+        pot: credited_pot
+            .checked_sub(splash)
+            .expect("invariant: splash debit covered by the credit"),
         drought: if pot_event { 0 } else { state.drought.saturating_add(1) },
         pot_event,
         pity,

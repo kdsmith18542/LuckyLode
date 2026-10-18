@@ -112,7 +112,7 @@ pub fn lwma_next_target(targets: &[U256], times: &[u64]) -> Option<U256> {
     let mut acc: u64 = 0;
     for i in 1..=LWMA_N {
         let st = times[i].saturating_sub(times[i - 1]).min(SOLVETIME_CLAMP);
-        acc += st * i as u64;
+        acc = acc.saturating_add(st.saturating_mul(i as u64));
     }
     let sum: U512 = targets
         .iter()
@@ -125,8 +125,11 @@ pub fn lwma_next_target(targets: &[U256], times: &[u64]) -> Option<U256> {
         raw512.try_into().expect("bounded above")
     };
     let last = targets[LWMA_N - 1];
-    let lo = last - last / ADJUST_DENOM;
-    let hi = last + last / ADJUST_DENOM;
+    let half = last / ADJUST_DENOM;
+    let lo = last - half; // half <= last: no underflow by construction
+    // Near U256::MAX the band head overflows — saturate (the clamp below
+    // bounds the result anyway; a panic here would take the node down).
+    let hi = last.saturating_add(half);
     let next = raw.max(lo).min(hi);
     Some(next.min(POW_LIMIT))
 }

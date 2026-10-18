@@ -84,11 +84,15 @@ software implements and every pool MUST publish (transparency is the
 anti-scam mechanism):
 
 - **Solo miners keep everything** (hall of fame, doc 03 §3.5).
-- **Pools:** bonus split over a PPLNS window (recommended: shares from the
-  trailing ~3 days), weight per miner `w_i = sqrt(shares_i)`, share capped
-  at 25% of the bonus per miner, remainder redistributed pro-rata in one
-  pass. Sub-linear by construction: splitting into 100 fake workers gains
-  ~nothing; real small miners gain a lot.
+- **Pools:** bonus split over the last **2,000 accepted shares**
+  (traditional PPLNS, `PPLNS_WINDOW_SHARES`), aggregated to payout
+  identity first, weight per miner `w_i = sqrt(shares_i)`, per-miner cap
+  of 25% of the bonus, and the capped excess **water-filled** (a fixpoint:
+  capped miners lock, the remainder re-flows pro-rata until no cap is
+  breached — not a single redistribution pass). Sub-linear by
+  construction: splitting into 100 fake workers gains ~nothing; real
+  small miners gain a lot. This is the reference rule the reference pool
+  implements; a pool deviating from it MUST publish its own rule.
 - **Pool-hopping:** the PPLNS window is the defense — arriving after a
   jackpot earns nothing from it, leaving forfeits future windows. No
   protocol change needed.
@@ -106,8 +110,12 @@ anti-scam mechanism):
 
 1. Simulate ≥ 20,000 blocks: jackpot rate within **[0.5%, 2%]** (Poisson
    tolerance around 1%).
-2. Reserve neutrality: cumulative drift within **±5%** of the neutral
-   expectation over the same window.
+2. Reserve balance: within **±5%** of the value the 4/1 levy split
+   replays to over the same window. (The original "neutrality"
+   expectation — that the reserve hovers at a fixed point — predates
+   the rev 1.2 split; with the pot leg taking a fifth of the levy the
+   reserve trends to its own attractor, so the gate compares against a
+   replayed reference, not a neutrality constant.)
 3. Warm-up drill: reboot reserve to 0 mid-testnet, confirm thin early
    jackpots + recovery, no consensus faults.
 4. Reference-pool split drill: publish a jackpot distribution with the
@@ -128,7 +136,14 @@ issuance. Executable spec: `lm-rewards/src/pot.rs`; consensus:
   **0–69 → 10%** of the pot; **70–94 → 25%**; **95–99 → 50%**. Floor 10%,
   never the whole pot.
 - **Pity timer:** after **4,320 event-less blocks** (~3 days at 60 s) the
-  next block takes the 10% floor, so the pot can't sit dead.
+  next block takes the 10% floor, so the pot can't sit dead. Rationale
+  for a scheduled-looking payout: the pot's inflow is a fixed levy
+  fraction and its outflow is a fixed tier fraction of the *balance*,
+  so a forced 10% grab is bounded — it cannot drain the fund, only
+  truncate droughts; the alternative (folding the drought into the draw
+  digest) would make the payout depend on future blocks and break the
+  pre-committed-ticket property. PoW finders only, like every pot
+  payout.
 - **Cap + burn:** pot cap `200 × R`; levy that would exceed it is burned
   (unspendable by construction). The jackpot reserve's overflow instead
   feeds the league pool (§6.2) — different valves for different funds.

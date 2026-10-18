@@ -102,7 +102,7 @@ impl Scheduler {
     pub fn new(cfg: Config) -> Option<Self> {
         if cfg.temp_resume_deci >= cfg.temp_pause_deci
             || cfg.max_threads == 0
-            || cfg.derate_band_deci < 0
+            || cfg.derate_band_deci <= 0
         {
             return None;
         }
@@ -127,7 +127,10 @@ impl Scheduler {
 
         // 1. Battery floor is absolute.
         if sample.batt_pct < self.cfg.batt_floor_pct {
-            self.overheat_latch = false; // power state resets thermal narrative
+            // The latch is NOT cleared here: a battery event says nothing
+            // about temperature — only the resume line may clear it, so
+            // an overheated machine cannot come back hot through the
+            // battery door.
             return Action {
                 mine: false,
                 threads: 0,
@@ -147,22 +150,27 @@ impl Scheduler {
                 overnight_active,
             };
         }
-        // 3. Thermal gate with hysteresis latch.
+        // 3. Thermal gate with hysteresis latch. A sensor dropout
+        // (temp_deci = None) keeps the last thermal decision: a latched
+        // overheat stays latched (dropout must not resume mining), and
+        // a cool machine keeps mining (no reading = no new decision).
         if let Some(t) = sample.temp_deci {
             if t >= self.cfg.temp_pause_deci {
                 self.overheat_latch = true;
             } else if t <= self.cfg.temp_resume_deci {
                 self.overheat_latch = false;
             }
-            if self.overheat_latch {
-                return Action {
-                    mine: false,
-                    threads: 0,
-                    reason: Some(Reason::Overheat),
-                    overnight_active,
-                };
-            }
-            // 4. Derate band just under the pause line.
+        }
+        if self.overheat_latch {
+            return Action {
+                mine: false,
+                threads: 0,
+                reason: Some(Reason::Overheat),
+                overnight_active,
+            };
+        }
+        // 4. Derate band just under the pause line (needs a reading).
+        if let Some(t) = sample.temp_deci {
             if t > self.cfg.temp_pause_deci - self.cfg.derate_band_deci {
                 let threads = (self.cfg.max_threads / 2).max(1);
                 return Action {
@@ -221,6 +229,28 @@ mod tests {
         // 38.0°C releases.
         let c = sc.decide(&s(Some(380), 80, true, 12));
         assert!(c.mine && c.reason.is_none() && c.threads == 8);
+    }
+
+    #[test]
+    fn dropout_and_battery_do_not_clear_the_overheat_latch() {
+        let mut sch = Scheduler::new(Config {
+            temp_pause_deci: 800,
+            temp_resume_deci: 700,
+            ..Config::default()
+        })
+        .expect("valid config");
+        // Trip the latch.
+        let a = sch.decide(&s(Some(810), 90, true, 12));
+        assert!(!a.mine, "overheated: pause");
+        // Sensor dropout: keep the last decision — still paused.
+        let a = sch.decide(&s(None, 90, true, 12));
+        assert!(!a.mine, "dropout must not resume a latched overheat");
+        // Battery event: says nothing about temperature — still latched.
+        let a = sch.decide(&s(Some(750), 5, false, 12));
+        assert!(!a.mine, "battery event must not clear the thermal latch");
+        // Only the resume line clears it.
+        let a = sch.decide(&s(Some(690), 90, true, 12));
+        assert!(a.mine, "cooled below resume: mine again");
     }
 
     #[test]

@@ -88,8 +88,26 @@ impl Comeback {
         Self::default()
     }
 
-    /// Weight per-mille for a share at `ts` (call in ascending-`ts` order).
+    /// Weight per-mille for a share at `ts`.
+    ///
+    /// Order-insensitive against arrival jitter: the tracked timestamp
+    /// is a monotonic max, so an out-of-order share (network threads
+    /// deliver with jitter) never rewinds the miner's timeline — it can
+    /// neither mint a fresh comeback gap nor disturb the active window.
+    /// The stored log is the replay order, so an audit replay of the
+    /// log recomputes these weights exactly.
     pub fn weight_for(&mut self, ts: u64) -> u64 {
+        if let Some(p) = self.prev_ts {
+            if ts <= p {
+                // Earlier-than-seen share (out of order): routine weight
+                // from the active window only, no state change.
+                return if self.window_end.is_some_and(|end| ts < end) {
+                    COMEBACK_PERMILLE
+                } else {
+                    0
+                };
+            }
+        }
         let idle = self.prev_ts.map(|p| ts.saturating_sub(p)).unwrap_or(0);
         self.prev_ts = Some(ts);
         if self.prev_ts.is_some() && idle >= COMEBACK_IDLE_SECS {
@@ -164,5 +182,51 @@ mod tests {
         assert_eq!(c.weight_for(r1), 100);
         let r2 = r1 + COMEBACK_WINDOW_SECS + 20 * D; // lapse again, longer
         assert_eq!(c.weight_for(r2), 100);
+    }
+
+    #[test]
+    fn out_of_order_share_never_rewinds_the_timeline() {
+        // Arrival jitter: a late-delivered OLD share arriving after the
+        // return must not mint a second gap or close the open window.
+        let mut c = Comeback::new();
+        c.weight_for(0);
+        let ret = 20 * D; // comeback after 20 days
+        assert_eq!(c.weight_for(ret), 100);
+        // The old share (ts 5) arrives now: routine weight only, no
+        // state change — a later real share still sees the open window.
+        assert_eq!(c.weight_for(5), 100); // inside the active window
+        assert_eq!(c.weight_for(ret + 100), 100); // window still open
+        // The OLD share must NOT have reset prev_ts: the next share
+        // after the window closes is routine, not a fresh comeback.
+        assert_eq!(c.weight_for(ret + COMEBACK_WINDOW_SECS), 0);
+        // And no phantom gap: consecutive routine shares stay 0.
+        assert_eq!(c.weight_for(ret + COMEBACK_WINDOW_SECS + 10), 0);
+    }
+
+    #[test]
+    fn duplicate_timestamp_is_not_a_comeback() {
+        // Same ts twice (a resubmitted share): the second is out of
+        // order (ts <= seen), and must not double-open a window.
+        let mut c = Comeback::new();
+        c.weight_for(1_000);
+        assert_eq!(c.weight_for(1_000), 0);
+        // Real gap measured from the ORIGINAL ts only.
+        assert_eq!(c.weight_for(1_000 + COMEBACK_IDLE_SECS), 100);
+    }
+
+    #[test]
+    fn long_gap_sequences_replay_identically_in_stored_order() {
+        // The fixture the audit claim was missing: multi-week gaps in the
+        // exact order the log stores them. Every replay of this sequence
+        // recomputes the same weights (weights are baked at submit).
+        let mut c = Comeback::new();
+        let d = |x: u64| x * D; // day units
+        assert_eq!(c.weight_for(d(0)), 0);
+        assert_eq!(c.weight_for(d(21)), 100); // 3-week gap
+        assert_eq!(c.weight_for(d(24)), 100); // inside the 7-day window
+        assert_eq!(c.weight_for(d(70)), 100); // 46-day gap: requalifies
+        assert_eq!(c.weight_for(d(73)), 100);
+        assert_eq!(c.weight_for(d(80)), 0); // window closed, routine
+        assert_eq!(c.weight_for(d(210)), 100); // another long lapse
     }
 }

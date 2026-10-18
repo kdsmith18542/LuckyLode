@@ -8,7 +8,7 @@
 //! levy/bonus/cap reserve machine — so the full loop is testable today.
 
 use lm_pow::{is_jackpot, meets_target, pow_hash};
-use lm_rewards::reserve::apply_block;
+use lm_rewards::pot::{apply_pot_block, BlockDraws, PotState};
 use primitive_types::U256;
 
 /// Template the pool builds jobs from.
@@ -143,7 +143,24 @@ impl TemplateProvider for MockProvider {
             };
         }
         let jackpot = is_jackpot(&out, net);
-        let p = apply_block(self.reserve, self.base_reward, self.fees, jackpot);
+        // The mock mirrors the live consensus rules (doc 06 rev 1.2):
+        // the 4/1 levy split. No pot events on the mock chain — the pot
+        // leg still takes its fifth of the levy (burning it at the cap,
+        // like a chain whose pot is full), so reserve/league/bonus all
+        // match what the real chain computes for the same block.
+        let draws = BlockDraws {
+            jackpot,
+            pot_event: false,
+            tier: 0,
+            is_pow: true,
+        };
+        let p = apply_pot_block(
+            self.reserve,
+            PotState { pot: u64::MAX, drought: 0 }, // full pot: pot leg burns
+            self.base_reward,
+            self.fees,
+            draws,
+        );
         self.reserve = p.reserve;
         self.blocks += 1;
         self.height += 1;
@@ -151,7 +168,7 @@ impl TemplateProvider for MockProvider {
             accepted: true,
             out,
             jackpot,
-            bonus: p.bonus,
+            bonus: p.jackpot_bonus,
             // Mock chain has no pot (the node-side rules own it).
             pot: 0,
             league_overflow: p.to_league,
@@ -159,7 +176,7 @@ impl TemplateProvider for MockProvider {
             // Net normal (before the bonus) — the same number NodeProvider
             // parses from the template coinbase, so payout accounting
             // totals exactly the block value on both providers.
-            coinbase: p.miner.saturating_sub(p.bonus),
+            coinbase: p.miner.saturating_sub(p.jackpot_bonus),
         }
     }
 }
