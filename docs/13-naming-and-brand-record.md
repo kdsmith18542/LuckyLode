@@ -41,19 +41,29 @@ consensus; the frozen strings below are called out precisely because they
   need a format-version decision of its own.
 - Address version bytes and network magic — already Lucky Lode's own,
   deliberately distinct from Verus (cross-chain safety).
+- **Official wire ports (recorded 2026-10-17; frozen like the magic):**
+  mainnet P2P **9270** / RPC **9271**, testnet P2P **19270** / RPC
+  **19271** (chainparams.cpp). These are the defaults a clean install
+  binds and the only values software may assume. A chain conf
+  `rpcport=`/`port=` line overrides them *for that install only* —
+  overrides must never leak into shipped defaults (a wallet once
+  hard-coded a dev box's conf override as its default and would have
+  missed every fresh user's node).
 
 ## 13.4 Doc numbering
 
 - docs/08 and docs/10 were reserved and never written; the numbering is
   historical. This doc (13) was added 2026-10-14.
 
-## 13.6 Casino game names (decided 2026-10-14)
+## 13.6 Casino game names (decided 2026-10-14; **withdrawn 2026-10-17**)
 
-- First-party casino at `luckylode.cc/casino` (doc 14).
-- Launch titles: **Lucky Lode** (Book-style, 5×3) and **Lucky Lode Ways**
-  (ways-style, up to 117,649 ways).
-- **"Megaways" is not used** — it is a Big Time Gaming trademark; the ways
-  title is named "Lucky Lode Ways". "Book of…" is likewise avoided.
+- The first-party casino (doc 14, deleted) is **withdrawn** — names below
+  are kept only as a trademark record.
+- Launch titles had been: **Lucky Lode** (Book-style, 5×3) and **Lucky
+  Lode Ways** (ways-style, up to 117,649 ways).
+- **"Megaways" is never used** — it is a Big Time Gaming trademark.
+  "Book of…" is likewise avoided. This rule survives the withdrawal: if a
+  game layer ever ships a ways-style title, it is "Lucky Lode Ways".
 
 ## 13.5 Open naming items
 
@@ -67,7 +77,9 @@ consensus; the frozen strings below are called out precisely because they
   merge-mining wording, `PROOF_PBAASMMR` Verus MMR proof), the frozen
   `verusDataSignaturePrefix`, and one legacy wallet-dump test fixture.
 - **PBaaS / Verus Vault feature names** — still upstream names; rename
-  pending (same exercise as VerusID → LuckyID). The PBaaS Windows
-  data-dir subpaths (`Verus` / `VerusTest` / `Komodo`) ride on that
-  decision.
+  pending (same exercise as VerusID → LuckyID). The data-dir subpaths
+  were part of this: **done 2026-10-17 for Lucky Lode chains** — Windows
+  now lands in `LuckyLode`/`LuckyLodeTest` (matching macOS/Unix; fork
+  commit `2ca319e`), and only genuine PBaaS chains keep the upstream
+  `Verus`/`VerusTest`/`Komodo` paths.
 - Name-the-algo contest — **concluded 2026-10-14: LuckyHash** (§13.2).

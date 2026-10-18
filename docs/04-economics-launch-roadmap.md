@@ -67,6 +67,37 @@ seed.
 4. **Season 1 starts at block N** (e.g. 1 month in): leagues, streaks,
    badges live.
 
+**Pre-mainnet engineering gates (added 2026-10-17; each traces to a live
+testnet incident or a known gap):**
+
+- **Divergence rule:** any consensus-adjacent fix lands on testnet *and*
+  mainnet params in the same commit (the `fCoinbaseMustBeProtected`
+  bug made all transparent payouts invalid on testnet while mainnet
+  still inherited the wrong value). Keep one divergence table in the
+  fork and make every entry justified.
+- **Replay-derivability audit** (doc 06 invariant): every added
+  consensus field rebuilds byte-for-byte from a fresh reindex;
+  serialization/reload paths re-tested after any field changes.
+- **Node repo CI:** the fork gets its own build + KAT-gate CI (all four
+  KAT gates) before the countdown — consensus-critical code must not
+  depend on one machine's build ritual.
+- **Registry persistence decision:** the luckynode registry is
+  in-memory today (a pool restart unregisters every node) — persist it
+  or move registration on-chain, decided and shipped before mainnet.
+- **Wallet signature-hash coverage — DONE 2026-10-17:** the
+  self-custody signer now carries all three epochs (sprout legacy +
+  ZIP-143 + ZIP-243, `lm-keys::zip243`), vector-pinned against the
+  fork's own regenerated test set (45 transparent v3 vectors, every
+  hash-type shape, `lm-keys/tests/zip143.rs`); the wallet picks the
+  epoch from the node's upgrade status at build time. Live end-to-end
+  proof lands when sapling activates (testnet h207500, mainnet h227520
+  as of 2026-10-17) — until then the wallet keeps signing the sprout
+  format the chain validates.
+- **Default-port truth:** fresh-install defaults come from chainparams
+  only (P2P 9270/RPC 9271 mainnet, 19270/19271 testnet, doc 13 §13.3);
+  per-install conf overrides are documented, never baked into software
+  defaults.
+
 ## 4.4 Phased roadmap
 
 | Phase | Scope | Exit gate |

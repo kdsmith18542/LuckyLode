@@ -65,6 +65,14 @@ positive-sum — fine, fees feed the spectacle).
   systems fund each other. Fully traceable on the dashboard (doc 04 §4.2).
 - **Reorgs:** reserve accounting reverts with blocks like any state. No
   special casing.
+- **Replay-derivability invariant (added 2026-10-17, after two live
+  incidents):** every consensus field this system adds to block-index
+  state (reserve, drought/pity timer, pot, league overflow) must be
+  *rebuildable by replay* — a fresh reindex of the chain reproduces it
+  byte-for-byte. Serialization/reload paths (e.g. `LoadBlockIndexGuts`)
+  are consensus code, not plumbing: a field that survives in memory but
+  not on disk (or vice versa) is a consensus bug. Same rule for the
+  pool-side credit-once gates: no backfill, no guessing across gaps.
 - **Worked example** (`R = 16`, `F = 2`): levy `0.9`; normal payout
   `17.1`; jackpot payout `17.1 + min(80, reserve)`.
 
