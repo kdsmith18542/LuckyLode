@@ -816,6 +816,9 @@ fn run_pool(o: &PoolOpts) -> ExitCode {
         Event::JobExhausted { job } => {
             println!("job {job} exhausted, waiting for new template");
         }
+        Event::JobAdopted { job, height } => {
+            println!("job {job} height {height}");
+        }
         Event::Note(n) => eprintln!("{n}"),
     };
     match lm_miner::pool_loop::run(&cfg, &backend, &policy, &stop, &mut sink) {

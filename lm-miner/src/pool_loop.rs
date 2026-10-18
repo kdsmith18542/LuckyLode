@@ -129,6 +129,9 @@ pub enum Event {
     Idle { timeout_secs: u64, accepted: u64, submitted: u64 },
     /// The nonce budget for a job ran out; waiting for a new template.
     JobExhausted { job: String },
+    /// A job with a new header was adopted (same-header vardiff
+    /// rotations keep the nonce cursor and stay quiet).
+    JobAdopted { job: String, height: u64 },
     /// Everything else worth a line (fee notes, GPU status).
     Note(String),
 }
@@ -413,10 +416,11 @@ fn run_v1(
                                 .as_ref()
                                 .map(|c| c.header == j.header)
                                 .unwrap_or(false);
-                            current = Some(j);
                             if !same_header {
                                 pos = cfg.start;
+                                sink(Event::JobAdopted { job: j.id.clone(), height: j.height });
                             }
+                            current = Some(j);
                         }
                     }
                     Ok(None) => break,
@@ -435,6 +439,7 @@ fn run_v1(
             if current.is_none() {
                 match client.read_job(Duration::from_secs(cfg.job_timeout_secs)) {
                     Ok(Some(j)) => {
+                        sink(Event::JobAdopted { job: j.id.clone(), height: j.height });
                         current = Some(j);
                         pos = cfg.start;
                     }
@@ -486,9 +491,21 @@ fn run_v1(
                         }
                         Ok((false, err)) => {
                             submitted += 1;
+                            let err_text =
+                                err.as_ref().map(|(_, t)| t.as_str()).unwrap_or_default();
+                            if err_text.contains("stale") {
+                                // The pool declared this job dead; drop it
+                                // instead of grinding it to exhaustion (seen
+                                // live on testnet: three stale rejects, then
+                                // a full nonce budget of wasted work on the
+                                // dead template before the idle reconnect).
+                                current = None;
+                            }
                             sink(Event::ShareRejected {
                                 job: job.id.clone(),
-                                error: format!("{err:?}"),
+                                error: err
+                                    .map(|(c, t)| format!("{c} {t}"))
+                                    .unwrap_or_default(),
                             });
                         }
                         Err(e) => {
@@ -674,10 +691,11 @@ fn run_v2(
                                 .as_ref()
                                 .map(|c| c.header == j.header)
                                 .unwrap_or(false);
-                            current = Some(j);
                             if !same_header {
                                 pos = cfg.start;
+                                sink(Event::JobAdopted { job: j.job_id.to_string(), height: j.height });
                             }
+                            current = Some(j);
                         }
                     }
                     Ok(None) => break,
@@ -696,6 +714,7 @@ fn run_v2(
             if current.is_none() {
                 match client.read_job(Duration::from_secs(cfg.job_timeout_secs)) {
                     Ok(Some(j)) => {
+                        sink(Event::JobAdopted { job: j.job_id.to_string(), height: j.height });
                         current = Some(j);
                         pos = cfg.start;
                     }
@@ -747,9 +766,16 @@ fn run_v2(
                         }
                         Ok((false, err)) => {
                             submitted += 1;
+                            let err_text = err.clone().unwrap_or_default();
+                            if err_text.contains("stale") {
+                                // Same defensive drop as V1: a stale verdict
+                                // retires the job instead of wasting the
+                                // rest of its nonce budget.
+                                current = None;
+                            }
                             sink(Event::ShareRejected {
                                 job: job.job_id.to_string(),
-                                error: err.unwrap_or_default(),
+                                error: err_text,
                             });
                         }
                         Err(e) => {
@@ -775,6 +801,9 @@ fn run_v2(
                                         .as_ref()
                                         .map(|c| c.header == j.header)
                                         .unwrap_or(false);
+                                    if !same_header {
+                                        sink(Event::JobAdopted { job: j.job_id.to_string(), height: j.height });
+                                    }
                                     current = Some(j);
                                     if !same_header {
                                         rotated = true;
@@ -958,6 +987,9 @@ fn update_stats(stats: &Mutex<RunStats>, ev: &Event) {
         }
         Event::JobExhausted { job } => {
             s.last = format!("job {job} exhausted, waiting for a new template");
+        }
+        Event::JobAdopted { job, height } => {
+            s.last = format!("job {job} height {height}");
         }
         Event::Note(n) => s.last = n.clone(),
     }

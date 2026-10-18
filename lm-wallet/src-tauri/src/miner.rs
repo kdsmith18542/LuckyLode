@@ -217,7 +217,10 @@ fn run(
         chunk,
         max_temp,
         duty: duty.min(100) as i64,
-        job_timeout_secs: 10,
+        // Template rotations are ~60 s apart on testnet; a 10 s idle
+        // window reconnects pointlessly (seen live). The CLI default 30 s
+        // only reconnects when genuinely starved.
+        job_timeout_secs: 30,
         tls: tls.then_some(TlsCfg { server_name: None, ca_pem: None, insecure: false }),
         report_secs: 5,
         ..PoolConfig::new(String::new(), String::new())
@@ -266,6 +269,9 @@ fn run(
             }
             Event::JobExhausted { job } => {
                 log_line(log, format!("job {job} exhausted, waiting for a new template"));
+            }
+            Event::JobAdopted { job, height } => {
+                log_line(log, format!("job {job} height {height}"));
             }
             Event::DevFee { .. } | Event::Note(_) => {}
         }
