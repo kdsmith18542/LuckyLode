@@ -15,6 +15,20 @@ use std::time::Duration;
 const BASE: u64 = 1_000_000;
 const LEVY: u64 = 50_000; // 5% of BASE
 
+/// The submit ack is sent BEFORE the pool's block-submit call (a slow
+/// node must not push the ack past the miner's deadline), so chain-side
+/// effects are eventually visible rather than ack-synchronized: poll.
+fn wait_for<F: Fn() -> bool>(what: &str, f: F) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while std::time::Instant::now() < deadline {
+        if f() {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    panic!("timed out waiting for {what}");
+}
+
 fn grind_share(header: &[u8], height: u64, target: &[u8; 32]) -> (u64, [u8; 32]) {
     for n in 0..10_000u64 {
         let out = pow_hash(header, n, height);
@@ -52,8 +66,8 @@ fn full_loop_share_block_jackpot_and_money() {
     let (n, _) = grind_share(&job.header, job.height, &job.pool_target);
     let (ok, err) = c.submit("alice", &job.id, n).expect("submit");
     assert!(ok, "first share rejected: {err:?}");
-    assert_eq!(server.chain_blocks(), 1);
-    assert_eq!(server.chain_height(), 2);
+    wait_for("first block to land", || server.chain_blocks() == 1);
+    wait_for("chain height 2", || server.chain_height() == 2);
 
     // Immediate replay is a duplicate, not a second share.
     let (ok, err) = c.submit("alice", &job.id, n).expect("resubmit");
@@ -76,7 +90,9 @@ fn full_loop_share_block_jackpot_and_money() {
     let (ok, err) = c.submit("alice", &job2.id, jn).expect("jackpot submit");
     assert!(ok, "jackpot share rejected: {err:?}");
 
-    // The block record carries a real bonus split over the PPLNS window.
+    // The block record carries a real bonus split over the PPLNS window
+    // (the jackpot block lands after the ack — poll for it).
+    wait_for("jackpot block to land", || server.blocks().len() == 2);
     let blocks = server.blocks();
     assert_eq!(blocks.len(), 2);
     let last = blocks.last().expect("jackpot record");
@@ -181,7 +197,9 @@ fn blocks_credit_payout_balances() {
     let (ok, err) = c.submit("dave", &job.id, n).expect("submit");
     assert!(ok, "share rejected: {err:?}");
     // The instant chain made the share a block: payout accounting must
-    // total exactly the block value (net value + claimed split).
+    // total exactly the block value (net value + claimed split). The
+    // block lands after the ack (see wait_for) — poll for it.
+    wait_for("block to land", || !server.blocks().is_empty());
     let b = server.blocks();
     assert_eq!(b.len(), 1);
     let bals = server.balances();

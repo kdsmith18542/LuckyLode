@@ -165,12 +165,52 @@ pub fn format_coins(v: u64) -> String {
 /// send time (it checks the network params and returns an error the
 /// payout loop treats as a failed send).
 #[must_use]
+/// Base58check validity: decodes to 25 bytes (a version byte, a 20-byte
+/// hash160, and a 4-byte sha256d checksum) and verifies the checksum.
+/// Shape alone let a typo hold a balance forever; the checksum is what
+/// catches it.
+///
+/// The version byte is NOT constrained here — the prefix filter above
+/// is the chain policy; this only proves the checksum.
+fn b58check_ok(s: &str) -> bool {
+    const ALPHABET: &[u8; 58] = b"123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+    let mut num: Vec<u8> = Vec::with_capacity(25);
+    for c in s.bytes() {
+        let Some(idx) = ALPHABET.iter().position(|&a| a == c) else {
+            return false;
+        };
+        let mut carry = idx as u32;
+        for byte in num.iter_mut() {
+            carry += u32::from(*byte) * 58;
+            *byte = (carry & 0xff) as u8;
+            carry >>= 8;
+        }
+        while carry > 0 {
+            num.push((carry & 0xff) as u8);
+            carry >>= 8;
+        }
+    }
+    let leading = s.bytes().take_while(|&b| b == b'1').count();
+    let mut full = vec![0u8; leading];
+    full.extend(num.iter().rev());
+    if full.len() != 25 {
+        return false;
+    }
+    use sha2::{Digest, Sha256};
+    let checksum = Sha256::digest(Sha256::digest(&full[..21]));
+    full[21..] == checksum[..4]
+}
+
+/// Payout-address validity: our chains' prefixes, then FULL base58check.
+/// Lengths 33-35 all occur (the leading-zero pattern of the version byte
+/// decides); the checksum is the real gate.
 pub fn valid_payout_address(s: &str) -> bool {
-    s.len() == 34
+    (33..=35).contains(&s.len())
         && s.starts_with(['R', 'L', 'm', 'n', '2'])
         && s.bytes().all(|b| {
             matches!(b, b'1'..=b'9' | b'A'..=b'H' | b'J'..=b'N' | b'P'..=b'Z' | b'a'..=b'k' | b'm'..=b'z')
         })
+        && b58check_ok(s)
 }
 
 #[cfg(test)]
@@ -278,22 +318,24 @@ mod tests {
 
     #[test]
     fn address_shape_check() {
-        let addr = |first: char, rest: char, n: usize| -> String {
-            format!("{}{}", first, &rest.to_string().repeat(n))
-        };
-        assert!(valid_payout_address(&addr('R', 'a', 33)));
-        assert!(valid_payout_address(&addr('L', 'a', 33))); // Lucky Lode prefix
-        assert!(valid_payout_address("LYPJ8Vy8pEHMqMBksWzgxnZx6VsfuFXxtf")); // live regtest addr
-        assert!(valid_payout_address("n4EijXmFTNf7tMDGYSQB7rZytCCmRttZb6")); // live testnet addr
-        assert!(valid_payout_address(&addr('m', 'a', 33))); // testnet prefix
-        assert!(valid_payout_address(&addr('n', 'a', 33))); // testnet prefix
+        // Real base58check vectors (live chain addresses + generated).
+        assert!(valid_payout_address("LYPJ8Vy8pEHMqMBksWzgxnZx6VsfuFXxtf")); // regtest L (v48)
+        assert!(valid_payout_address("n4EijXmFTNf7tMDGYSQB7rZytCCmRttZb6")); // live testnet
+        assert!(valid_payout_address("miN8TqxhnviDF21vd9LgubFgcZxwbcznuK")); // live testnet
+        assert!(valid_payout_address("mx5tDPWsWxhC7EVkJXGCR14dUoMdps8fLy")); // live testnet
+        assert!(valid_payout_address("mfWyW5fc9NUj75YAnFgoRLrjxgLDn2MMth")); // generated, v111
+        assert!(valid_payout_address("2MstP8uJfYBsk1HfmCU9MW3qqKgvrw3ESd1")); // '2' P2SH, 35 chars
+        // The checksum is the gate: same shape, wrong checksum — this is
+        // the typo that used to hold a balance forever.
+        assert!(!valid_payout_address("mfWyW5fc9NUj75YAnFgoRLrjxgLDmNrbUb"));
+        assert!(!valid_payout_address("LYPJ8Vy8pEHMqMBksWzgxnZx6VsfuFXxtg")); // last char broken
         assert!(!valid_payout_address("t1short"));
         assert!(!valid_payout_address("")); // empty
-        assert!(!valid_payout_address(&addr('R', '0', 33))); // 0 not base58
-        assert!(!valid_payout_address(&addr('R', 'O', 33))); // O not base58
-        assert!(!valid_payout_address(&addr('Z', 'a', 33))); // wrong prefix
-        assert!(!valid_payout_address(&addr('R', 'a', 32))); // short
-        assert!(!valid_payout_address(&addr('R', 'a', 34))); // long
+        assert!(!valid_payout_address(&format!("R{}", "a".repeat(33)))); // shape-only, no checksum
+        assert!(!valid_payout_address(&format!("R{}", "0".repeat(33)))); // 0 not base58
+        assert!(!valid_payout_address(&format!("Z{}", "a".repeat(33)))); // wrong prefix
+        assert!(!valid_payout_address(&format!("R{}", "a".repeat(31)))); // too short
+        assert!(!valid_payout_address(&format!("R{}", "a".repeat(36)))); // too long
     }
 }
 

@@ -69,6 +69,10 @@ pub struct Stats {
     pub shares: u64,
     pub rejects: u64,
     pub blocks: u64,
+    /// Network-meeting finds the chain REFUSED (submitblock rejected).
+    /// Zero is the only healthy value; every increment is a lost block
+    /// and must be investigated, not just counted.
+    pub block_rejects: u64,
 }
 
 struct JobState {
@@ -230,6 +234,17 @@ pub fn parse_workers_file(content: &str) -> Result<HashMap<String, String>, Stri
     Ok(out)
 }
 
+/// Branch-free byte comparison for secrets (length equality still
+/// short-circuits — the usual accepted leak; the byte walk itself gives
+/// no per-character timing oracle).
+pub fn ct_eq(a: &str, b: &str) -> bool {
+    let (a, b) = (a.as_bytes(), b.as_bytes());
+    if a.len() != b.len() {
+        return false;
+    }
+    a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+}
+
 /// Authorization decision. A per-worker token map (when configured) is
 /// authoritative: the worker must exist and the token must match. Otherwise
 /// the shared pool password applies (open when unset).
@@ -240,10 +255,10 @@ fn auth_ok(
     pass: &str,
 ) -> bool {
     if let Some(tokens) = tokens {
-        return tokens.get(worker).map(|t| t == pass).unwrap_or(false);
+        return tokens.get(worker).map(|t| ct_eq(t, pass)).unwrap_or(false);
     }
     match password {
-        Some(pw) => pw == pass,
+        Some(pw) => ct_eq(pw, pass),
         None => true,
     }
 }
@@ -419,6 +434,20 @@ fn apply_block_found<P: TemplateProvider + 'static>(
         .lock()
         .expect("provider")
         .submit_block(&job.header, job.height, nonce);
+    if !outcome.accepted {
+        // Lost finds must be loud: a rejected submitblock is money on
+        // the floor and a template/consensus bug until proven
+        // otherwise. Log with full context, count it, and surface it on
+        // /api/stats (the dashboard and the monitor both read that).
+        shared.stats.lock().expect("stats").block_rejects += 1;
+        eprintln!(
+            "BLOCK SUBMIT REJECTED: height {} nonce {} digest {} — the share met the network target; check the node log",
+            job.height,
+            nonce,
+            outcome.out.iter().map(|b| format!("{b:02x}")).collect::<String>()
+        );
+        return;
+    }
     if outcome.accepted {
         let now = now_secs();
         // League credit goes through the credit-once gate: the refresh
@@ -689,11 +718,17 @@ fn handle_conn<P: TemplateProvider + 'static>(stream: TcpStream, shared: Arc<Sha
                             registry.issue(derived.clone());
                             let _ = writeln!(stream.get_mut(), "{}", notify(&derived, false));
                         }
+                        // Ack BEFORE the block submit RPC: the share is
+                        // valid regardless of what the node says about a
+                        // block, and a slow node must not push the ack
+                        // past the miner's submit deadline (a timed-out
+                        // miner reconnects mid-find and resubmits as a
+                        // duplicate).
+                        let _ =
+                            writeln!(stream.get_mut(), "{}", response(&id, serde_json::Value::Bool(true)));
                         if matches!(verdict, Verdict::Accept { block: true }) {
                             apply_block_found(&shared, miner_id.clone(), &s.job, s.nonce);
                         }
-                        let _ =
-                            writeln!(stream.get_mut(), "{}", response(&id, serde_json::Value::Bool(true)));
                     }
                     _ => {
                         shared.stats.lock().expect("stats").rejects += 1;
@@ -766,6 +801,16 @@ struct V2Channel {
     vd_target: Option<([u8; 32], u64)>,
     seen_version: u64,
     sent_height: u64,
+    /// The miner's `OpenStandardMiningChannel.max_target`: the loosest
+    /// target its hardware accepts. Everything this channel assigns is
+    /// clamped to it (assigned = min(pool target, ceiling)); a target
+    /// beyond the device's ability would be silently undiscardable work.
+    max_target: [u8; 32],
+}
+
+/// Big-endian 256-bit min: the stricter (numerically smaller) target.
+fn min_target(a: &[u8; 32], b: &[u8; 32]) -> [u8; 32] {
+    if a <= b { *a } else { *b }
 }
 
 /// Send the current broadcast template as a [`LuckyJob`] when it is newer
@@ -787,8 +832,8 @@ fn send_lucky_job<P: TemplateProvider + 'static, S: Read + Write>(
     }
     let clean = cur.height != channel.sent_height;
     let target = match channel.vd_target {
-        Some((t, h)) if h == cur.height => t,
-        _ => cur.pool_target,
+        Some((t, h)) if h == cur.height => min_target(&t, &channel.max_target),
+        _ => min_target(&cur.pool_target, &channel.max_target),
     };
     let job = issue_lucky_job(
         &shared.job_counter,
@@ -839,7 +884,7 @@ fn handle_v2_conn<P: TemplateProvider + 'static>(
         } else {
             Ok(SetupConnectionSuccess {
                 used_version: 2,
-                flags: 0,
+                flags: crate::v2::FLAG_LUCKY_EXTENSION,
             })
         }
     }) {
@@ -904,11 +949,14 @@ fn handle_v2_conn<P: TemplateProvider + 'static>(
                 );
                 let channel_id = shared.job_counter.fetch_add(1, Ordering::SeqCst) as u32;
                 let (cur, _) = broadcast_job(&shared);
+                // Honor the miner's max_target as a ceiling: never assign
+                // looser work than the device asked to receive.
+                let assigned = min_target(&cur.pool_target, &open.max_target);
                 if session
                     .send(&to_frame(&OpenStandardMiningChannelSuccess {
                         request_id: open.request_id,
                         channel_id,
-                        target: cur.pool_target,
+                        target: assigned,
                         extranonce_prefix: Vec::new(),
                         group_channel_id: 0,
                     }))
@@ -923,6 +971,7 @@ fn handle_v2_conn<P: TemplateProvider + 'static>(
                     vd_target: None,
                     seen_version: 0,
                     sent_height: 0,
+                    max_target: open.max_target,
                 };
                 // The broadcast always has a job (seeded at startup); a
                 // failed first send means a dead peer.
@@ -986,7 +1035,7 @@ fn handle_v2_conn<P: TemplateProvider + 'static>(
                         // same template (mirrors V1). The miner keeps its
                         // nonce cursor: same header, fresh job id.
                         if let Some(new_work) = ch.vardiff.record(now, work) {
-                            let new_target = target_for_work(new_work);
+                            let new_target = min_target(&target_for_work(new_work), &ch.max_target);
                             ch.vd_target = Some((new_target, s.job.height));
                             if session
                                 .send(&to_frame(&SetTarget {
@@ -1248,7 +1297,7 @@ impl<P: TemplateProvider + 'static> RunningServer<P> {
         let tokens = self.shared.worker_tokens.as_ref()?;
         let worker = tokens
             .iter()
-            .find(|(_, t)| t.as_str() == token)
+            .find(|(_, t)| ct_eq(t, token))
             .map(|(w, _)| w.as_str())?;
         self.shared
             .workers

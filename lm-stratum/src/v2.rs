@@ -61,6 +61,13 @@ pub const MSG_SET_TARGET: u8 = 0x21;
 /// full template; shares carry the u64 nonce. Acks reuse the core
 /// `SubmitShares.Success/Error` types.
 pub const EXTENSION_LUCKY: u16 = 0x4C4C;
+
+/// `SetupConnectionSuccess.flags` bit: this pool serves the Lucky
+/// extension (0x4C4C — `LuckyJob`/`LuckySubmit`). A conforming V2 client
+/// that only implements the core messages sees flag 0 and learns it
+/// must not expect core `NewMiningJob` work here; previously the pool
+/// advertised nothing, so a strict client silently got no work.
+pub const FLAG_LUCKY_EXTENSION: u32 = 0x1;
 /// Lucky job: full header template for a channel (extension message).
 pub const MSG_LUCKY_JOB: u8 = 0x00;
 /// Lucky share submit with the u64 grind nonce (extension message).

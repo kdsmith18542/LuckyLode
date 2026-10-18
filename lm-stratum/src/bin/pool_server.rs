@@ -18,7 +18,7 @@ use lm_stratum::provider::{MockProvider, TemplateProvider};
 use lm_stratum::rpc::RpcClient;
 use lm_stratum::server::{spawn_server, RunningServer};
 use std::collections::{HashMap, VecDeque};
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{BufReader, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -138,7 +138,7 @@ footer{margin-top:26px;color:var(--dim);font-size:12px;line-height:1.5}
 <tr><td><code>POST api/luckynode/register</code></td><td>register a luckynode: <code>{id,address,pubkey,msg,sig,ts}</code> (msg must rebuild canonically; sig proves payout-address ownership via node <code>verifymessage</code>)</td></tr>
 <tr><td><code>POST api/luckynode/heartbeat</code></td><td>signed liveness: <code>{id,timestamp,sig}</code></td></tr>
 <tr><td><code>POST api/luckynode/notarize</code></td><td>cosign a draw: <code>{draw_id,id,sig}</code></td></tr>
-<tr><td><code>GET api/miner?token=…</code></td><td>your own row + payout settings (worker-token auth)</td></tr>
+<tr><td><code>GET api/miner</code> with <code>Authorization: Bearer &lt;token&gt;</code></td><td>your own row + payout settings (worker-token auth — the token is a header, never a URL)</td></tr>
 <tr><td><code>POST api/payout/settings</code></td><td>set/clear your payout address + threshold: <code>{token,address,threshold}</code></td></tr>
 </tbody></table>
 <p>The dashboard polls <code>api/stats</code> every 5 s; miners, bots and dashboards are welcome to do the same.</p>
@@ -260,7 +260,7 @@ async function loadMiner(){
   const msg=document.getElementById('mmsg');
   if(!mtok){msg.textContent='enter your worker token';return;}
   try{
-    const r=await fetch('api/miner?token='+encodeURIComponent(mtok),{cache:'no-store'});
+    const r=await fetch('api/miner',{cache:'no-store',headers:{Authorization:'Bearer '+mtok}});
     const j=await r.json();
     if(!r.ok||j.error)throw new Error(j.error||r.statusText);
     const m=j.miner;
@@ -402,6 +402,7 @@ fn stats_json<P: TemplateProvider + 'static>(
             "shares": s.shares,
             "rejects": s.rejects,
             "blocks": s.blocks,
+            "block_rejects": s.block_rejects,
             "league_pool": server.league_balance(),
             "workers": workers.len(),
             "online": online,
@@ -492,25 +493,63 @@ fn stats_json<P: TemplateProvider + 'static>(
     obj.to_string()
 }
 
+/// Bounded line read for HTTP: a header line must never be able to
+/// allocate without limit, and the caller's read timeout bounds how long
+/// a stalled peer can hold the connection.
+fn read_line_capped(reader: &mut impl Read, cap: usize) -> std::io::Result<String> {
+    let mut out: Vec<u8> = Vec::with_capacity(128);
+    let mut b = [0u8; 1];
+    loop {
+        if reader.read(&mut b)? == 0 {
+            break; // EOF
+        }
+        if b[0] == b'\n' {
+            break;
+        }
+        out.push(b[0]);
+        if out.len() > cap {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "line too long",
+            ));
+        }
+    }
+    Ok(String::from_utf8_lossy(&out).into_owned())
+}
+
 fn http_reply<P: TemplateProvider + 'static>(
     stream: &mut TcpStream,
     server: &RunningServer<P>,
     ctx: &HttpCtx,
 ) -> std::io::Result<()> {
-    let mut line = String::new();
+    // Deadlines: a slowloris gets seconds, not forever.
+    let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(10)));
+    let _ = stream.set_write_timeout(Some(std::time::Duration::from_secs(10)));
     let mut body = String::new();
+    let mut authorization = String::new();
+    let line;
     {
         let mut reader = BufReader::new(stream.try_clone()?);
-        reader.read_line(&mut line)?;
+        line = read_line_capped(&mut reader, 8192)?;
         // Headers: only Content-Length matters (POST bodies for the
-        // luckynode API); cap the body at 1 MiB.
+        // luckynode API); the whole header section is capped (lines and
+        // bytes) so neither count nor size can grow without bound.
         let mut content_len = 0usize;
+        let mut header_lines = 0usize;
+        let mut header_bytes = 0usize;
         loop {
-            let mut h = String::new();
-            reader.read_line(&mut h)?;
+            let h = read_line_capped(&mut reader, 8192)?;
+            header_lines += 1;
+            header_bytes += h.len();
             let h = h.trim_end();
             if h.is_empty() {
                 break;
+            }
+            if header_lines > 128 || header_bytes > 32 * 1024 {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "header section too large",
+                ));
             }
             if let Some(v) = h
                 .strip_prefix("Content-Length:")
@@ -518,8 +557,11 @@ fn http_reply<P: TemplateProvider + 'static>(
             {
                 content_len = v.trim().parse().unwrap_or(0);
             }
-            if h.len() > 8192 {
-                break;
+            if let Some(v) = h
+                .strip_prefix("Authorization:")
+                .or_else(|| h.strip_prefix("authorization:"))
+            {
+                authorization = v.trim().to_string();
             }
         }
         if content_len > 0 && content_len <= (1 << 20) {
@@ -532,9 +574,11 @@ fn http_reply<P: TemplateProvider + 'static>(
     let method = parts.next().unwrap_or("GET");
     let path = parts.next().unwrap_or("/");
     // Split any query string off; routes match on the bare path.
-    let (path, query) = match path.split_once('?') {
-        Some((p, q)) => (p, q),
-        None => (path, ""),
+    // Query strings are parsed away (nothing routes on them — tokens
+    // travel in the Authorization header, never the URL).
+    let path = match path.split_once('?') {
+        Some((p, _)) => p,
+        None => path,
     };
     let node = ctx.node.as_ref();
     let (status, ctype, resp) = match (method, path) {
@@ -577,7 +621,11 @@ fn http_reply<P: TemplateProvider + 'static>(
             )
         }
         ("GET", "/api/miner") => {
-            let (status, json) = miner_api(server, ctx, query);
+            let (status, json) = miner_api(server, ctx, Some(&authorization));
+            (status, "application/json", json)
+        }
+        ("POST", "/api/miner") => {
+            let (status, json) = miner_api(server, ctx, Some(&body));
             (status, "application/json", json)
         }
         ("POST", "/api/payout/settings") => {
@@ -598,61 +646,37 @@ fn http_reply<P: TemplateProvider + 'static>(
     stream.flush()
 }
 
-/// Percent-decode a query value (`%XX` escapes and `+`).
-fn urldecode(s: &str) -> String {
-    let b = s.as_bytes();
-    let mut out = Vec::with_capacity(b.len());
-    let mut i = 0;
-    while i < b.len() {
-        match b[i] {
-            b'%' if i + 2 < b.len() => {
-                let hex = std::str::from_utf8(&b[i + 1..i + 3]).unwrap_or("");
-                match u8::from_str_radix(hex, 16) {
-                    Ok(v) => {
-                        out.push(v);
-                        i += 3;
-                    }
-                    Err(_) => {
-                        out.push(b[i]);
-                        i += 1;
-                    }
-                }
-            }
-            b'+' => {
-                out.push(b' ');
-                i += 1;
-            }
-            c => {
-                out.push(c);
-                i += 1;
-            }
-        }
-    }
-    String::from_utf8_lossy(&out).into_owned()
-}
-
-/// Value of `key` in a raw query string.
-fn query_param(query: &str, key: &str) -> Option<String> {
-    query.split('&').find_map(|kv| {
-        let (k, v) = kv.split_once('=')?;
-        (k == key).then(|| urldecode(v))
-    })
-}
-
-/// `GET /api/miner?token=…` — the token owner's row + payout settings
-///. Tokens come from `--workers-file`; without one the route
-/// is closed.
+/// `GET /api/miner` with `Authorization: Bearer <token>` (or
+/// `POST /api/miner` with `{"token": …}`) — the token owner's row +
+/// payout settings. Tokens come from `--workers-file`; without one the
+/// route is closed. The token never travels in the query string (it
+/// would land in logs and proxies).
 fn miner_api<P: TemplateProvider + 'static>(
     server: &RunningServer<P>,
     ctx: &HttpCtx,
-    query: &str,
+    auth: Option<&str>,
 ) -> (&'static str, String) {
-    let Some(token) = query_param(query, "token") else {
+    let bearer = auth
+        .and_then(|a| a.strip_prefix("Bearer ").or_else(|| a.strip_prefix("bearer ")))
+        .map(str::trim)
+        .map(str::to_string);
+    let token = match bearer {
+        Some(t) if !t.is_empty() => t,
+        _ => match auth.and_then(|a| serde_json::from_str::<serde_json::Value>(a).ok()) {
+            Some(v) => v
+                .get("token")
+                .and_then(|t| t.as_str())
+                .unwrap_or("")
+                .to_string(),
+            None => String::new(),
+        },
+    };
+    if token.is_empty() {
         return (
             "400 Bad Request",
-            serde_json::json!({"error": "missing token"}).to_string(),
+            serde_json::json!({"error": "missing token (Authorization: Bearer … or POST {token})"}).to_string(),
         );
-    };
+    }
     let Some(miner) = server.miner_for_token(&token) else {
         return (
             "403 Forbidden",
@@ -773,8 +797,29 @@ fn http_serve<P: TemplateProvider + 'static>(
         }
     };
     println!("http stats on http://{addr}/");
-    for mut s in listener.incoming().flatten() {
-        let _ = http_reply(&mut s, &server, &ctx);
+    // Thread per connection with a hard cap: the dashboard used to
+    // serve sequentially, so one stalled peer froze /api/stats for
+    // everyone. Over-cap peers get a 503 and are closed.
+    let active: Arc<std::sync::atomic::AtomicUsize> =
+        Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    for s in listener.incoming().flatten() {
+        if active.load(std::sync::atomic::Ordering::SeqCst) >= 64 {
+            let mut s = s;
+            let _ = writeln!(
+                s,
+                "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            );
+            continue;
+        }
+        active.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let server = Arc::clone(&server);
+        let ctx = ctx.clone();
+        let active = Arc::clone(&active);
+        std::thread::spawn(move || {
+            let mut s = s;
+            let _ = http_reply(&mut s, &server, &ctx);
+            active.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+        });
     }
 }
 
@@ -1000,7 +1045,7 @@ fn save_state<P: TemplateProvider + 'static>(
 }
 
 /// Periodic saver: the ledger moves on every block and payout, so a
-/// bounded 10 s loss window is the crash story (no signal handling).
+/// bounded 10 s loss window is the crash story.
 fn state_saver<P: TemplateProvider + 'static>(
     server: Arc<RunningServer<P>>,
     luckynode: Option<Arc<LuckynodeShared>>,
@@ -1009,6 +1054,29 @@ fn state_saver<P: TemplateProvider + 'static>(
     loop {
         std::thread::sleep(std::time::Duration::from_secs(10));
         save_state(&server, luckynode.as_ref(), &path);
+    }
+}
+
+/// SIGTERM arrives with the ledger up to 10 s stale: save once, then
+/// exit. The handler itself only flips an atomic (async-signal safety);
+/// this watcher thread does the actual saving.
+static TERM: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+extern "C" fn on_sigterm(_sig: libc::c_int) {
+    TERM.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
+fn term_watcher<P: TemplateProvider + 'static>(
+    server: Arc<RunningServer<P>>,
+    luckynode: Option<Arc<LuckynodeShared>>,
+    path: PathBuf,
+) {
+    loop {
+        if TERM.load(std::sync::atomic::Ordering::SeqCst) {
+            save_state(&server, luckynode.as_ref(), &path);
+            println!("SIGTERM: state saved to {} — exiting", path.display());
+            std::process::exit(0);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(250));
     }
 }
 
@@ -1983,6 +2051,11 @@ fn maybe_spawn_v2<P: TemplateProvider + 'static>(
 }
 
 fn main() -> std::process::ExitCode {
+    // SIGTERM = clean stop: the handler only flips the atomic; the
+    // term_watcher thread (spawned per server) does the final state save.
+    unsafe {
+        libc::signal(libc::SIGTERM, on_sigterm as extern "C" fn(libc::c_int) as libc::sighandler_t);
+    }
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.iter().any(|a| a == "-h" || a == "--help") {
         println!("{USAGE}");
@@ -1995,7 +2068,9 @@ fn main() -> std::process::ExitCode {
     let mut net_target = [0xffu8; 32];
     let mut node_rpc: Option<String> = None;
     let mut rpc_user = "u".to_string();
-    let mut rpc_pass = "p".to_string();
+    // Precedence: --rpc-pass / --rpc-pass-file, then the environment
+    // (LUCKY_POOL_RPC_PASS), then the public testnet default.
+    let mut rpc_pass = std::env::var("LUCKY_POOL_RPC_PASS").unwrap_or_else(|_| "p".to_string());
     let mut claim_jackpots = false;
     let mut claim_pot = false;
     let mut http: Option<String> = None;
@@ -2309,6 +2384,36 @@ fn main() -> std::process::ExitCode {
                     std::process::exit(2);
                 })
             }
+            "--rpc-pass-file" => {
+                // Secrets off argv: a file (0600) or the environment beats
+                // `ps`-visible command lines.
+                let path = next("rpc-pass-file").unwrap_or_else(|e| {
+                    eprintln!("error: {e}");
+                    std::process::exit(2);
+                });
+                rpc_pass = std::fs::read_to_string(path.trim())
+                    .unwrap_or_else(|e| {
+                        eprintln!("error: cannot read rpc-pass-file: {e}");
+                        std::process::exit(2);
+                    })
+                    .trim()
+                    .to_string();
+            }
+            "--pool-password-file" => {
+                let path = next("pool-password-file").unwrap_or_else(|e| {
+                    eprintln!("error: {e}");
+                    std::process::exit(2);
+                });
+                pool_password = Some(
+                    std::fs::read_to_string(path.trim())
+                        .unwrap_or_else(|e| {
+                            eprintln!("error: cannot read pool-password-file: {e}");
+                            std::process::exit(2);
+                        })
+                        .trim()
+                        .to_string(),
+                );
+            }
             "--pool-password" => {
                 pool_password = Some(next("pool-password").unwrap_or_else(|e| {
                     eprintln!("error: {e}");
@@ -2614,10 +2719,18 @@ fn main() -> std::process::ExitCode {
         );
         let server = Arc::new(server);
         if let Some(path) = &state_file {
-            let srv = Arc::clone(&server);
-            let ln = luckynode_shared.clone();
-            let p = path.clone();
-            std::thread::spawn(move || state_saver(srv, ln, p));
+            std::thread::spawn({
+                let srv = Arc::clone(&server);
+                let ln = luckynode_shared.clone();
+                let p = path.clone();
+                move || state_saver(srv, ln, p)
+            });
+            std::thread::spawn({
+                let srv = Arc::clone(&server);
+                let ln = luckynode_shared.clone();
+                let p = path.clone();
+                move || term_watcher(srv, ln, p)
+            });
         }
         let history = Arc::new(Mutex::new(VecDeque::new()));
         if let Some(a) = http_addr {
@@ -2741,9 +2854,16 @@ fn main() -> std::process::ExitCode {
         );
         let server = Arc::new(server);
         if let Some(path) = &state_file {
-            let srv = Arc::clone(&server);
-            let p = path.clone();
-            std::thread::spawn(move || state_saver(srv, None, p));
+            std::thread::spawn({
+                let srv = Arc::clone(&server);
+                let p = path.clone();
+                move || state_saver(srv, None, p)
+            });
+            std::thread::spawn({
+                let srv = Arc::clone(&server);
+                let p = path.clone();
+                move || term_watcher(srv, None, p)
+            });
         }
         let history = Arc::new(Mutex::new(VecDeque::new()));
         if let Some(a) = http_addr {
@@ -2804,24 +2924,6 @@ mod tests {
             draw_budget(u64::MAX, 1000),
             (u64::MAX as u128 * 1000 / 10_000) as u64
         );
-    }
-
-    #[test]
-    fn query_parsing_and_decoding() {
-        assert_eq!(query_param("token=abc", "token").as_deref(), Some("abc"));
-        assert_eq!(
-            query_param("a=1&token=xyz&b=2", "token").as_deref(),
-            Some("xyz")
-        );
-        assert_eq!(
-            query_param("token=a%3Ab%20c", "token").as_deref(),
-            Some("a:b c")
-        );
-        assert_eq!(query_param("token=a+b", "token").as_deref(), Some("a b"));
-        assert_eq!(query_param("other=1", "token"), None);
-        assert_eq!(query_param("", "token"), None);
-        assert_eq!(urldecode("plain"), "plain");
-        assert_eq!(urldecode("%zz"), "%zz");
     }
 
     #[test]

@@ -170,11 +170,15 @@ inline void compress_inst(__global const ulong4 *prev4,
             dst4[item * 4 + k] = res;
         }
     }
-    // No barrier after write-back: it reads ONLY this item's row, and the
-    // next compression's row phase writes ONLY this item's row — same
-    // item, program order. Cross-item safety comes from the first barrier
-    // of the next compression (every item's write-back precedes its row
-    // staging, so all reads are done before any column gather).
+    // Barrier AFTER write-back: the next compression's row phase reads
+    // cross-item global state — word 0 of the previous block (`rand`,
+    // item 0's row) and an arbitrary `ref4` block — so every item's
+    // stores must land before any item starts reading again. This was
+    // previously argued safe from program order per row, which only
+    // holds while all ITEMS_PER_GROUP items execute in lockstep (true
+    // on the Pascal card where 32 items = one warp; not guaranteed on
+    // any other vendor or a different workgroup shape).
+    WG_BARRIER();
 }
 
 // addr = G(zero, G(zero, input_with_incremented_counter)), cooperatively.
