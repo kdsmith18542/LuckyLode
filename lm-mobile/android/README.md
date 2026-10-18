@@ -103,7 +103,18 @@ at stake.
       pool `luckylode.cc:3346` (worker `android-emulator`: shares
       accepted, 0 rejects, pool-side rate agreed with the app's
       self-report)
+- [x] Dashboard (doc 07 §7.4): local tiles from the mining loop
+      (hashrate, shares, rejected), device tiles (battery temp/level/
+      charging), pool tiles from the official pool's public API every
+      30 s (this worker's pool-side shares, pool-wide stats, jackpot
+      reserve/pot, latest block), battery-honesty copy, and the
+      advanced screen exposing the §7.2 thresholds (persisted; the
+      service reads them at start). Live-verified on the emulator
+      against the testnet pool (in-app tiles matched a direct API
+      fetch).
 - [ ] Stratum V2 Noise session as a selectable wire (the runtime is
       wire-agnostic; V2 rides the same loop behind a flag)
-- [ ] Dashboard (hashrate, shares, streak, league — doc 07 §7.4)
-- [ ] Battery-honesty copy + attestation hook (doc 07 §7.4/§7.6)
+- [ ] Attestation hook (doc 07 §7.6/§7.4) — verdict-only plumbing for
+      phone-league entry; needs the league side to exist first
+- [ ] Streak/league-rank tiles: not in the pool's public API yet —
+      add pool-side endpoints first (streak day-count per worker)

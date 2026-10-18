@@ -22,7 +22,8 @@ import java.util.Calendar
  * pool miner with the decided thread count (a count change restarts
  * the miner; the frozen lm-sched policy stays the only thermal/battery
  * authority). The notification reports real shares from the mining
- * loop — never a fake hashrate.
+ * loop — never a fake hashrate. Scheduler thresholds come from the
+ * app's advanced screen (doc 07 §7.2 defaults when untouched).
  */
 class MiningService : Service() {
     private var handle: Long = 0L
@@ -45,16 +46,17 @@ class MiningService : Service() {
                 NotificationManager.IMPORTANCE_LOW,
             )
         )
-        // Doc 07 §7.2 defaults; any non-positive value falls back in-core.
+        // Doc 07 §7.2 defaults; the advanced screen persists overrides
+        // (non-positive values fall back in-core).
         handle = NativeCore.nativeSchedulerCreate(
-            /* pauseDeci = */ 430,
-            /* resumeDeci = */ 380,
-            /* bandDeci = */ 50,
-            /* battFloor = */ 25,
-            /* chargeOnly = */ true,
-            /* overnightStart = */ 22,
-            /* overnightEnd = */ 6,
-            /* maxThreads = */ Runtime.getRuntime().availableProcessors(),
+            prefs.getInt(KEY_PAUSE_DECI, 430),
+            prefs.getInt(KEY_RESUME_DECI, 380),
+            prefs.getInt(KEY_BAND_DECI, 50),
+            prefs.getInt(KEY_BATT_FLOOR, 25),
+            prefs.getBoolean(KEY_CHARGE_ONLY, true),
+            prefs.getInt(KEY_OVERNIGHT_START, 22),
+            prefs.getInt(KEY_OVERNIGHT_END, 6),
+            prefs.getInt(KEY_MAX_THREADS, Runtime.getRuntime().availableProcessors()),
         )
         startForeground(NOTIF_ID, buildNotification("scheduler starting…"))
         thread = HandlerThread("scheduler").also { it.start() }
@@ -165,8 +167,21 @@ class MiningService : Service() {
         const val KEY_POOL = "pool"
         const val KEY_WORKER = "worker"
 
+        /** Doc 07 §7.2 thresholds (advanced screen overrides). */
+        const val KEY_PAUSE_DECI = "pauseDeci"
+        const val KEY_RESUME_DECI = "resumeDeci"
+        const val KEY_BAND_DECI = "bandDeci"
+        const val KEY_BATT_FLOOR = "battFloor"
+        const val KEY_CHARGE_ONLY = "chargeOnly"
+        const val KEY_OVERNIGHT_START = "overnightStart"
+        const val KEY_OVERNIGHT_END = "overnightEnd"
+        const val KEY_MAX_THREADS = "maxThreads"
+
         /** Public testnet pool (internal/testnet-runbook: ufw-open direct stratum). */
         const val DEFAULT_POOL = "luckylode.cc:3346"
         const val DEFAULT_WORKER = "android"
+
+        /** The official pool's public dashboard API (nginx-proxied). */
+        const val POOL_STATS_URL = "https://luckylode.cc/pool/api/stats"
     }
 }
