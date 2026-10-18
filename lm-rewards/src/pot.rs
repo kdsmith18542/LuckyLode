@@ -70,6 +70,10 @@ pub struct BlockDraws {
     pub pot_event: bool,
     /// `digest mod 100` — pot tier roll.
     pub tier: u64,
+    /// This block is found by PoW. Jackpots and pot payouts are
+    /// PoW-finder-only (locked): a PoS block never claims, not even
+    /// the drought-forced splash.
+    pub is_pow: bool,
 }
 
 /// Pot cap at the block's current base reward: `200 * R` (saturating).
@@ -152,9 +156,10 @@ pub fn apply_pot_block(
     let to_pot = pot_levy.min(pcap.saturating_sub(state.pot));
     let to_burn = pot_levy - to_pot;
     let credited_pot = state.pot + to_pot;
-    // Pity: force a tier-A splash after a full drought; the digest event
+    // Pity: force a tier-A splash after a full drought — PoW finders only
+    // (jackpots/pot are PoW-finder-only, pity included); the digest event
     // itself never forces (and a digest event at any tier resets the run).
-    let pity = !draws.pot_event && state.drought >= POT_DROUGHT_LIMIT;
+    let pity = draws.is_pow && !draws.pot_event && state.drought >= POT_DROUGHT_LIMIT;
     let pot_event = draws.pot_event || pity;
     let splash = if pot_event {
         let tier = if pity { 0 } else { draws.tier };
@@ -185,7 +190,11 @@ mod tests {
     use super::*;
 
     fn draws(pot_event: bool, tier: u64) -> BlockDraws {
-        BlockDraws { jackpot: false, pot_event, tier }
+        BlockDraws { jackpot: false, pot_event, tier, is_pow: true }
+    }
+
+    fn pos_draws() -> BlockDraws {
+        BlockDraws { jackpot: false, pot_event: false, tier: 0, is_pow: false }
     }
 
     #[test]
@@ -274,7 +283,7 @@ mod tests {
             PotState::default(),
             80_000_000,
             0,
-            BlockDraws { jackpot: true, pot_event: false, tier: 0 },
+            BlockDraws { jackpot: true, pot_event: false, tier: 0, is_pow: true },
         );
         assert_eq!(p.to_reserve, 3_200_000);
         assert_eq!(p.to_pot, 800_000);
@@ -315,7 +324,7 @@ mod tests {
             for jackpot in [false, true] {
                 for (event, tier) in [(false, 0u64), (true, 0), (true, 69), (true, 70), (true, 95)] {
                     let state = PotState { pot, drought };
-                    let d = BlockDraws { jackpot, pot_event: event, tier };
+                    let d = BlockDraws { jackpot, pot_event: event, tier, is_pow: true };
                     let p = apply_pot_block(reserve, state, base, fees, d);
                     let inflow = base as u128 + fees as u128;
                     let outflow = p.miner as u128
@@ -335,6 +344,39 @@ mod tests {
     }
 
     #[test]
+    fn pity_never_pays_a_pos_finder() {
+        // Jackpots and pot payouts are PoW-finder-only — the forced splash
+        // included. A PoS block at the drought limit pays nothing; the
+        // drought keeps counting and the next PoW block collects.
+        let mut state = PotState { pot: 1_000_000, drought: 0 };
+        let base = 80_000_000u64;
+        let limit = POT_DROUGHT_LIMIT;
+        // Fill the drought with event-less PoW blocks.
+        for _ in 0..limit {
+            let p = apply_pot_block(0, state, base, 0, draws(false, 0));
+            state.pot = p.pot;
+            state.drought = p.drought;
+        }
+        assert_eq!(state.drought, limit);
+        let pot_at_limit = state.pot;
+        // PoS at the limit: no splash, no payout beyond the normal path.
+        let p = apply_pot_block(0, state, base, 0, pos_draws());
+        assert_eq!(p.pot_splash, 0, "PoS must not collect the forced splash");
+        assert_eq!(p.pot_event, false);
+        assert_eq!(p.pity, false);
+        assert_eq!(
+            p.pot - p.to_pot,
+            pot_at_limit,
+            "PoS credits the levy but never takes a splash"
+        );
+        assert_eq!(p.drought, limit + 1, "the drought keeps counting");
+        // The next PoW block still collects.
+        let p = apply_pot_block(0, state, base, 0, draws(false, 0));
+        assert!(p.pity, "the next PoW block collects the forced splash");
+        assert!(p.pot_splash > 0);
+    }
+
+    #[test]
     fn ten_thousand_blocks_stay_bounded_and_exact() {
         // Deterministic season: pot event every 1000th block, tiers cycle
         // 0/70/95, jackpot every 500th. Conservation every step, pot and
@@ -348,6 +390,7 @@ mod tests {
                 jackpot: h % 500 == 0,
                 pot_event: h % 1000 == 0,
                 tier: [0u64, 70, 95][(h / 1000 % 3) as usize],
+                is_pow: true,
             };
             let p = apply_pot_block(reserve, state, 80_000_000, 0, d);
             let inflow = 80_000_000u128;
