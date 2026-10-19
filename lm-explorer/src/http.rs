@@ -17,7 +17,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::index::Indexer;
 
-const CSS: &str = "body{background:#0d1117;color:#e6edf3;font:14px ui-monospace,Menlo,monospace;margin:0 auto;padding:24px;max-width:960px}h1{font-size:20px;color:#ffd166}a{color:#7ee787}table{border-collapse:collapse;width:100%;margin:12px 0}td,th{border:1px solid #30363d;padding:6px 10px;text-align:left;font-size:13px}.dim{color:#8b949e}.pos{color:#7ee787}.card{background:#161b22;border:1px solid #30363d;border-radius:10px;padding:12px;margin:12px 0}input{width:70%;padding:8px;background:#0d1117;color:#e6edf3;border:1px solid #30363d;border-radius:6px}button{padding:8px 14px;background:#161b22;color:#ffd166;border:1px solid #ffd166;border-radius:6px}svg.chart{width:100%;height:190px;display:block}";
+const CSS: &str = "body{background:#0d1117;color:#e6edf3;font:14px ui-monospace,Menlo,monospace;margin:0 auto;padding:24px;max-width:960px}h1{font-size:20px;color:#ffd166}a{color:#7ee787}table{border-collapse:collapse;width:100%;margin:12px 0}td,th{border:1px solid #30363d;padding:6px 10px;text-align:left;font-size:13px}.dim{color:#8b949e}.pos{color:#7ee787}.card{background:#161b22;border:1px solid #30363d;border-radius:10px;padding:12px;margin:12px 0}input{width:70%;padding:8px;background:#0d1117;color:#e6edf3;border:1px solid #30363d;border-radius:6px}button{padding:8px 14px;background:#161b22;color:#ffd166;border:1px solid #ffd166;border-radius:6px}svg.chart{width:100%;height:auto;display:block}";
 
 fn page(title: &str, body: String) -> String {
     format!(
@@ -411,8 +411,11 @@ impl Chart {
         let y_of = |v: f64| pad_t + plot_h - (v - lo) / span * plot_h;
 
         let mut svg = String::new();
+        // No preserveAspectRatio override: the default (xMidYMid meet)
+        // keeps axis labels undistorted at any container width. The CSS
+        // gives the svg height:auto so the viewBox aspect is honored.
         svg.push_str(&format!(
-            "<svg viewBox='0 0 {} {}' class=chart preserveAspectRatio='none' role=img aria-label='{}'>",
+            "<svg viewBox='0 0 {} {}' class=chart role=img aria-label='{}'>",
             w, h, esc(&self.title)
         ));
         // Horizontal gridlines + y labels.
@@ -601,7 +604,7 @@ fn market_page(idx: &mut Indexer) -> String {
         m["utxos"].as_i64().unwrap_or(0),
     ));
     body.push_str(&format!(
-        "<div class=card>last 24h: <b>{}</b> blocks · <b>{}</b> transactions · <b>{}</b> active addresses · moved <b>{}</b> · fees <b>{}</b></div>",
+        "<div class=card>last 24h: <b>{}</b> blocks · <b>{}</b> transactions · <b>{}</b> active addresses · moved <b>{}</b> <span class=dim>(output value, includes change)</span> · fees <b>{}</b></div>",
         m["blocks_24h"].as_i64().unwrap_or(0),
         m["txs_24h"].as_i64().unwrap_or(0),
         m["addresses_24h"].as_i64().unwrap_or(0),

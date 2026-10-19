@@ -9,6 +9,7 @@
 //! bonuses/splashes are never minted, so this is exact).
 
 use lm_stratum::rpc::RpcClient;
+use lm_stratum::tls;
 use rusqlite::{params, Connection};
 
 use std::io::{Read, Write};
@@ -45,21 +46,44 @@ struct LeagueBoardRow {
     attested: i64,
 }
 
-/// Minimal HTTP GET (std only) → parsed JSON. The explorer reads the
-/// pool's dashboard API for game events; everything else is node RPC.
-fn http_get_json(url: &str) -> Result<serde_json::Value, String> {
-    let rest = url
-        .strip_prefix("http://")
-        .ok_or_else(|| format!("only http:// supported: {url}"))?;
+/// Split a feed URL into (use_tls, host for SNI, connect address,
+/// Host header value, request path). Pure parsing — no I/O, so it is
+/// unit-testable.
+fn split_feed_url(url: &str) -> Result<(bool, String, String, String, String), String> {
+    let (tls_on, rest) = match url.strip_prefix("https://") {
+        Some(r) => (true, r),
+        None => (
+            false,
+            url.strip_prefix("http://")
+                .ok_or_else(|| format!("need http:// or https:// url: {url}"))?,
+        ),
+    };
     let (host_port, path) = match rest.split_once('/') {
-        Some((hp, p)) => (hp, format!("/{p}")),
-        None => (rest, "/".to_string()),
+        Some((hp, p)) => (hp.to_string(), format!("/{p}")),
+        None => (rest.to_string(), "/".to_string()),
     };
-    let addr = if host_port.contains(':') {
-        host_port.to_string()
-    } else {
-        format!("{host_port}:80")
+    // SNI + connect target: an explicit port wins, else the scheme
+    // default. The server name for TLS never carries the port.
+    let (host, port) = match host_port.rsplit_once(':') {
+        Some((h, p)) if !h.is_empty() && !p.contains(']') && p.parse::<u16>().is_ok() => {
+            (h.to_string(), p.to_string())
+        }
+        _ => (
+            host_port.clone(),
+            if tls_on { "443".to_string() } else { "80".to_string() },
+        ),
     };
+    if host.is_empty() {
+        return Err(format!("bad url, empty host: {url}"));
+    }
+    Ok((tls_on, host.clone(), format!("{host}:{port}"), host_port, path))
+}
+
+/// Minimal HTTP(S) GET (std + the workspace TLS stack) → parsed JSON.
+/// The explorer reads the pool's dashboard API and the optional price
+/// feed with this; everything else is node RPC.
+fn http_get_json(url: &str) -> Result<serde_json::Value, String> {
+    let (tls_on, host, addr, host_port, path) = split_feed_url(url)?;
     let stream = TcpStream::connect(&addr).map_err(|e| format!("connect {addr}: {e}"))?;
     stream
         .set_read_timeout(Some(std::time::Duration::from_secs(5)))
@@ -68,13 +92,27 @@ fn http_get_json(url: &str) -> Result<serde_json::Value, String> {
         .set_write_timeout(Some(std::time::Duration::from_secs(5)))
         .ok();
     let req = format!("GET {path} HTTP/1.0\r\nHost: {host_port}\r\nConnection: close\r\n\r\n");
-    (&stream)
-        .write_all(req.as_bytes())
-        .map_err(|e| format!("write: {e}"))?;
     let mut raw = Vec::new();
-    (&stream)
-        .read_to_end(&mut raw)
-        .map_err(|e| format!("read: {e}"))?;
+    if tls_on {
+        // Mozilla roots, strict verification — a price feed is
+        // operator-configured, but it still must not be MITMable.
+        let cfg = tls::client_config(None, false).map_err(|e| format!("tls config: {e}"))?;
+        let mut stream = tls::connect(stream, host.as_str(), Some(&cfg))
+            .map_err(|e| format!("tls {addr}: {e}"))?;
+        stream
+            .write_all(req.as_bytes())
+            .map_err(|e| format!("write: {e}"))?;
+        stream
+            .read_to_end(&mut raw)
+            .map_err(|e| format!("read: {e}"))?;
+    } else {
+        (&stream)
+            .write_all(req.as_bytes())
+            .map_err(|e| format!("write: {e}"))?;
+        (&stream)
+            .read_to_end(&mut raw)
+            .map_err(|e| format!("read: {e}"))?;
+    }
     let text = String::from_utf8_lossy(&raw);
     let body = text.split_once("\r\n\r\n").map(|(_, b)| b).unwrap_or("");
     serde_json::from_str(body).map_err(|e| format!("json: {e}"))
@@ -392,6 +430,11 @@ impl Indexer {
             .map_err(|e| format!("rollback outs: {e}"))?;
         tx.execute("DELETE FROM txs WHERE height = ?1", [height])
             .map_err(|e| format!("rollback txs: {e}"))?;
+        // Per-tx facts are keyed by txid (not height) so they would
+        // otherwise linger after a reorg. They are invisible without a
+        // matching txs row, but delete them anyway — no dead rows.
+        tx.execute("DELETE FROM tx_facts WHERE height = ?1", [height])
+            .map_err(|e| format!("rollback tx facts: {e}"))?;
         tx.execute("DELETE FROM blocks WHERE height = ?1", [height])
             .map_err(|e| format!("rollback blocks: {e}"))?;
         tx.commit().map_err(|e| format!("rollback commit: {e}"))?;
@@ -1945,6 +1988,63 @@ mod tests {
         let curve = m["supply_curve"].as_array().expect("curve");
         assert_eq!(curve.last().expect("last")["supply"], 900);
         let _ = std::fs::remove_file(&dir);
+    }
+
+    #[test]
+    fn rollback_clears_per_tx_facts_with_the_block() {
+        // Regression: rollback_height deleted blocks/txs/outs but left
+        // tx_facts rows behind. They are invisible without a txs row,
+        // but dead rows must not accumulate across reorgs.
+        let rpc = RpcClient::new("127.0.0.1:1", "u", "p");
+        let dir = std::env::temp_dir().join("explorer-rollback-test.db");
+        let _ = std::fs::remove_file(&dir);
+        let mut idx = Indexer::open(dir.to_str().expect("path"), rpc).expect("open");
+        idx.db
+            .execute_batch(
+                "INSERT INTO blocks(height, hash, time, ntx, difficulty, reserve, pot, drought, pos, size, merkleroot, chainwork, fees)
+                 VALUES (0, 'h0', 1000, 1, 1.0, 0, 0, 0, 0, 200, 'm0', '0x1', 0);
+                 INSERT INTO txs(txid, height, coinbase) VALUES ('cb0', 0, 1);
+                 INSERT INTO outs(txid, n, address, value, coinbase, spent_by, spent_n)
+                 VALUES ('cb0', 0, 'A1', 1000, 1, NULL, NULL);
+                 INSERT INTO tx_facts(txid, size, fee, feerate, height)
+                 VALUES ('orphan', 225, 100, 0.44, 0);",
+            )
+            .expect("fixture");
+        idx.rollback_height(0).expect("rollback");
+        let left: i64 = idx
+            .db
+            .query_row("SELECT COUNT(*) FROM tx_facts WHERE height = 0", [], |r| r.get(0))
+            .expect("count");
+        assert_eq!(left, 0);
+        let _ = std::fs::remove_file(&dir);
+    }
+
+
+    #[test]
+    fn feed_url_splitting_handles_both_schemes() {
+        // Plain HTTP keeps the default port; SNI form carries no port.
+        let (tls, host, addr, hp, path) = split_feed_url("http://127.0.0.1:8081/api/stats").expect("http");
+        assert!(!tls);
+        assert_eq!(host, "127.0.0.1");
+        assert_eq!(addr, "127.0.0.1:8081");
+        assert_eq!(hp, "127.0.0.1:8081");
+        assert_eq!(path, "/api/stats");
+        // Bare host gets the scheme default port.
+        let (tls, host, addr, _, path) = split_feed_url("http://example.com").expect("bare");
+        assert!(!tls && host == "example.com" && addr == "example.com:80" && path == "/");
+        // HTTPS defaults to 443 with a bare hostname for SNI.
+        let (tls, host, addr, hp, path) = split_feed_url("https://price.example.com/ticker").expect("https");
+        assert!(tls);
+        assert_eq!(host, "price.example.com");
+        assert_eq!(addr, "price.example.com:443");
+        assert_eq!(hp, "price.example.com");
+        assert_eq!(path, "/ticker");
+        // Explicit ports (incl. non-standard https) survive untouched.
+        let (tls, host, addr, _, _) = split_feed_url("https://10.0.0.5:8443/x").expect("port");
+        assert!(tls && host == "10.0.0.5" && addr == "10.0.0.5:8443");
+        // Anything else is rejected rather than fetched.
+        assert!(split_feed_url("ftp://x/y").is_err());
+        assert!(split_feed_url("https:///x").is_err());
     }
 
     #[test]

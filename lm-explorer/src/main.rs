@@ -29,10 +29,11 @@ const USAGE: &str = "usage:
   block, Luckynode Draws) and the seasonal league boards come from the pool's
   dashboard API (best-effort).
 
-  --price-url is OPTIONAL: a JSON feed returning {\"price\": <usd per coin>}
-  used by the market page for price and market cap. With no listing there is no
-  price source, so without it the market page shows supply and liquidity only
-  and says so plainly.
+  --price-url is OPTIONAL: a JSON feed returning {{\"price\": <usd per coin>}}
+  (http:// or https:// — https verifies against the Mozilla roots).
+  Used by the market page for price and market cap. With no listing there
+  is no price source, so without it the market page shows supply and
+  liquidity only and says so plainly.
 defaults: bind=127.0.0.1:8888; sync-interval=5s; pool-api=http://127.0.0.1:8081.";
 
 fn arg_value(args: &[String], i: &mut usize, flag: &str) -> Result<String, String> {
