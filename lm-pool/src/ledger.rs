@@ -54,7 +54,7 @@ pub const SEASON_WINDOW_SECS: u64 = 30 * DAY_SECS;
 pub const SHARE_RETENTION_SECS: u64 = 32 * DAY_SECS;
 
 /// One verified share as the pool recorded it.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ShareRec {
     /// Opaque pool-side miner id (also the split tiebreak domain).
     pub miner: String,
@@ -133,7 +133,7 @@ pub fn rank_by_class(board: Vec<BoardEntry>) -> Vec<(DeviceFamily, Vec<(u32, Boa
 /// comeback weights survive pruning. The comeback weight of each raw
 /// share is resolved once at submit, which is what lets old records go
 /// without changing what queries compute.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct Ledger {
     shares: VecDeque<StoredShare>,
     /// Per-miner UTC active days (sorted, unique) — the compacted rollup.
@@ -142,11 +142,15 @@ pub struct Ledger {
     last_seen: HashMap<String, u64>,
     /// Per-miner comeback state machine, advanced at submit time.
     comeback: HashMap<String, Comeback>,
+    /// NOT persisted here (serde skip): league money round-trips through
+    /// the pool state file's own `league_pool` field, the single money
+    /// source on load. This snapshot carries share data only.
+    #[serde(skip)]
     league_pool: u64,
 }
 
 /// One retained share plus its submit-time comeback weight (per-mille).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct StoredShare {
     rec: ShareRec,
     comeback_pm: u64,

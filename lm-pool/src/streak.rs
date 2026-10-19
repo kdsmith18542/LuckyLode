@@ -77,7 +77,7 @@ pub fn streak_bonus_per_mille(streak_days: u32) -> u64 {
 /// Comeback state machine over a miner's time-ordered share stream: tracks
 /// the return-share timestamp so shares *following* a qualified return
 /// inside the 7-day window also earn the boost.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct Comeback {
     prev_ts: Option<u64>,
     window_end: Option<u64>,

@@ -1197,6 +1197,17 @@ impl<P: TemplateProvider + 'static> RunningServer<P> {
         *self.shared.balances.lock().expect("balances") = ledger;
     }
 
+    /// Share-ledger snapshot for `--state-file` persistence (streaks,
+    /// league boards and PPLNS windows survive pool restarts).
+    pub fn shares_snapshot(&self) -> Ledger {
+        self.shared.ledger.lock().expect("ledger").clone()
+    }
+
+    /// Restore persisted shares (replaces the fresh share ledger).
+    pub fn restore_shares(&self, ledger: Ledger) {
+        *self.shared.ledger.lock().expect("ledger") = ledger;
+    }
+
     /// Persisted worker-name map (miner id → payout address).
     pub fn names(&self) -> Vec<(String, String)> {
         self.shared.workers.lock().expect("workers").names()
@@ -1210,6 +1221,20 @@ impl<P: TemplateProvider + 'static> RunningServer<P> {
             .lock()
             .expect("workers")
             .restore_names(names);
+    }
+
+    /// Last-known agent per miner (live + restored) for league resolution.
+    pub fn agents(&self) -> Vec<(String, String)> {
+        self.shared.workers.lock().expect("workers").agents()
+    }
+
+    /// Restore persisted agents (idle miners keep their declared family).
+    pub fn restore_agents(&self, agents: &[(String, String)]) {
+        self.shared
+            .workers
+            .lock()
+            .expect("workers")
+            .restore_agents(agents);
     }
 
     /// Restore persisted block history; the lifetime counter follows so

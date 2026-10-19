@@ -113,6 +113,34 @@ impl WorkerStats {
         }
     }
 
+    /// Last-known connect-time agent per miner (device labels for league
+    /// resolution). Live authorizes keep this fresh; restored entries let
+    /// idle miners keep their declared family instead of falling back to
+    /// the rate-implied one. Empty agents are skipped (unlabeled miners
+    /// stay on the rate fallback by design).
+    pub fn agents(&self) -> Vec<(String, String)> {
+        let mut out: Vec<(String, String)> = self
+            .workers
+            .iter()
+            .filter(|(_, w)| !w.agent.is_empty())
+            .map(|(id, w)| (id.clone(), w.agent.clone()))
+            .collect();
+        out.sort_by(|a, b| a.0.cmp(&b.0));
+        out
+    }
+
+    /// Restore agents from a persisted snapshot (same dormancy rule as
+    /// names: entries stay hidden from the visible snapshot until the
+    /// miner reconnects; never overwrites a live agent).
+    pub fn restore_agents(&mut self, agents: &[(String, String)]) {
+        for (miner, agent) in agents {
+            let w = self.workers.entry(miner.clone()).or_default();
+            if w.agent.is_empty() {
+                w.agent = agent.clone();
+            }
+        }
+    }
+
     /// Miner id currently registered under `name` (worker names double as
     /// payout addresses and are unique per live worker).
     #[must_use]
@@ -289,5 +317,38 @@ mod tests {
         let t = WORKER_HIDE_SECS + 1;
         assert!(s.snapshot_visible(t).is_empty());
         assert_eq!(s.names(), vec![("addr".to_string(), "addr".to_string())]);
+    }
+
+    #[test]
+    fn agents_survive_a_restart_without_reviving_rows() {
+        let mut s = WorkerStats::default();
+        s.authorized("gpu-rig", "lm-miner/0.2 opencl", 100);
+        s.authorized("silent", "", 100); // unlabeled: no agent recorded
+        assert_eq!(
+            s.agents(),
+            vec![("gpu-rig".to_string(), "lm-miner/0.2 opencl".to_string())]
+        );
+        // Restore into a fresh table: dormant (hidden) but labeled.
+        let mut t = WorkerStats::default();
+        t.restore_agents(&s.agents());
+        t.restore_names(&s.names());
+        let far = 100 + WORKER_HIDE_SECS + 1;
+        assert!(t.snapshot_visible(far).is_empty(), "restore must not revive rows");
+        assert_eq!(
+            t.agents(),
+            vec![("gpu-rig".to_string(), "lm-miner/0.2 opencl".to_string())]
+        );
+        // A live re-authorize with a new agent wins over the restored one.
+        t.authorized("gpu-rig", "lm-miner/0.3 opencl", far);
+        assert_eq!(
+            t.agents(),
+            vec![("gpu-rig".to_string(), "lm-miner/0.3 opencl".to_string())]
+        );
+        // Restoring over a live agent never downgrades it.
+        t.restore_agents(&[("gpu-rig".to_string(), "old-agent".to_string())]);
+        assert_eq!(
+            t.agents(),
+            vec![("gpu-rig".to_string(), "lm-miner/0.3 opencl".to_string())]
+        );
     }
 }

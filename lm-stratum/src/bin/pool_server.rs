@@ -85,7 +85,8 @@ footer{margin-top:26px;color:var(--dim);font-size:12px;line-height:1.5}
 <section id="tab-dashboard" class="active">
 <div class="grid" id="cards"></div>
 <h2>Workers</h2>
-<input type="search" id="wfilter" placeholder="filter by worker / payout address">
+<input type="search" id="wfilter" placeholder="filter by worker / payout address (Enter looks up idle workers)">
+<div id="wlook" style="color:var(--dim);font-size:12px;margin:6px 0"></div>
 <table><thead><tr><th></th><th>worker</th><th>device</th><th>60s</th><th>10m</th><th>1h</th><th>24h</th><th>shares</th><th>streak</th><th>league</th><th>rejects</th><th>last share</th></tr></thead><tbody id="workers"></tbody></table>
 <h2>League boards <span style="text-transform:none">(season = 30 days, effective work; declared device family, policed by rate)</span></h2>
 <div id="league"><span style="color:var(--dim)">no ranked workers yet</span></div>
@@ -136,6 +137,7 @@ footer{margin-top:26px;color:var(--dim);font-size:12px;line-height:1.5}
 <table><thead><tr><th>endpoint</th><th>returns</th></tr></thead><tbody>
 <tr><td><code>GET api/stats</code></td><td>pool, workers, blocks, balances, payouts, game state, league boards (JSON)</td></tr>
 <tr><td><code>GET api/league</code></td><td>season league boards per device class (30-day effective work; ranks, streaks, attestation flags)</td></tr>
+<tr><td><code>GET api/worker/&lt;miner&gt;</code></td><td>one worker's public row, alive or idle (streak + league rank + owed/paid survive workerstats age-out; 404 when never seen)</td></tr>
 <tr><td><code>GET api/luckynodes</code></td><td>luckynode registry + draw state</td></tr>
 <tr><td><code>GET api/luckynode/pending</code></td><td>draws/events awaiting cosigns</td></tr>
 <tr><td><code>POST api/luckynode/register</code></td><td>register a luckynode: <code>{id,address,pubkey,msg,sig,ts}</code> (msg must rebuild canonically; sig proves payout-address ownership via node <code>verifymessage</code>)</td></tr>
@@ -191,6 +193,21 @@ const applyWF=()=>{const q=wf.value.trim().toLowerCase();
   document.querySelectorAll('#workers tr').forEach(tr=>{
     tr.style.display=(!q||tr.textContent.toLowerCase().includes(q))?'':'none';});};
 wf.addEventListener('input',applyWF);
+// Enter in the filter looks the worker up directly (finds idle miners
+// whose rows aged out of the live table via api/worker/<miner>).
+wf.addEventListener('keydown',async e=>{
+  if(e.key!=='Enter')return;
+  const q=wf.value.trim();
+  const box=document.getElementById('wlook');
+  if(!q){box.textContent='';return;}
+  box.textContent='looking up '+q+' …';
+  try{
+    const r=await fetch('api/worker/'+encodeURIComponent(q),{cache:'no-store'});
+    if(!r.ok){box.textContent=q+': never seen on this pool';return;}
+    const w=await r.json();
+    box.textContent=`${w.name||w.miner} · ${w.online?'online':'idle'+(w.last_seen?' (last seen '+ago(w.last_seen)+')':'')} · streak ${w.streak||0}d (best ${w.best_streak||0}) · ${w.league_class?('league '+w.league_class+' #'+w.league_rank+'/'+w.league_size):'unranked this season'} · owed ${coin(w.owed)} · paid ${coin(w.paid)}`;
+  }catch(err){box.textContent='lookup failed: '+err;}
+});
 async function tick(){
  try{
   const j=await (await fetch('api/stats',{cache:'no-store'})).json();
@@ -331,11 +348,14 @@ fn stats_json<P: TemplateProvider + 'static>(
     // 30-day season window, plus the per-worker rank shortcut the app
     // tiles read. The league is the miner's declared device family from
     // its connect-time agent string, policed by the trailing rate —
-    // labels decide, hashrate polices (doc 03 §3.6). Fresh attestation
-    // verdicts decorate the rows.
-    let agent_map: HashMap<&str, &str> = workers
+    // labels decide, hashrate polices (doc 03 §3.6). The agent map covers
+    // live AND restored (idle) miners, so an offline worker keeps its
+    // declared family instead of falling back to the rate-implied one.
+    // Fresh attestation verdicts decorate the rows.
+    let stored_agents = server.agents();
+    let agent_map: HashMap<&str, &str> = stored_agents
         .iter()
-        .map(|w| (w.miner.as_str(), w.agent.as_str()))
+        .map(|(m, a)| (m.as_str(), a.as_str()))
         .collect();
     let boards = lm_pool::ledger::rank_by_class(resolve_leagues(
         server.leaderboard(lm_pool::ledger::SEASON_WINDOW_SECS, now),
@@ -638,10 +658,11 @@ fn league_boards_json(
 /// `/api/stats`.
 fn league_json<P: TemplateProvider + 'static>(server: &RunningServer<P>) -> String {
     let now = now_secs();
-    let workers = server.workers(now);
-    let agent_map: HashMap<&str, &str> = workers
+    // Live + restored agents: idle miners keep their declared family.
+    let stored_agents = server.agents();
+    let agent_map: HashMap<&str, &str> = stored_agents
         .iter()
-        .map(|w| (w.miner.as_str(), w.agent.as_str()))
+        .map(|(m, a)| (m.as_str(), a.as_str()))
         .collect();
     let boards = lm_pool::ledger::rank_by_class(resolve_leagues(
         server.leaderboard(lm_pool::ledger::SEASON_WINDOW_SECS, now),
@@ -655,6 +676,138 @@ fn league_json<P: TemplateProvider + 'static>(server: &RunningServer<P>) -> Stri
         "boards": league_boards_json(&boards, &names_map, &attestations, now, 100),
     })
     .to_string()
+}
+
+/// One worker's public row for `GET /api/worker/<miner>` (pure: feeds
+/// the offline streak tiles — miners whose workerstats rows aged out
+/// are still in the ledger rollup). Returns `None` when the pool has
+/// never seen the miner (no live row, no streak, no balance, no name,
+/// no attestation) so the route can 404 unknown workers instead of
+/// handing out an empty row.
+#[allow(clippy::too_many_arguments)]
+fn worker_row_json(
+    miner: &str,
+    live: Option<&lm_stratum::workerstats::WorkerSnapshot>,
+    streaks: &HashMap<String, lm_pool::ledger::StreakState>,
+    ranks: &HashMap<String, (String, u32, u32)>,
+    owed: u64,
+    paid: u64,
+    name: &str,
+    attestation: Option<lm_stratum::server::Attestation>,
+    now: u64,
+) -> Option<serde_json::Value> {
+    let st = streaks.get(miner);
+    let lg = ranks.get(miner);
+    let seen = live.is_some() || st.is_some() || owed > 0 || paid > 0 || !name.is_empty() || attestation.is_some();
+    if !seen {
+        return None;
+    }
+    let (days, streak, best) = match st {
+        Some(s) => (s.days_active, s.streak_days, s.best_streak_days),
+        None => (0, 0, 0),
+    };
+    Some(serde_json::json!({
+        "miner": miner,
+        "name": if name.is_empty() { miner.to_string() } else { name.to_string() },
+        "online": live.map(|w| w.online).unwrap_or(false),
+        "last_seen": live.map(|w| w.last_seen),
+        "agent": live.map(|w| w.agent.clone()),
+        "shares": live.map(|w| w.shares).unwrap_or(0),
+        "rejects": live.map(|w| w.rejects).unwrap_or(0),
+        "rate60": live.map(|w| w.rates[0]),
+        "rate10m": live.map(|w| w.rates[1]),
+        "rate1h": live.map(|w| w.rates[2]),
+        "rate24h": live.map(|w| w.rates[3]),
+        "days_active": days,
+        "streak": streak,
+        "best_streak": best,
+        "league_class": lg.map(|l| l.0.clone()),
+        "league_rank": lg.map(|l| l.1),
+        "league_size": lg.map(|l| l.2),
+        "owed": owed,
+        "paid": paid,
+        "attested": attestation.is_some(),
+        "attestation": attestation.map(|a| serde_json::json!({
+            "provider": a.provider,
+            "time": a.time,
+        })),
+        "as_of": now,
+    }))
+}
+
+/// `GET /api/worker/<miner>` — the public row for one worker, alive or
+/// idle: live rates when connected, streak + league rank + balances
+/// from the ledger either way (streaks survive retention pruning and
+/// workerstats age-out). The name is a URL path segment (percent-encoded;
+/// capped at 128 chars); worker names are public (they already appear on
+/// `/api/stats`), so no auth. 404 when the pool has never seen the name.
+fn worker_api<P: TemplateProvider + 'static>(
+    server: &RunningServer<P>,
+    miner_seg: &str,
+) -> (&'static str, String) {
+    let miner: String = pct_decode(miner_seg).chars().take(128).collect();
+    if miner.is_empty() || miner.contains('/') {
+        return (
+            "400 Bad Request",
+            serde_json::json!({"error": "missing worker name"}).to_string(),
+        );
+    }
+    let now = now_secs();
+    let workers = server.workers(now);
+    let live = workers.into_iter().find(|w| w.miner == miner);
+    let streaks: HashMap<String, lm_pool::ledger::StreakState> = server
+        .streaks(now)
+        .into_iter()
+        .map(|s| (s.miner.clone(), s))
+        .collect();
+    // Live + restored agents: idle miners keep their declared family.
+    let stored_agents = server.agents();
+    let agent_map: HashMap<&str, &str> = stored_agents
+        .iter()
+        .map(|(m, a)| (m.as_str(), a.as_str()))
+        .collect();
+    let boards = lm_pool::ledger::rank_by_class(resolve_leagues(
+        server.leaderboard(lm_pool::ledger::SEASON_WINDOW_SECS, now),
+        &agent_map,
+    ));
+    let mut ranks: HashMap<String, (String, u32, u32)> = HashMap::new();
+    for (class, rows) in &boards {
+        let size = rows.len() as u32;
+        for (rank, e) in rows {
+            ranks.insert(e.miner.clone(), (class.as_str().to_string(), *rank, size));
+        }
+    }
+    let owed = server
+        .balances()
+        .into_iter()
+        .find(|(m, _)| m == &miner)
+        .map(|(_, o)| o)
+        .unwrap_or(0);
+    let paid = server.paid(&miner);
+    let names: HashMap<String, String> = server.names().into_iter().collect();
+    let name = names.get(&miner).cloned().unwrap_or_default();
+    let attestation = server
+        .attestations()
+        .get(&miner)
+        .filter(|a| now.saturating_sub(a.time) <= lm_stratum::server::ATTESTATION_TTL_SECS)
+        .cloned();
+    match worker_row_json(
+        &miner,
+        live.as_ref(),
+        &streaks,
+        &ranks,
+        owed,
+        paid,
+        &name,
+        attestation,
+        now,
+    ) {
+        Some(v) => ("200 OK", v.to_string()),
+        None => (
+            "404 Not Found",
+            serde_json::json!({"error": "unknown worker"}).to_string(),
+        ),
+    }
 }
 
 /// `POST /api/attest` — record a device-attestation verdict (doc 03 §3.6,
@@ -894,6 +1047,10 @@ fn http_reply<P: TemplateProvider + 'static>(
         }
         ("POST", "/api/attest") => {
             let (status, json) = attest_api(server, Some(&authorization), &body);
+            (status, "application/json", json)
+        }
+        ("GET", p) if p.starts_with("/api/worker/") => {
+            let (status, json) = worker_api(server, &p["/api/worker/".len()..]);
             (status, "application/json", json)
         }
         _ => (
@@ -1191,6 +1348,18 @@ struct PoolState {
     /// `default` so old state files still load.
     #[serde(default)]
     faucet_unmatured: Vec<(u64, u64)>,
+    /// Last-known connect-time agents (miner, agent): idle miners keep
+    /// their declared league family across restarts instead of falling
+    /// back to the rate-implied one. `default` so old files still load.
+    #[serde(default)]
+    agents: Vec<(String, String)>,
+    /// Share ledger (raw shares + day rollup + comeback state): streaks,
+    /// league boards and PPLNS windows survive pool restarts. League
+    /// *money* still round-trips through `league_pool` above; the skipped
+    /// `Ledger::league_pool` is not authoritative. `default` so old
+    /// state files still load.
+    #[serde(default)]
+    shares: lm_pool::ledger::Ledger,
 }
 
 /// Load `--state-file` into a freshly spawned server (missing file = a
@@ -1210,6 +1379,8 @@ fn load_state<P: TemplateProvider + 'static>(
         Ok(st) => {
             server.restore_ledger(st.ledger);
             server.restore_names(&st.names);
+            server.restore_agents(&st.agents);
+            server.restore_shares(st.shares);
             server.restore_league(st.league_pool);
             let unmatured = st.faucet_unmatured.len();
             server.restore_faucet_unmatured(st.faucet_unmatured);
@@ -1295,6 +1466,8 @@ fn save_state<P: TemplateProvider + 'static>(
         attestations: server.attestations(),
         league_pool: server.league_balance(),
         faucet_unmatured: server.faucet_unmatured(),
+        agents: server.agents(),
+        shares: server.shares_snapshot(),
         luckynodes,
     };
     let bytes = match serde_json::to_vec(&st) {
@@ -1961,7 +2134,29 @@ fn luckynode_shared(ctx: &HttpCtx) -> Option<std::sync::Arc<LuckynodeShared>> {
 
 fn luckynode_disabled() -> String {
     serde_json::json!({"ok": false, "error": "luckynodes not enabled (start with --luckynode)"})
-        .to_string()
+    .to_string()
+}
+
+/// Percent-decode a single URL path segment (std only; `+` stays a
+/// literal plus — path segments never use form encoding). Invalid or
+/// overlong sequences decode to U+FFFD; callers cap the length.
+fn pct_decode(seg: &str) -> String {
+    let bytes = seg.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            let hex = |c: u8| (c as char).to_digit(16).map(|d| d as u8);
+            if let (Some(hi), Some(lo)) = (hex(bytes[i + 1]), hex(bytes[i + 2])) {
+                out.push(hi << 4 | lo);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 /// GET /api/luckynodes: registry snapshot + draw state.
@@ -3313,6 +3508,67 @@ mod tests {
     }
 
     #[test]
+    fn pct_decode_handles_paths_without_panicking() {
+        assert_eq!(pct_decode("plain-miner"), "plain-miner");
+        assert_eq!(pct_decode("my%20miner"), "my miner");
+        assert_eq!(pct_decode("a%2Fb"), "a/b"); // decoded; worker_api 400s slashes
+        assert_eq!(pct_decode("100%25"), "100%");
+        assert_eq!(pct_decode("%zz"), "%zz"); // invalid stays literal
+        assert_eq!(pct_decode("trailing%"), "trailing%"); // no panic
+        assert_eq!(pct_decode("short%2"), "short%2"); // no panic
+        assert_eq!(pct_decode("a+b"), "a+b"); // plus stays a plus
+    }
+
+    #[test]
+    fn worker_row_covers_online_offline_and_unknown() {
+        use lm_pool::ledger::StreakState;
+        use lm_stratum::workerstats::WorkerSnapshot;
+        let live = WorkerSnapshot {
+            miner: "w1".to_string(),
+            name: "w1".to_string(),
+            agent: "lm-miner/0.2 cpu".to_string(),
+            shares: 7,
+            rejects: 1,
+            first_seen: 90,
+            last_seen: 100,
+            online: true,
+            rates: [1.0, 2.0, 3.0, 4.0],
+        };
+        let mut streaks = HashMap::new();
+        streaks.insert(
+            "w1".to_string(),
+            StreakState { miner: "w1".to_string(), days_active: 5, streak_days: 2, best_streak_days: 9 },
+        );
+        streaks.insert(
+            "w2".to_string(),
+            StreakState { miner: "w2".to_string(), days_active: 3, streak_days: 3, best_streak_days: 3 },
+        );
+        let mut ranks: HashMap<String, (String, u32, u32)> = HashMap::new();
+        ranks.insert("w1".to_string(), ("cpu".to_string(), 4, 11));
+        ranks.insert("w2".to_string(), ("cpu".to_string(), 9, 11));
+        // Online: live rates + ledger streak/rank side by side.
+        let row = worker_row_json("w1", Some(&live), &streaks, &ranks, 50, 500, "w1", None, 200).unwrap();
+        assert_eq!(row["online"], true);
+        assert_eq!(row["shares"], 7);
+        assert_eq!(row["rate60"], 1.0);
+        assert_eq!(row["streak"], 2);
+        assert_eq!(row["best_streak"], 9);
+        assert_eq!(row["league_class"], "cpu");
+        assert_eq!(row["league_rank"], 4);
+        assert_eq!(row["owed"], 50);
+        assert_eq!(row["paid"], 500);
+        // Offline: no live row, but the streak + rank + balances survive.
+        let row = worker_row_json("w2", None, &streaks, &ranks, 10, 0, "", None, 200).unwrap();
+        assert_eq!(row["online"], false);
+        assert!(row["last_seen"].is_null());
+        assert_eq!(row["streak"], 3);
+        assert_eq!(row["league_rank"], 9);
+        assert_eq!(row["name"], "w2"); // no registered name → the miner id
+        // Never seen: None (the route 404s).
+        assert!(worker_row_json("ghost", None, &streaks, &ranks, 0, 0, "", None, 200).is_none());
+    }
+
+    #[test]
     fn state_file_roundtrips_league_pool_and_defaults_old_files() {
         let st = PoolState {
             version: 1,
@@ -3325,12 +3581,15 @@ mod tests {
             attestations: lm_stratum::server::Attestations::new(),
             league_pool: 260_317,
             faucet_unmatured: vec![(12u64, 1_000u64)],
+            agents: vec![("w1".to_string(), "lm-miner/0.2 cpu".to_string())],
+            shares: lm_pool::ledger::Ledger::new(),
             luckynodes: Vec::new(),
         };
         let json = serde_json::to_string(&st).expect("serialize");
         let back: PoolState = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(back.league_pool, 260_317);
         assert_eq!(back.faucet_unmatured, vec![(12u64, 1_000u64)]);
+        assert_eq!(back.agents, vec![("w1".to_string(), "lm-miner/0.2 cpu".to_string())]);
         // Old state files (pre-league_pool / pre-attestations /
         // pre-unmatured) still load.
         let old = r#"{"version":1,"ledger":{"owed":{},"fees":0,"paid":{}},"names":[],"blocks":[]}"#;
@@ -3338,6 +3597,31 @@ mod tests {
         assert_eq!(back.league_pool, 0);
         assert!(back.attestations.is_empty());
         assert!(back.faucet_unmatured.is_empty());
+        // A shares snapshot round-trips share data (streaks survive a
+        // restart through the state file).
+        let mut led = lm_pool::ledger::Ledger::new();
+        led.submit(lm_pool::ledger::ShareRec { miner: "w1".to_string(), ts: 100, work: 10, overnight: false });
+        led.submit(lm_pool::ledger::ShareRec { miner: "w1".to_string(), ts: 100 + 86_400, work: 10, overnight: false });
+        let st2 = PoolState {
+            version: 1,
+            ledger: lm_pool::payout::PayoutLedger::default(),
+            names: Vec::new(),
+            blocks: Vec::new(),
+            recent_draws: Vec::new(),
+            pending: Vec::new(),
+            payout_settings: lm_stratum::server::PayoutSettings::new(),
+            attestations: lm_stratum::server::Attestations::new(),
+            league_pool: 0,
+            faucet_unmatured: Vec::new(),
+            agents: Vec::new(),
+            shares: led,
+            luckynodes: Vec::new(),
+        };
+        let back2: PoolState = serde_json::from_str(&serde_json::to_string(&st2).expect("serialize")).expect("deserialize");
+        let streaks = back2.shares.streaks(u64::MAX / 2);
+        assert_eq!(streaks.len(), 1);
+        assert_eq!(streaks[0].miner, "w1");
+        assert_eq!(streaks[0].days_active, 2);
     }
 
     #[test]
@@ -3353,6 +3637,8 @@ mod tests {
             attestations: lm_stratum::server::Attestations::new(),
             league_pool: 0,
             faucet_unmatured: vec![(7u64, 500u64)],
+            agents: Vec::new(),
+            shares: lm_pool::ledger::Ledger::new(),
             luckynodes: Vec::new(),
         };
         st.attestations.insert(
