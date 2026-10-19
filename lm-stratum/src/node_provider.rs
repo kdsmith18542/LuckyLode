@@ -136,6 +136,13 @@ pub struct NodeProvider {
     /// node's advertised drip). The cadence is consensus (every
     /// DEV_EPOCH-th block); the pool only decides on/off.
     claim_dev: bool,
+    /// Faucet amounts this pool claimed per height (height -> amount).
+    /// Landed-but-immature claims count toward the top-up target (the
+    /// node wallet can't see them via listunspent for 100 blocks);
+    /// pruned as they mature. Without this the pool would claim the max
+    /// drip every block until maturity — draining the seed in ~100
+    /// blocks regardless of demand.
+    faucet_unmatured: Mutex<std::collections::BTreeMap<u64, u64>>,
 }
 
 impl NodeProvider {
@@ -196,6 +203,7 @@ impl NodeProvider {
             claim_pot,
             claim_faucet: false,
             claim_dev: false,
+            faucet_unmatured: Mutex::new(std::collections::BTreeMap::new()),
             pot_divisor: 1000,
             jackpot_divisor: 100,
         })
@@ -266,23 +274,41 @@ impl NodeProvider {
                 // against the node's advertised drip + pinned scripts.
                 // Faucet policy is demand-driven: claim only the shortfall
                 // to the top-up target (wallet balance via listunspent —
-                // no addressindex needed); a silent RPC keeps the wallet
-                // full assumption and claims nothing (fail closed).
+                // no addressindex needed, plus this pool's own landed-but-
+                // immature claims which listunspent cannot see); a silent
+                // RPC keeps the wallet full assumption and claims nothing
+                // (fail closed).
                 // Dev policy is cadence-driven: claim the full drip on
                 // dev-epoch heights when enabled.
+                let height = gbt.get("height").and_then(|v| v.as_u64()).unwrap_or(0);
                 let (faucet_drip, faucet_script, dev_drip, dev_script, dev_epoch) =
                     parse_seed_fields(&gbt);
-                // Faucet policy is demand-driven: claim only the shortfall
-                // to the top-up target (wallet balance via listunspent —
-                // no addressindex needed); a silent RPC keeps the wallet
-                // full assumption and claims nothing (fail closed).
                 let faucet_need = if claim_faucet && faucet_drip > 0 && !faucet_script.is_empty() {
                     match gbt
                         .get("faucetaddress")
                         .and_then(|v| v.as_str())
                         .and_then(|addr| faucet_wallet_balance(&self.rpc, addr))
                     {
-                        Some(balance) => faucet_topup_amount(faucet_drip, balance, FAUCET_TOPUP_TARGET),
+                    Some(balance) => {
+                        let mut unm = self.faucet_unmatured.lock().expect("unmatured");
+                        unm.retain(|h, _| h.saturating_add(FAUCET_MATURITY) > height);
+                        // Pending = LANDED-but-immature claims only (recorded
+                        // at accept, never at template-build: an unlanded
+                        // template must not suppress future top-ups).
+                        let pending = unmatured_total(&unm, height, FAUCET_MATURITY);
+                        let need = faucet_topup_amount(
+                            faucet_drip,
+                            balance.saturating_add(pending),
+                            FAUCET_TOPUP_TARGET,
+                        );
+                        if need > 0 {
+                            eprintln!(
+                                "faucet claim: height={} drip={} wallet={} pending={} claiming={}",
+                                height, faucet_drip, balance, pending, need
+                            );
+                        }
+                        need
+                    }
                         None => 0,
                     }
                 } else {
@@ -350,6 +376,23 @@ impl TemplateProvider for NodeProvider {
     fn current(&self) -> JobTemplate {
         self.refresh();
         self.state.lock().expect("state").template.clone()
+    }
+
+    fn faucet_unmatured_snapshot(&self) -> Vec<(u64, u64)> {
+        self.faucet_unmatured
+            .lock()
+            .expect("unmatured")
+            .iter()
+            .map(|(h, a)| (*h, *a))
+            .collect()
+    }
+
+    fn restore_faucet_unmatured(&self, claimed: Vec<(u64, u64)>) {
+        let mut unm = self.faucet_unmatured.lock().expect("unmatured");
+        unm.clear();
+        for (h, a) in claimed {
+            unm.insert(h, a);
+        }
     }
 
     fn submit_block(&mut self, header: &[u8], height: u64, nonce: u64) -> BlockOutcome {
@@ -433,6 +476,16 @@ impl TemplateProvider for NodeProvider {
         let accepted = matches!(&result, Ok(v) if v.is_null());
         if accepted {
             *self.accepted.lock().expect("accepted") += 1;
+            // Record LANDED faucet claims for the top-up policy (never
+            // intentions: an unlanded template must not suppress future
+            // top-ups). Insert-or-max per height: reorgs can only lower
+            // the true pending total, never raise it past a landed claim.
+            if faucet > 0 {
+                let mut unm = self.faucet_unmatured.lock().expect("unmatured");
+                unm.entry(height)
+                    .and_modify(|v| *v = (*v).max(faucet))
+                    .or_insert(faucet);
+            }
             // Force a fresh template on the next poll (new tip).
             self.state.lock().expect("state").fetched_at =
                 Instant::now() - REFRESH_INTERVAL - Duration::from_secs(1);
@@ -597,6 +650,11 @@ pub struct SeedClaim {
 /// 10-coin faucet amount.
 pub const FAUCET_TOPUP_TARGET: u64 = 100_000_000_000;
 
+/// Coinbase maturity for unmatured-claim accounting (consensus default;
+/// regtest may override it node-side, but the pool only needs the
+/// production value — regtest proofs spend instantly).
+pub const FAUCET_MATURITY: u64 = 100;
+
 /// Hex string -> bytes (GBT scripts). Rejects odd lengths and non-hex.
 fn hex_bytes(s: &str) -> Result<Vec<u8>, String> {
     if !s.len().is_multiple_of(2) {
@@ -637,6 +695,25 @@ pub fn faucet_topup_amount(drip: u64, wallet: u64, target: u64) -> u64 {
         return 0;
     }
     (target - wallet).min(drip)
+}
+
+/// Unmatured faucet claims (height -> amount): the pool's own claims
+/// that have landed but not yet matured. `listunspent` hides immature
+/// coinbases, so without this the wallet would read 0 for 100 blocks
+/// and the pool would claim the max drip every block — draining the
+/// whole seed in ~100 blocks regardless of demand. Returns the pending
+/// total; drops entries that have matured as of `height`.
+#[must_use]
+pub fn unmatured_total(
+    claims: &std::collections::BTreeMap<u64, u64>,
+    height: u64,
+    maturity: u64,
+) -> u64 {
+    claims
+        .iter()
+        .filter(|(h, _)| **h + maturity > height)
+        .map(|(_, a)| *a)
+        .sum()
 }
 
 /// Faucet wallet balance (base units) for the top-up policy: sum of
@@ -1246,6 +1323,20 @@ mod tests {
         assert_eq!(faucet_topup_amount(0, 0, 100_000), 0);
         assert_eq!(faucet_topup_amount(1_000, 100_000, 100_000), 0);
         assert_eq!(faucet_topup_amount(1_000, 200_000, 100_000), 0);
+    }
+
+    #[test]
+    fn unmatured_claims_count_until_maturity_then_drop() {
+        use std::collections::BTreeMap;
+        let mut m = BTreeMap::new();
+        m.insert(1u64, 1_000u64);
+        m.insert(50u64, 500u64);
+        // Both unmatured at height 60 (maturity 100).
+        assert_eq!(unmatured_total(&m, 60, 100), 1_500);
+        // The height-1 claim matures at 101.
+        assert_eq!(unmatured_total(&m, 101, 100), 500);
+        assert_eq!(unmatured_total(&m, 150, 100), 0);
+        assert!(unmatured_total(&BTreeMap::new(), 60, 100) == 0);
     }
 
     #[test]

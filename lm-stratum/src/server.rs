@@ -56,6 +56,12 @@ pub struct BlockRecord {
     /// Pot splash the coinbase claimed (0 without a pot event).
     pub pot: u64,
     pub league_overflow: u64,
+    /// Seed-fund outputs in the coinbase (third-party, never miner-owed).
+    /// `default` so state files written before this field still load.
+    #[serde(default)]
+    pub faucet: u64,
+    #[serde(default)]
+    pub dev: u64,
     /// PPLNS split of every claimed amount (jackpot + pot), per miner.
     pub payouts: Vec<(String, u64)>,
 }
@@ -518,6 +524,8 @@ fn apply_block_found<P: TemplateProvider + 'static>(
             bonus: outcome.bonus,
             pot: outcome.pot,
             league_overflow: outcome.league_overflow,
+            faucet: outcome.faucet,
+            dev: outcome.dev,
             payouts,
         });
         while blocks.len() > BLOCK_HISTORY_CAP {
@@ -1258,6 +1266,27 @@ impl<P: TemplateProvider + 'static> RunningServer<P> {
             .lock()
             .expect("ledger")
             .set_league_balance(balance);
+    }
+
+    /// In-flight faucet claims for the top-up policy (state-file round
+    /// trip — a restart must not forget unmatured claims and re-claim a
+    /// full drip on the next template).
+    pub fn faucet_unmatured(&self) -> Vec<(u64, u64)> {
+        self.shared
+            .provider
+            .lock()
+            .expect("provider")
+            .faucet_unmatured_snapshot()
+    }
+
+    /// Restore persisted in-flight faucet claims (stale entries prune on
+    /// the next template build).
+    pub fn restore_faucet_unmatured(&self, claimed: Vec<(u64, u64)>) {
+        self.shared
+            .provider
+            .lock()
+            .expect("provider")
+            .restore_faucet_unmatured(claimed);
     }
 
     /// Per-worker snapshots for the dashboard/API.

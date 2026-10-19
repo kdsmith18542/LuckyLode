@@ -90,7 +90,7 @@ footer{margin-top:26px;color:var(--dim);font-size:12px;line-height:1.5}
 <h2>League boards <span style="text-transform:none">(season = 30 days, effective work; declared device family, policed by rate)</span></h2>
 <div id="league"><span style="color:var(--dim)">no ranked workers yet</span></div>
 <h2>Blocks</h2>
-<table><thead><tr><th>height</th><th>finder</th><th>block reward</th><th>jackpot bonus</th><th>pot splash</th><th>league inflow</th><th>pplns payouts</th></tr></thead><tbody id="blocks"></tbody></table>
+<table><thead><tr><th>height</th><th>finder</th><th>block reward</th><th>jackpot bonus</th><th>pot splash</th><th>league inflow</th><th>faucet</th><th>dev</th><th>pplns payouts</th></tr></thead><tbody id="blocks"></tbody></table>
 <h2>Balances due</h2>
 <table><thead><tr><th>worker</th><th>owed</th><th>paid</th></tr></thead><tbody id="balances"></tbody></table><div class="muted" id="balances-foot"></div>
 <h2>Payouts</h2>
@@ -236,8 +236,8 @@ async function tick(){
       `<table><thead><tr><th>rank</th><th>worker</th><th>eff. work</th><th>days</th><th>streak</th><th>device attest</th></tr></thead><tbody>${rows}</tbody></table>`;
   }).join('')||'<span style="color:var(--dim)">no ranked workers yet</span>';
   document.getElementById('blocks').innerHTML=(j.last_blocks||[]).map(b=>
-    `<tr><td>${esc(b.height)}</td><td>${esc(b.finder_name||b.finder)}</td><td>${coin(b.value)}</td><td>${b.bonus>0?coin(b.bonus):'–'}</td><td>${b.pot>0?coin(b.pot):'–'}</td><td>${b.league_overflow>0?coin(b.league_overflow):'–'}</td><td>${b.pplns_total>0?coin(b.pplns_total)+' ('+esc(b.pplns_count)+')':'–'}</td></tr>`).join('')
-    || '<tr><td colspan="6">no blocks yet</td></tr>';
+    `<tr><td>${esc(b.height)}</td><td>${esc(b.finder_name||b.finder)}</td><td>${coin(b.value)}</td><td>${b.bonus>0?coin(b.bonus):'–'}</td><td>${b.pot>0?coin(b.pot):'–'}</td><td>${b.league_overflow>0?coin(b.league_overflow):'–'}</td><td>${b.faucet>0?coin(b.faucet):'–'}</td><td>${b.dev>0?coin(b.dev):'–'}</td><td>${b.pplns_total>0?coin(b.pplns_total)+' ('+esc(b.pplns_count)+')':'–'}</td></tr>`).join('')
+    || '<tr><td colspan="9">no blocks yet</td></tr>';
   document.getElementById('balances').innerHTML=(j.balances||[]).map(b=>
     `<tr><td>${esc(b.name||b.miner)}</td><td>${coin(b.owed)}</td><td>${coin(b.paid)}</td></tr>`).join('')
     || '<tr><td colspan="3">nothing due</td></tr>';
@@ -452,6 +452,8 @@ fn stats_json<P: TemplateProvider + 'static>(
                 "pot": b.pot,
                 "value": b.value,
                 "league_overflow": b.league_overflow,
+                "faucet": b.faucet,
+                "dev": b.dev,
                 "pplns_total": total,
                 "pplns_count": b.payouts.len(),
             })
@@ -1183,6 +1185,12 @@ struct PoolState {
     /// `default` so state files written before this field still load.
     #[serde(default)]
     league_pool: u64,
+    /// In-flight faucet claims (height, amount) — unmatured coinbase
+    /// outputs the wallet cannot see yet. Survives restarts so a reboot
+    /// does not re-claim a full drip on the next template.
+    /// `default` so old state files still load.
+    #[serde(default)]
+    faucet_unmatured: Vec<(u64, u64)>,
 }
 
 /// Load `--state-file` into a freshly spawned server (missing file = a
@@ -1203,6 +1211,8 @@ fn load_state<P: TemplateProvider + 'static>(
             server.restore_ledger(st.ledger);
             server.restore_names(&st.names);
             server.restore_league(st.league_pool);
+            let unmatured = st.faucet_unmatured.len();
+            server.restore_faucet_unmatured(st.faucet_unmatured);
             let settings = st.payout_settings.len();
             server.restore_payout_settings(st.payout_settings);
             server.restore_attestations(st.attestations);
@@ -1230,6 +1240,8 @@ fn load_state<P: TemplateProvider + 'static>(
                 },
                 if luckynode.is_some() {
                     format!(", {draws} draws, {pend} pending cosigns, {lnodes} luckynodes")
+                } else if unmatured > 0 {
+                    format!(", {unmatured} in-flight faucet claim(s)")
                 } else {
                     String::new()
                 }
@@ -1282,6 +1294,7 @@ fn save_state<P: TemplateProvider + 'static>(
         payout_settings: server.payout_settings(),
         attestations: server.attestations(),
         league_pool: server.league_balance(),
+        faucet_unmatured: server.faucet_unmatured(),
         luckynodes,
     };
     let bytes = match serde_json::to_vec(&st) {
@@ -2933,13 +2946,19 @@ fn main() -> std::process::ExitCode {
             false => "",
             true => ", claiming pot events (exact advertised splash)",
         };
+        let seed_label = match (claim_faucet, claim_dev) {
+            (true, true) => ", claiming faucet+dev seeds",
+            (true, false) => ", claiming faucet seed",
+            (false, true) => ", claiming dev seed",
+            (false, false) => "",
+        };
         let claims = match (claim_jackpots, claim_pot) {
             (true, true) => ", claiming jackpots",
             (true, false) => ", claiming jackpots",
             (false, true) => "",
             (false, false) => "",
         };
-        let claims = format!("{claims}{pot_label}");
+        let claims = format!("{claims}{pot_label}{seed_label}");
         let mode = match (claim_jackpots, claim_pot) {
             (true, true) => "claiming jackpots+pot",
             (true, false) => "claiming jackpots",
@@ -3305,16 +3324,20 @@ mod tests {
             payout_settings: lm_stratum::server::PayoutSettings::new(),
             attestations: lm_stratum::server::Attestations::new(),
             league_pool: 260_317,
+            faucet_unmatured: vec![(12u64, 1_000u64)],
             luckynodes: Vec::new(),
         };
         let json = serde_json::to_string(&st).expect("serialize");
         let back: PoolState = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(back.league_pool, 260_317);
-        // Old state files (pre-league_pool / pre-attestations) still load.
+        assert_eq!(back.faucet_unmatured, vec![(12u64, 1_000u64)]);
+        // Old state files (pre-league_pool / pre-attestations /
+        // pre-unmatured) still load.
         let old = r#"{"version":1,"ledger":{"owed":{},"fees":0,"paid":{}},"names":[],"blocks":[]}"#;
         let back: PoolState = serde_json::from_str(old).expect("old file");
         assert_eq!(back.league_pool, 0);
         assert!(back.attestations.is_empty());
+        assert!(back.faucet_unmatured.is_empty());
     }
 
     #[test]
@@ -3329,6 +3352,7 @@ mod tests {
             payout_settings: lm_stratum::server::PayoutSettings::new(),
             attestations: lm_stratum::server::Attestations::new(),
             league_pool: 0,
+            faucet_unmatured: vec![(7u64, 500u64)],
             luckynodes: Vec::new(),
         };
         st.attestations.insert(

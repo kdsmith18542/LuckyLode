@@ -58,6 +58,16 @@ pub trait TemplateProvider: Send {
     /// Submit a candidate block. Implementations MUST re-verify the PoW —
     /// the pool's check is advisory, the chain's is authoritative.
     fn submit_block(&mut self, header: &[u8], height: u64, nonce: u64) -> BlockOutcome;
+    /// In-flight faucet claims (height -> amount) for the top-up policy:
+    /// claimed but not yet mature (listunspent hides immature coinbases,
+    /// so without this the pool would reclaim every restart). Default is
+    /// empty (mock chains never claim).
+    fn faucet_unmatured_snapshot(&self) -> Vec<(u64, u64)> {
+        Vec::new()
+    }
+    /// Restore in-flight faucet claims (state-file reload). Default is a
+    /// no-op (mock chains never claim).
+    fn restore_faucet_unmatured(&self, _claimed: Vec<(u64, u64)>) {}
 }
 
 /// Deterministic mock chain for offline development and the e2e suite.
