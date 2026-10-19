@@ -22,7 +22,8 @@ const USAGE: &str = "usage:
 
   indexes the node's chain into SQLite (./explorer.db style path) and serves
   a read-only UI + JSON API: /block/<height|hash> /tx/<txid> /address/<addr>
-  /game /league /search?q= /api/tip /api/stats /api/game /api/league. Reorg-safe (rolls back to
+  /game /league /mempool /richlist /search?q= /api/tip /api/stats /api/game
+  /api/league /api/mempool /api/richlist. Reorg-safe (rolls back to
   the fork point). Game events (jackpot/pot/league per block, Luckynode
   Draws) and the seasonal league boards come from the pool's dashboard API (best-effort).
 defaults: bind=127.0.0.1:8888; sync-interval=5s; pool-api=http://127.0.0.1:8081.";
