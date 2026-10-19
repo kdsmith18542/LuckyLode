@@ -271,11 +271,23 @@ fn jstring_arg(env: &mut JNIEnv, s: JString) -> String {
     env.get_string(&s).map(|s| s.into()).unwrap_or_default()
 }
 
+/// Parse the pool's V2 authority URL key (spec §4.7 base58check). Empty
+/// or invalid input means "no pin" (the loop still connects, unpinned).
+fn parse_v2_authority(s: &str) -> Option<[u8; 32]> {
+    let s = s.trim();
+    if s.is_empty() {
+        return None;
+    }
+    lm_stratum::v2_session::parse_authority_url_key(s).ok()
+}
+
 /// Start mining: `pool` = HOST:PORT, `worker` = the pool identity,
 /// `password` = the pool password ("" -> "x"), `threads` = scheduler
 /// decision, `chunk` = nonces per search (<= 0 -> mobile default 256;
 /// small chunks keep stop and job-adoption latency seconds-scale at
-/// phone hashrates). Returns false when the config is refused.
+/// phone hashrates), `v2` = use the Stratum V2 Noise wire with
+/// `v2_authority` (the pool's published URL key) as the responder pin.
+/// Returns false when the config is refused.
 #[no_mangle]
 pub extern "system" fn Java_cc_luckylode_miner_NativeCore_nativePoolStart0(
     mut env: JNIEnv,
@@ -285,12 +297,20 @@ pub extern "system" fn Java_cc_luckylode_miner_NativeCore_nativePoolStart0(
     password: JString,
     threads: jint,
     chunk: jint,
+    v2: jboolean,
+    v2_authority: JString,
 ) -> jboolean {
     let pool = jstring_arg(&mut env, pool);
     let worker = jstring_arg(&mut env, worker);
     let password = {
         let p = jstring_arg(&mut env, password);
         if p.is_empty() { "x".to_string() } else { p }
+    };
+    let use_v2 = v2 != 0;
+    let authority = if use_v2 {
+        parse_v2_authority(&jstring_arg(&mut env, v2_authority))
+    } else {
+        None
     };
     let mut cfg = PoolConfig {
         agent: Some("lm-miner-mobile/0.1 android".to_string()),
@@ -302,6 +322,8 @@ pub extern "system" fn Java_cc_luckylode_miner_NativeCore_nativePoolStart0(
         max_temp: 0,
         duty: 100,
         report_secs: 5,
+        v2: use_v2,
+        v2_authority: authority,
         ..PoolConfig::new(pool, worker)
     };
     cfg.password = password;

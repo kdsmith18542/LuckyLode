@@ -89,12 +89,18 @@ object NativeCore {
     // as the stats line below.
 
     /** Start mining. `chunk <= 0` selects the mobile default. */
-    fun nativePoolStart(pool: String, worker: String, password: String, threads: Int, chunk: Int): Boolean {
+    fun nativePoolStart(
+        pool: String, worker: String, password: String, threads: Int, chunk: Int,
+        v2: Boolean = false, v2Authority: String = "",
+    ): Boolean {
         ensureLoaded()
-        return nativePoolStart0(pool, worker, password, threads, chunk)
+        return nativePoolStart0(pool, worker, password, threads, chunk, v2, v2Authority)
     }
 
-    private external fun nativePoolStart0(pool: String, worker: String, password: String, threads: Int, chunk: Int): Boolean
+    private external fun nativePoolStart0(
+        pool: String, worker: String, password: String, threads: Int, chunk: Int,
+        v2: Boolean, v2Authority: String,
+    ): Boolean
 
     /** Stop mining and wait for the current chunk to finish. */
     fun nativePoolStop() {

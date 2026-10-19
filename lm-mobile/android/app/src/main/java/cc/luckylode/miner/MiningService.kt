@@ -97,13 +97,26 @@ class MiningService : Service() {
         }
     }
 
-    private fun startMiner(threads: Int): Boolean = NativeCore.nativePoolStart(
-        prefs.getString(KEY_POOL, DEFAULT_POOL) ?: DEFAULT_POOL,
-        prefs.getString(KEY_WORKER, DEFAULT_WORKER) ?: DEFAULT_WORKER,
-        "",
-        threads,
-        0,
-    )
+    private fun startMiner(threads: Int): Boolean {
+        val v2 = prefs.getBoolean(KEY_V2, false)
+        var pool = prefs.getString(KEY_POOL, DEFAULT_POOL) ?: DEFAULT_POOL
+        // The official pool serves V2 on its own port; when V2 is on and
+        // the pool field still points at the V1 default, switch to the V2
+        // endpoint (the field itself stays untouched so toggling back is
+        // trivial).
+        if (v2 && pool == DEFAULT_POOL) pool = DEFAULT_POOL_V2
+        val authority = prefs.getString(KEY_V2_AUTHORITY, DEFAULT_V2_AUTHORITY)
+            ?.trim().orEmpty()
+        return NativeCore.nativePoolStart(
+            pool,
+            prefs.getString(KEY_WORKER, DEFAULT_WORKER) ?: DEFAULT_WORKER,
+            "",
+            threads,
+            0,
+            v2,
+            authority,
+        )
+    }
 
     /** Real counters from the mining loop (never a fabricated rate). */
     private fun miningLine(): String {
@@ -177,11 +190,27 @@ class MiningService : Service() {
         const val KEY_OVERNIGHT_END = "overnightEnd"
         const val KEY_MAX_THREADS = "maxThreads"
 
+        /** Opt-in device attestation (doc 03 §3.6; self-labeled on testnet). */
+        const val KEY_ATTEST = "attest"
+
+        /** Stratum V2 (Noise) wire + the pool's authority URL key pin. */
+        const val KEY_V2 = "v2"
+        const val KEY_V2_AUTHORITY = "v2Authority"
+
         /** Public testnet pool (internal/testnet-runbook: ufw-open direct stratum). */
         const val DEFAULT_POOL = "luckylode.cc:3346"
         const val DEFAULT_WORKER = "android"
 
+        /** The official pool's Stratum V2 endpoint (Noise NX + Lucky jobs). */
+        const val DEFAULT_POOL_V2 = "luckylode.cc:3347"
+
+        /** The official pool's published V2 authority URL key (responder pin). */
+        const val DEFAULT_V2_AUTHORITY = "9b1MA3rHRuJuW6Fbt4wyjW354y3qjmPsgkMbxe3NqXNMGFtmpGz"
+
         /** The official pool's public dashboard API (nginx-proxied). */
         const val POOL_STATS_URL = "https://luckylode.cc/pool/api/stats"
+
+        /** Device-attestation verdict endpoint (verdict-only, no identity). */
+        const val POOL_ATTEST_URL = "https://luckylode.cc/pool/api/attest"
     }
 }

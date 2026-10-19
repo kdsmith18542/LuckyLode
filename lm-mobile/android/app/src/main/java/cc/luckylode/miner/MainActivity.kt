@@ -126,6 +126,23 @@ class MainActivity : Activity() {
             text = "Charge-only (mine on battery just overnight)"
             isChecked = prefs.getBoolean(MiningService.KEY_CHARGE_ONLY, true)
         }
+        val attestBox = CheckBox(this).apply {
+            // Doc 03 §3.6 / doc 07 §7.4: opt-in, verdict-only. On testnet the
+            // pool records a self-labeled verdict; a real Play Integrity
+            // verifier replaces the stub at mainnet.
+            text = "Send device attestation (self-labeled on testnet)"
+            isChecked = prefs.getBoolean(MiningService.KEY_ATTEST, false)
+        }
+        val v2Box = CheckBox(this).apply {
+            // Stratum V2 (Noise NX). The official pool serves it on its own
+            // port; the worker field can stay on the V1 default.
+            text = "Use Stratum V2 (Noise) — official pool :3347"
+            isChecked = prefs.getBoolean(MiningService.KEY_V2, false)
+        }
+        val v2Authority = input(
+            "V2 authority URL key (blank = official pool default)",
+            prefs.getString(MiningService.KEY_V2_AUTHORITY, "") ?: "",
+        )
         advanced.addView(label("Pause line (°C, one decimal = 43.0)"))
         advanced.addView(pauseDeci)
         advanced.addView(label("Resume line (°C)"))
@@ -140,6 +157,10 @@ class MainActivity : Activity() {
         advanced.addView(label("Max threads"))
         advanced.addView(maxThreads)
         advanced.addView(chargeOnly)
+        advanced.addView(attestBox)
+        advanced.addView(v2Box)
+        advanced.addView(label("V2 authority key (advanced)"))
+        advanced.addView(v2Authority)
         advanced.addView(
             Button(this).apply {
                 text = "Save thresholds (applies on next start)"
@@ -157,6 +178,9 @@ class MainActivity : Activity() {
                     putInt(MiningService.KEY_OVERNIGHT_END, overnightEnd, 6)
                     putInt(MiningService.KEY_MAX_THREADS, maxThreads, Runtime.getRuntime().availableProcessors())
                     e.putBoolean(MiningService.KEY_CHARGE_ONLY, chargeOnly.isChecked)
+                    e.putBoolean(MiningService.KEY_ATTEST, attestBox.isChecked)
+                    e.putBoolean(MiningService.KEY_V2, v2Box.isChecked)
+                    e.putString(MiningService.KEY_V2_AUTHORITY, v2Authority.text.toString().trim())
                     e.apply()
                     Toast.makeText(this@MainActivity, "thresholds saved", Toast.LENGTH_SHORT).show()
                 }
@@ -255,12 +279,41 @@ class MainActivity : Activity() {
                 val worker = prefs.getString(MiningService.KEY_WORKER, MiningService.DEFAULT_WORKER)
                 val isOfficial = (prefs.getString(MiningService.KEY_POOL, MiningService.DEFAULT_POOL)
                     ?: "").contains("luckylode.cc")
+                if (isOfficial && !attestSent && prefs.getBoolean(MiningService.KEY_ATTEST, false)) {
+                    postAttestation(worker ?: "")
+                }
                 val fetched = if (isOfficial) fetchPoolTiles(worker ?: "") else null
                 poolTiles.set(fetched)
                 Thread.sleep(30_000)
             }
         } catch (e: InterruptedException) {
             // activity paused/destroyed — exit quietly
+        }
+    }
+
+    /** One opt-in attestation post per activity session (verdict-only). */
+    @Volatile private var attestSent = false
+
+    private fun postAttestation(worker: String) {
+        if (worker.isEmpty()) return
+        try {
+            val conn = URL(MiningService.POOL_ATTEST_URL).openConnection() as HttpURLConnection
+            conn.requestMethod = "POST"
+            conn.doOutput = true
+            conn.setRequestProperty("Content-Type", "application/json")
+            conn.connectTimeout = 10_000
+            conn.readTimeout = 10_000
+            val detail = "${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL}"
+            val body = JSONObject()
+                .put("worker", worker)
+                .put("provider", "self")
+                .put("detail", detail)
+                .toString()
+            conn.outputStream.use { it.write(body.toByteArray()) }
+            if (conn.responseCode == 200) attestSent = true
+            conn.disconnect()
+        } catch (e: Exception) {
+            Log.w(TAG, "attestation post failed: ${e.message}")
         }
     }
 
@@ -290,10 +343,17 @@ class MainActivity : Activity() {
                     if (streak > 0) {
                         sb.append(" · streak ${streak}d")
                         if (best > streak) sb.append(" (best $best)")
-                        sb.append("\n")
                     } else {
-                        sb.append(" · no active streak\n")
+                        sb.append(" · no active streak")
                     }
+                    // League rank tile (doc 07 §7.4): the worker's season
+                    // rank inside its device class.
+                    val cls = me.optString("league_class", "")
+                    if (cls.isNotEmpty()) {
+                        sb.append(" · league $cls #${me.optInt("league_rank")}/${me.optInt("league_size")}")
+                    }
+                    if (me.optBoolean("attested", false)) sb.append(" · attested")
+                    sb.append("\n")
                 }
                 sb.append("pool: ${pool.optInt("workers")} workers · ${pool.optLong("shares")} shares\n")
             }

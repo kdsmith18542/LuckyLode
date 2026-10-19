@@ -44,10 +44,11 @@ r27+, JDK 21, Gradle 8.14+.
 ```sh
 NDKBIN=$ANDROID_HOME/ndk/<ver>/toolchains/llvm/prebuilt/linux-x86_64/bin
 for T in aarch64-linux-android x86_64-linux-android; do
+  TU=$(echo $T | tr 'a-z-' 'A-Z_')
   env PATH=$NDKBIN:$PATH \
-    CC_${T//-/_}=$NDKBIN/$T24-clang \
+    CC_${T//-/_}=$NDKBIN/${T}24-clang \
     AR_${T//-/_}=$NDKBIN/llvm-ar \
-    CARGO_TARGET_${T//-/_}_LINKER=$NDKBIN/$T24-clang \
+    CARGO_TARGET_${TU}_LINKER=$NDKBIN/${T}24-clang \
     cargo build -p lm-mobile --release --target $T
 done
 cp target/aarch64-linux-android/release/liblm_mobile.so app/src/main/jniLibs/arm64-v8a/
@@ -106,15 +107,28 @@ at stake.
 - [x] Dashboard (doc 07 §7.4): local tiles from the mining loop
       (hashrate, shares, rejected), device tiles (battery temp/level/
       charging), pool tiles from the official pool's public API every
-      30 s (this worker's pool-side shares, pool-wide stats, jackpot
-      reserve/pot, latest block), battery-honesty copy, and the
-      advanced screen exposing the §7.2 thresholds (persisted; the
-      service reads them at start). Live-verified on the emulator
-      against the testnet pool (in-app tiles matched a direct API
-      fetch).
-- [ ] Stratum V2 Noise session as a selectable wire (the runtime is
-      wire-agnostic; V2 rides the same loop behind a flag)
-- [ ] Attestation hook (doc 07 §7.6/§7.4) — verdict-only plumbing for
-      phone-league entry; needs the league side to exist first
-- [ ] Streak/league-rank tiles: not in the pool's public API yet —
-      add pool-side endpoints first (streak day-count per worker)
+      30 s (this worker's pool-side shares, rejects, streak, **league
+      rank**, pool-wide stats, jackpot reserve/pot, latest block),
+      battery-honesty copy, and the advanced screen exposing the §7.2
+      thresholds (persisted; the service reads them at start).
+      Live-verified on the emulator against the testnet pool (in-app
+      tiles matched a direct API fetch).
+- [x] Stratum V2 (Noise NX) as a selectable wire (advanced screen;
+      official pool endpoint `luckylode.cc:3347`, authority URL key
+      pinned via the pool's published key, port auto-selected from the
+      V1 default). Live-proven 2026-10-18: emulator → public testnet
+      pool, worker `android-v2`, 3 shares / 0 rejects over V2 (the
+      app's agent reports `v2 lm-miner cpu`).
+- [x] League rank tile: the worker's season rank inside its device
+      class, read from `/api/stats` worker rows (`league_class`,
+      `league_rank`, `league_size`).
+- [x] Attestation hook (doc 03 §3.6 / doc 07 §7.4), testnet form:
+      opt-in advanced checkbox posts a self-labeled verdict
+      (`{worker, provider:"self", detail}`) to the pool's `/api/attest`;
+      the dashboard/app decorate attested workers. **A real Play
+      Integrity verifier (GCP project + cert registration) replaces the
+      stub at mainnet — the pool-side endpoint and storage are already
+      verdict-shaped.**
+- [ ] Streak/league-rank tiles for *offline* workers: rows age out of
+      the pool's worker stats when idle, so a stopped miner shows "no
+      active streak" until it reconnects (ledger rollup still has it).
