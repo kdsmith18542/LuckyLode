@@ -214,6 +214,16 @@ fn blocks_credit_payout_balances() {
         bals.iter().map(|(_, v)| v).sum::<u64>(),
         b[0].value + b[0].bonus
     );
+    // Conservation identity: the lifetime credited coinbase (normal
+    // value + jackpot + pot) must equal owed + paid + fees exactly.
+    // League overflow and seed-fund outputs never touch the miner
+    // ledger, so they are not part of either side.
+    let (owed, paid, fees) = server.payout_totals();
+    assert_eq!(server.credited_total(), owed + paid + fees);
+    assert_eq!(
+        server.credited_total(),
+        b.iter().map(|x| x.value + x.bonus + x.pot).sum::<u64>()
+    );
 
     server.stop();
 }

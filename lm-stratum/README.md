@@ -38,11 +38,13 @@ This is the reference implementation; run it on testnet knowing:
 - **Persistence is opt-in.** `--state-file PATH` snapshots the payout
   ledger (owed/paid/fees), worker-name map and block history (capped at
   1000) atomically every 10 s and restores them on boot; delete the file
-  to intentionally clear. Still in-memory only: the PPLNS share window,
-  worker rates and the dedupe ring — after a restart, the next blocks
-  split across post-restart shares, and a very recent replay window is
-  forgotten. Without `--state-file` a restart loses everything (the
-  ledger's own retention bounds memory, not durability).
+  to intentionally clear. Since 2026-10-19 the share ledger (raw shares
+  + day rollup + comeback state, so streaks/PPLNS survive restarts) and
+  last-known worker agents also round-trip the state file. Still
+  in-memory only: worker rates and the dedupe ring — after a restart, a
+  very recent replay window is forgotten. Without `--state-file` a
+  restart loses everything (the ledger's own retention bounds memory,
+  not durability).
 - **Payouts are v1.** `--payout-threshold/--payout-interval` drive a
   `sendtoaddress` loop from the node wallet (dry-run unless
   `--payout-exec`); worker names double as payout addresses. Not yet
@@ -50,8 +52,12 @@ This is the reference implementation; run it on testnet knowing:
   sends fail safe with "insufficient funds" while coinbases mature, so
   run a mature chain or lower expectations), fee splits beyond the
   per-block skim. The payout ledger itself now survives restarts with
-  `--state-file`; `payout_totals` in `/api/stats` reconciles it
-  (coinbases == owed + paid + fees).
+  `--state-file`; `payout_totals` in `/api/stats` carries the lifetime
+  miner-owed coinbase alongside owed/paid/fees, so the conservation
+  identity `coinbases == owed + paid + fees` is checkable live
+  (`coinbases` = normal value + jackpot bonuses + pot splashes over all
+  accepted blocks; league overflow and seed-fund faucet/dev outputs flow
+  through their own ledgers, never the miner one).
 - **Auth and TLS are real but minimal.** Stratum takes a shared
   `--pool-password` (or a per-worker token map via `--workers-file`,
   which is authoritative when set; comparisons are constant-time); the

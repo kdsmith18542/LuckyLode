@@ -15,8 +15,8 @@
 //! the frozen vectors, so the mirror is authoritative rather than
 //! reinvented.
 //!
-//! NOTE: written but not yet compiled (grind window). Verify with
-//! `cargo test -p lm-miner argon2_prep` before GPU work starts.
+//! NOTE: compiled and covered (`cargo test -p lm-miner argon2_prep`,
+//! 5 tests green); the grind path using it is live on the GTX 1080.
 
 use blake2::digest::{Update, VariableOutput};
 use blake2::{Blake2b512, Blake2bVar, Digest};

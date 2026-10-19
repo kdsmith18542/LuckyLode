@@ -155,6 +155,14 @@ struct Shared<P> {
     /// Per-miner value accounting: what each miner
     /// earned from blocks (pro-rata) and splits, minus what paid out.
     balances: Mutex<PayoutLedger>,
+    /// Lifetime miner-owed coinbase accepted by this pool: the normal
+    /// block value plus every jackpot bonus and pot splash, summed over
+    /// all accepted blocks. League overflow and the seed-fund faucet/dev
+    /// outputs are third-party flows with their own ledgers and are NOT
+    /// included — this counter must equal owed + paid + fees at all
+    /// times (the /api/stats identity), and any drift is a bug.
+    /// Persisted in the state file like the ledger itself.
+    credited_total: Mutex<u64>,
     /// Per-miner payout settings (address/threshold overrides,.
     payout_settings: Mutex<PayoutSettings>,
     /// Per-worker device-attestation verdicts (doc 03 §3.6) — verdicts
@@ -528,6 +536,17 @@ fn apply_block_found<P: TemplateProvider + 'static>(
             dev: outcome.dev,
             payouts,
         });
+        // Lifetime miner-owed coinbase: every sat credited above came
+        // out of exactly these three fields (league/faucet/dev never
+        // touch the miner ledger), so their running sum must always
+        // equal owed + paid + fees.
+        {
+            let mut credited = shared.credited_total.lock().expect("credited total");
+            *credited = credited
+                .saturating_add(outcome.coinbase)
+                .saturating_add(outcome.bonus)
+                .saturating_add(outcome.pot);
+        }
         while blocks.len() > BLOCK_HISTORY_CAP {
             blocks.pop_front();
         }
@@ -1467,6 +1486,18 @@ impl<P: TemplateProvider + 'static> RunningServer<P> {
         self.shared.balances.lock().expect("balances").totals()
     }
 
+    /// Lifetime miner-owed coinbase accepted (normal value + jackpot
+    /// bonuses + pot splashes). Must equal owed + paid + fees at all
+    /// times — the /api/stats identity.
+    pub fn credited_total(&self) -> u64 {
+        *self.shared.credited_total.lock().expect("credited total")
+    }
+
+    /// Restore the persisted lifetime coinbase total (state-file load).
+    pub fn restore_credited(&self, total: u64) {
+        *self.shared.credited_total.lock().expect("credited total") = total;
+    }
+
     /// Pool fee in per-myriad for block credits (0 = none).
     pub fn set_pool_fee(&self, fee_permyriad: u16) {
         *self.shared.pool_fee.lock().expect("pool fee") = fee_permyriad;
@@ -1587,6 +1618,7 @@ pub fn spawn_server<P: TemplateProvider + 'static>(
         league_tip: Mutex::new(0),
         workers: Mutex::new(WorkerStats::default()),
         balances: Mutex::new(PayoutLedger::default()),
+        credited_total: Mutex::new(0),
         payout_settings: Mutex::new(PayoutSettings::new()),
         attestations: Mutex::new(Attestations::new()),
         pool_fee: Mutex::new(0),

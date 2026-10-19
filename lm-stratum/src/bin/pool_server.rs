@@ -510,6 +510,7 @@ fn stats_json<P: TemplateProvider + 'static>(
             "owed": payout_totals.0,
             "paid": payout_totals.1,
             "fees": payout_totals.2,
+            "coinbases": server.credited_total(),
         },
         "payouts": payouts_json,
         "last_blocks": last,
@@ -1345,6 +1346,14 @@ struct PoolState {
     /// `default` so state files written before this field still load.
     #[serde(default)]
     league_pool: u64,
+    /// Lifetime miner-owed coinbase accepted (normal value + jackpot
+    /// bonuses + pot splashes). Backs the /api/stats reconciliation
+    /// identity `coinbases == owed + paid + fees`. `default` so state
+    /// files written before this field still load — in that case the
+    /// loader seeds it from the restored block records (exact while
+    /// the retained block history is complete).
+    #[serde(default)]
+    credited_total: u64,
     /// In-flight faucet claims (height, amount) — unmatured coinbase
     /// outputs the wallet cannot see yet. Survives restarts so a reboot
     /// does not re-claim a full drip on the next template.
@@ -1363,6 +1372,22 @@ struct PoolState {
     /// state files still load.
     #[serde(default)]
     shares: lm_pool::ledger::Ledger,
+}
+
+/// Resolve the lifetime credited-coinbase total on state-file load.
+/// Pre-counter files carry 0 with a full block history: seed from the
+/// restored block records (exact while retained history is complete —
+/// the cap is 1000 blocks, noted on BLOCK_HISTORY_CAP). A fresh pool
+/// has no blocks, so the seed is 0 as well.
+fn resolve_credited_total(
+    stored: u64,
+    blocks: &[lm_stratum::server::BlockRecord],
+) -> u64 {
+    if stored == 0 && !blocks.is_empty() {
+        blocks.iter().map(|b| b.value + b.bonus + b.pot).sum()
+    } else {
+        stored
+    }
 }
 
 /// Load `--state-file` into a freshly spawned server (missing file = a
@@ -1385,6 +1410,7 @@ fn load_state<P: TemplateProvider + 'static>(
             server.restore_agents(&st.agents);
             server.restore_shares(st.shares);
             server.restore_league(st.league_pool);
+            server.restore_credited(resolve_credited_total(st.credited_total, &st.blocks));
             let unmatured = st.faucet_unmatured.len();
             server.restore_faucet_unmatured(st.faucet_unmatured);
             let settings = st.payout_settings.len();
@@ -1466,6 +1492,7 @@ fn save_state<P: TemplateProvider + 'static>(
         payout_settings: server.payout_settings(),
         attestations: server.attestations(),
         league_pool: server.league_balance(),
+        credited_total: server.credited_total(),
         faucet_unmatured: server.faucet_unmatured(),
         agents: server.agents(),
         shares: server.shares_snapshot(),
@@ -3741,6 +3768,47 @@ mod tests {
     }
 
     #[test]
+    fn state_file_roundtrips_credited_total_and_seeds_it_from_blocks() {
+        use lm_stratum::server::BlockRecord;
+        // A stored counter survives the round trip untouched.
+        let st = PoolState {
+            version: 1,
+            ledger: lm_pool::payout::PayoutLedger::default(),
+            names: Vec::new(),
+            blocks: Vec::new(),
+            recent_draws: Vec::new(),
+            pending: Vec::new(),
+            payout_settings: lm_stratum::server::PayoutSettings::new(),
+            attestations: lm_stratum::server::Attestations::new(),
+            league_pool: 0,
+            credited_total: 9_999_999,
+            faucet_unmatured: Vec::new(),
+            agents: Vec::new(),
+            shares: lm_pool::ledger::Ledger::new(),
+            luckynodes: Vec::new(),
+        };
+        let back: PoolState =
+            serde_json::from_str(&serde_json::to_string(&st).expect("serialize")).expect("deserialize");
+        assert_eq!(back.credited_total, 9_999_999);
+        // Pre-counter files (no credited_total key) default to 0 and get
+        // seeded from the restored block records instead.
+        let seeded = resolve_credited_total(
+            0,
+            &[
+                BlockRecord { height: 1, finder: "a".to_string(), value: 1_000_000, bonus: 100_000, pot: 0, league_overflow: 0, faucet: 0, dev: 0, payouts: vec![] },
+                BlockRecord { height: 2, finder: "a".to_string(), value: 2_000_000, bonus: 0, pot: 300_000, league_overflow: 0, faucet: 0, dev: 0, payouts: vec![] },
+            ],
+        );
+        assert_eq!(seeded, 3_400_000);
+        // An explicit stored value always wins, even with blocks present.
+        assert_eq!(resolve_credited_total(42, &[
+            BlockRecord { height: 1, finder: "a".to_string(), value: 1_000_000, bonus: 0, pot: 0, league_overflow: 0, faucet: 0, dev: 0, payouts: vec![] },
+        ]), 42);
+        // Fresh pool: nothing to seed from.
+        assert_eq!(resolve_credited_total(0, &[]), 0);
+    }
+
+    #[test]
     fn state_file_roundtrips_league_pool_and_defaults_old_files() {
         let st = PoolState {
             version: 1,
@@ -3752,6 +3820,7 @@ mod tests {
             payout_settings: lm_stratum::server::PayoutSettings::new(),
             attestations: lm_stratum::server::Attestations::new(),
             league_pool: 260_317,
+            credited_total: 1_234_567,
             faucet_unmatured: vec![(12u64, 1_000u64)],
             agents: vec![("w1".to_string(), "lm-miner/0.2 cpu".to_string())],
             shares: lm_pool::ledger::Ledger::new(),
@@ -3760,6 +3829,7 @@ mod tests {
         let json = serde_json::to_string(&st).expect("serialize");
         let back: PoolState = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(back.league_pool, 260_317);
+        assert_eq!(back.credited_total, 1_234_567);
         assert_eq!(back.faucet_unmatured, vec![(12u64, 1_000u64)]);
         assert_eq!(back.agents, vec![("w1".to_string(), "lm-miner/0.2 cpu".to_string())]);
         // Old state files (pre-league_pool / pre-attestations /
@@ -3767,6 +3837,7 @@ mod tests {
         let old = r#"{"version":1,"ledger":{"owed":{},"fees":0,"paid":{}},"names":[],"blocks":[]}"#;
         let back: PoolState = serde_json::from_str(old).expect("old file");
         assert_eq!(back.league_pool, 0);
+        assert_eq!(back.credited_total, 0); // pre-counter files load
         assert!(back.attestations.is_empty());
         assert!(back.faucet_unmatured.is_empty());
         // A shares snapshot round-trips share data (streaks survive a
@@ -3784,6 +3855,7 @@ mod tests {
             payout_settings: lm_stratum::server::PayoutSettings::new(),
             attestations: lm_stratum::server::Attestations::new(),
             league_pool: 0,
+            credited_total: 0,
             faucet_unmatured: Vec::new(),
             agents: Vec::new(),
             shares: led,
@@ -3808,6 +3880,7 @@ mod tests {
             payout_settings: lm_stratum::server::PayoutSettings::new(),
             attestations: lm_stratum::server::Attestations::new(),
             league_pool: 0,
+            credited_total: 9_999,
             faucet_unmatured: vec![(7u64, 500u64)],
             agents: Vec::new(),
             shares: lm_pool::ledger::Ledger::new(),

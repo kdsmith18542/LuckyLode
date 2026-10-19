@@ -18,7 +18,12 @@ auditable on-chain.
   every two years (16 → 8 → 4 → 2), then pays a fixed **1 LKYL per
   block forever** — miners never face a fees-only future. Roughly
   31.6M LKYL over the first eight years, plus ~526k per year of tail.
-- **Hybrid consensus:** 50% PoW / 50% PoS from block 1. The proof of
+- **Hybrid consensus:** 50% PoW / 50% PoS by design from genesis
+  (consensus accepts either block type at any height). In practice the
+  first PoS blocks only appear once stakers hold mature coins
+  (coinbase maturity is 100 blocks), so a fresh chain is PoW-only for
+  roughly its first hundred-plus blocks — the testnet showed zero PoS
+  blocks through h122 for exactly this reason. The proof of
   work is **LuckyHash**, a purpose-built Argon2id construction (1 MiB,
   height-bound salt, frozen public test vectors — doc 05), chosen for
   low-end hardware over raw speed. Staking mints from the node wallet;
