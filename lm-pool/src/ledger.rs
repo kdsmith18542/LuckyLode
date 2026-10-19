@@ -42,6 +42,9 @@ pub const PPLNS_WINDOW_SECS: u64 = 3 * DAY_SECS;
 pub const PPLNS_WINDOW_SHARES: usize = 2_000;
 /// Trailing window for hashrate (hence league) estimation.
 pub const CLASS_WINDOW_SECS: u64 = DAY_SECS;
+/// Season view window for league boards (doc 03 §3.3: seasonal
+/// leaderboards per device class). Covered by [`SHARE_RETENTION_SECS`].
+pub const SEASON_WINDOW_SECS: u64 = 30 * DAY_SECS;
 /// Raw-share retention (review finding G): covers the longest supported
 /// query window (30-day season views) with slack. Older history is rolled
 /// up into per-miner day lists and comeback state (kept forever, O(1) per
@@ -83,6 +86,33 @@ pub struct BoardEntry {
     pub eff_work: u64,
     pub days_active: u32,
     pub streak_days: u32,
+}
+
+/// Rank a leaderboard within each device class (doc 03 §3.3: phones
+/// race phones). Ranks are 1-based positions in the board's own order
+/// (effective work desc, miner id asc); classes come back in league
+/// ladder order — Phone, MiniPc, Desktop, Farm. Every class is present
+/// even when empty, so callers can render a stable section.
+#[must_use]
+pub fn rank_by_class(board: Vec<BoardEntry>) -> Vec<(DeviceClass, Vec<(u32, BoardEntry)>)> {
+    const LADDER: [DeviceClass; 4] = [
+        DeviceClass::Phone,
+        DeviceClass::MiniPc,
+        DeviceClass::Desktop,
+        DeviceClass::Farm,
+    ];
+    LADDER
+        .iter()
+        .map(|&class| {
+            let rows: Vec<(u32, BoardEntry)> = board
+                .iter()
+                .filter(|e| e.class == class)
+                .enumerate()
+                .map(|(i, e)| (i as u32 + 1, e.clone()))
+                .collect();
+            (class, rows)
+        })
+        .collect()
 }
 
 /// The pool's share log plus its league prize-pool balance (fed by
@@ -614,6 +644,40 @@ mod tests {
         );
         // …while the ancient ledger's raw log stayed bounded.
         assert!(with_ancient.raw_share_count() <= 2 * 34);
+    }
+
+    #[test]
+    fn rank_by_class_numbers_within_their_league() {
+        let entry = |miner: &str, class: DeviceClass, work: u64| BoardEntry {
+            miner: miner.to_string(),
+            class,
+            eff_work: work,
+            days_active: 1,
+            streak_days: 0,
+        };
+        let board = vec![
+            entry("p1", DeviceClass::Phone, 100),
+            entry("d1", DeviceClass::Desktop, 400),
+            entry("p2", DeviceClass::Phone, 50),
+            entry("f1", DeviceClass::Farm, 999),
+            entry("m1", DeviceClass::MiniPc, 10),
+        ];
+        let ranked = rank_by_class(board);
+        // Ladder order, every class present.
+        assert_eq!(ranked.len(), 4);
+        assert_eq!(ranked[0].0, DeviceClass::Phone);
+        assert_eq!(ranked[1].0, DeviceClass::MiniPc);
+        assert_eq!(ranked[2].0, DeviceClass::Desktop);
+        assert_eq!(ranked[3].0, DeviceClass::Farm);
+        // Ranks are per-class, 1-based, in the board's own order.
+        let phones = &ranked[0].1;
+        assert_eq!(phones.len(), 2);
+        assert_eq!((phones[0].0, phones[0].1.miner.as_str()), (1, "p1"));
+        assert_eq!((phones[1].0, phones[1].1.miner.as_str()), (2, "p2"));
+        assert_eq!((ranked[1].1[0].0, ranked[1].1[0].1.miner.as_str()), (1, "m1"));
+        assert_eq!((ranked[3].1[0].0, ranked[3].1[0].1.miner.as_str()), (1, "f1"));
+        // Empty classes stay present so callers render stable sections.
+        assert!(rank_by_class(Vec::new())[2].1.is_empty());
     }
 }
 

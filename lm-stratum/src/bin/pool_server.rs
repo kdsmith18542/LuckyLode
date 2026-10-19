@@ -86,7 +86,9 @@ footer{margin-top:26px;color:var(--dim);font-size:12px;line-height:1.5}
 <div class="grid" id="cards"></div>
 <h2>Workers</h2>
 <input type="search" id="wfilter" placeholder="filter by worker / payout address">
-<table><thead><tr><th></th><th>worker</th><th>device</th><th>60s</th><th>10m</th><th>1h</th><th>24h</th><th>shares</th><th>streak</th><th>rejects</th><th>last share</th></tr></thead><tbody id="workers"></tbody></table>
+<table><thead><tr><th></th><th>worker</th><th>device</th><th>60s</th><th>10m</th><th>1h</th><th>24h</th><th>shares</th><th>streak</th><th>league</th><th>rejects</th><th>last share</th></tr></thead><tbody id="workers"></tbody></table>
+<h2>League boards <span style="text-transform:none">(season = 30 days, effective work; phones race phones)</span></h2>
+<div id="league"><span style="color:var(--dim)">no ranked workers yet</span></div>
 <h2>Blocks</h2>
 <table><thead><tr><th>height</th><th>finder</th><th>block reward</th><th>jackpot bonus</th><th>pot splash</th><th>league inflow</th><th>pplns payouts</th></tr></thead><tbody id="blocks"></tbody></table>
 <h2>Balances due</h2>
@@ -132,7 +134,8 @@ footer{margin-top:26px;color:var(--dim);font-size:12px;line-height:1.5}
 <h2>API</h2>
 <p>Endpoints are relative to this page's path, so they work behind <code>/pool/</code> too:</p>
 <table><thead><tr><th>endpoint</th><th>returns</th></tr></thead><tbody>
-<tr><td><code>GET api/stats</code></td><td>pool, workers, blocks, balances, payouts, game state (JSON)</td></tr>
+<tr><td><code>GET api/stats</code></td><td>pool, workers, blocks, balances, payouts, game state, league boards (JSON)</td></tr>
+<tr><td><code>GET api/league</code></td><td>season league boards per device class (30-day effective work; ranks, streaks, attestation flags)</td></tr>
 <tr><td><code>GET api/luckynodes</code></td><td>luckynode registry + draw state</td></tr>
 <tr><td><code>GET api/luckynode/pending</code></td><td>draws/events awaiting cosigns</td></tr>
 <tr><td><code>POST api/luckynode/register</code></td><td>register a luckynode: <code>{id,address,pubkey,msg,sig,ts}</code> (msg must rebuild canonically; sig proves payout-address ownership via node <code>verifymessage</code>)</td></tr>
@@ -140,6 +143,7 @@ footer{margin-top:26px;color:var(--dim);font-size:12px;line-height:1.5}
 <tr><td><code>POST api/luckynode/notarize</code></td><td>cosign a draw: <code>{draw_id,id,sig}</code></td></tr>
 <tr><td><code>GET api/miner</code> with <code>Authorization: Bearer &lt;token&gt;</code></td><td>your own row + payout settings (worker-token auth — the token is a header, never a URL)</td></tr>
 <tr><td><code>POST api/payout/settings</code></td><td>set/clear your payout address + threshold: <code>{token,address,threshold}</code></td></tr>
+<tr><td><code>POST api/attest</code></td><td>record a device-attestation verdict (doc 03 §3.6): <code>{worker,provider:"self",detail?,token?}</code> — verdict-only, shown on league boards; a real Play Integrity verifier replaces the self-labeled stub at mainnet</td></tr>
 </tbody></table>
 <p>The dashboard polls <code>api/stats</code> every 5 s; miners, bots and dashboards are welcome to do the same.</p>
 </section>
@@ -218,9 +222,17 @@ async function tick(){
     : '';
   document.getElementById('updated').textContent='updated '+new Date().toLocaleTimeString();
   document.getElementById('workers').innerHTML=(j.workers||[]).map(w=>
-    `<tr class="${w.online?'':'off'}"><td><span class="dot"></span></td><td>${esc(w.name||w.miner)}</td><td>${esc(device(w.agent))}</td><td>${hs(w.rate60)}</td><td>${hs(w.rate10m)}</td><td>${hs(w.rate1h)}</td><td>${hs(w.rate24h)}</td><td>${esc(w.shares)}</td><td>${w.streak?`${esc(w.streak)}d${w.best_streak>w.streak?` <span class="dim">(best ${esc(w.best_streak)})</span>`:''}`:'—'}</td><td>${esc(w.rejects)}</td><td>${ago(w.last_seen)}</td></tr>`).join('')
-    || '<tr><td colspan="10">no workers yet</td></tr>';
+    `<tr class="${w.online?'':'off'}"><td><span class="dot"></span></td><td>${esc(w.name||w.miner)}</td><td>${esc(device(w.agent))}</td><td>${hs(w.rate60)}</td><td>${hs(w.rate10m)}</td><td>${hs(w.rate1h)}</td><td>${hs(w.rate24h)}</td><td>${esc(w.shares)}</td><td>${w.streak?`${esc(w.streak)}d${w.best_streak>w.streak?` <span class="dim">(best ${esc(w.best_streak)})</span>`:''}`:'—'}</td><td>${w.league_class?esc(w.league_class)+' #'+esc(w.league_rank)+'/'+esc(w.league_size)+(w.attested?' <span class="badge">attested</span>':''):'—'}</td><td>${esc(w.rejects)}</td><td>${ago(w.last_seen)}</td></tr>`).join('')
+    || '<tr><td colspan="11">no workers yet</td></tr>';
   applyWF();
+  const league=(j.league&&j.league.boards)||[];
+  document.getElementById('league').innerHTML=league.map(b=>{
+    const rows=(b.entries||[]).map(e=>
+      `<tr><td>${esc(e.rank)}</td><td>${esc(e.name||e.miner)}</td><td>${num(e.eff_work)}</td><td>${esc(e.days_active)}d</td><td>${e.streak?esc(e.streak)+'d':'—'}</td><td>${e.attested?esc((e.attestation&&e.attestation.provider)||'attested'):'—'}</td></tr>`).join('')
+      || '<tr><td colspan="6">no qualifying workers this season</td></tr>';
+    return `<h3 style="margin:14px 0 6px;color:var(--gold);font-size:13px">${esc(b.class)}${b.prize_eligible?'':' <span class="dim">(no prizes)</span>'} <span class="dim">· ${esc(b.size)} ranked</span></h3>`+
+      `<table><thead><tr><th>rank</th><th>worker</th><th>eff. work</th><th>days</th><th>streak</th><th>device attest</th></tr></thead><tbody>${rows}</tbody></table>`;
+  }).join('')||'<span style="color:var(--dim)">no ranked workers yet</span>';
   document.getElementById('blocks').innerHTML=(j.last_blocks||[]).map(b=>
     `<tr><td>${esc(b.height)}</td><td>${esc(b.finder_name||b.finder)}</td><td>${coin(b.value)}</td><td>${b.bonus>0?coin(b.bonus):'–'}</td><td>${b.pot>0?coin(b.pot):'–'}</td><td>${b.league_overflow>0?coin(b.league_overflow):'–'}</td><td>${b.pplns_total>0?coin(b.pplns_total)+' ('+esc(b.pplns_count)+')':'–'}</td></tr>`).join('')
     || '<tr><td colspan="6">no blocks yet</td></tr>';
@@ -313,6 +325,26 @@ fn stats_json<P: TemplateProvider + 'static>(
         .into_iter()
         .map(|s| (s.miner.clone(), s))
         .collect();
+    // Seasonal league boards (doc 03 §3.3): per-class ranks over the
+    // 30-day season window, plus the per-worker rank shortcut the app
+    // tiles read. Fresh attestation verdicts decorate the rows.
+    let boards = lm_pool::ledger::rank_by_class(
+        server.leaderboard(lm_pool::ledger::SEASON_WINDOW_SECS, now),
+    );
+    let mut rank_map: HashMap<String, (String, u32, u32)> = HashMap::new();
+    for (class, rows) in &boards {
+        let class_size = rows.len() as u32;
+        for (rank, e) in rows {
+            rank_map.insert(e.miner.clone(), (class.as_str().to_string(), *rank, class_size));
+        }
+    }
+    let attestations = server.attestations();
+    let fresh_attestation = |miner: &str| -> Option<lm_stratum::server::Attestation> {
+        attestations
+            .get(miner)
+            .filter(|a| now.saturating_sub(a.time) <= lm_stratum::server::ATTESTATION_TTL_SECS)
+            .cloned()
+    };
     let online = workers.iter().filter(|w| w.online).count();
     let mut totals = [0.0f64; 4];
     for w in &workers {
@@ -330,6 +362,10 @@ fn stats_json<P: TemplateProvider + 'static>(
                 Some(s) => (s.days_active, s.streak_days, s.best_streak_days),
                 None => (0, 0, 0),
             };
+            // League rank within the worker's device class (null when the
+            // worker has no in-window shares).
+            let lg = rank_map.get(&w.miner);
+            let att = fresh_attestation(&w.miner);
             serde_json::json!({
                 "miner": w.miner,
                 "name": w.name,
@@ -341,6 +377,14 @@ fn stats_json<P: TemplateProvider + 'static>(
                 "days_active": days,
                 "streak": streak,
                 "best_streak": best,
+                "league_class": lg.map(|l| l.0.clone()),
+                "league_rank": lg.map(|l| l.1),
+                "league_size": lg.map(|l| l.2),
+                "attested": att.is_some(),
+                "attestation": att.map(|a| serde_json::json!({
+                    "provider": a.provider,
+                    "time": a.time,
+                })),
                 "rate60": w.rates[0],
                 "rate10m": w.rates[1],
                 "rate1h": w.rates[2],
@@ -436,6 +480,11 @@ fn stats_json<P: TemplateProvider + 'static>(
         },
         "payouts": payouts_json,
         "last_blocks": last,
+        "league": {
+            "window_secs": lm_pool::ledger::SEASON_WINDOW_SECS,
+            "window_days": lm_pool::ledger::SEASON_WINDOW_SECS / 86_400,
+            "boards": league_boards_json(&boards, &names_map, &attestations, now, 20),
+        },
     });
     if let Some((addr, user, pass)) = node {
         let rpc = RpcClient::new(addr, user, pass);
@@ -507,6 +556,164 @@ fn stats_json<P: TemplateProvider + 'static>(
         });
     }
     obj.to_string()
+}
+
+/// Per-class league boards as JSON (doc 03 §3.3: phones race phones).
+/// `cap` limits entries per class (0 = uncapped). Fresh attestation
+/// verdicts decorate rows (`attested` + the verdict's provider/time).
+fn league_boards_json(
+    boards: &[(lm_pool::league::DeviceClass, Vec<(u32, lm_pool::ledger::BoardEntry)>)],
+    names: &HashMap<String, String>,
+    attestations: &lm_stratum::server::Attestations,
+    now: u64,
+    cap: usize,
+) -> Vec<serde_json::Value> {
+    boards
+        .iter()
+        .map(|(class, rows)| {
+            let entries: Vec<serde_json::Value> = rows
+                .iter()
+                .take(if cap == 0 { usize::MAX } else { cap })
+                .map(|(rank, e)| {
+                    let att = attestations.get(&e.miner).filter(|a| {
+                        now.saturating_sub(a.time) <= lm_stratum::server::ATTESTATION_TTL_SECS
+                    });
+                    serde_json::json!({
+                        "rank": rank,
+                        "miner": e.miner,
+                        "name": names.get(&e.miner).cloned().unwrap_or_else(|| e.miner.clone()),
+                        "eff_work": e.eff_work,
+                        "days_active": e.days_active,
+                        "streak": e.streak_days,
+                        "attested": att.is_some(),
+                        "attestation": att.map(|a| serde_json::json!({
+                            "provider": a.provider,
+                            "time": a.time,
+                        })),
+                    })
+                })
+                .collect();
+            serde_json::json!({
+                "class": class.as_str(),
+                "prize_eligible": class.prize_eligible(),
+                "size": rows.len(),
+                "entries": entries,
+            })
+        })
+        .collect()
+}
+
+/// `GET /api/league` — the full seasonal league boards (all classes, up
+/// to 100 entries each), same shape as the `league` object on
+/// `/api/stats`.
+fn league_json<P: TemplateProvider + 'static>(server: &RunningServer<P>) -> String {
+    let now = now_secs();
+    let boards = lm_pool::ledger::rank_by_class(
+        server.leaderboard(lm_pool::ledger::SEASON_WINDOW_SECS, now),
+    );
+    let names_map: HashMap<String, String> = server.names().into_iter().collect();
+    let attestations = server.attestations();
+    serde_json::json!({
+        "window_secs": lm_pool::ledger::SEASON_WINDOW_SECS,
+        "window_days": lm_pool::ledger::SEASON_WINDOW_SECS / 86_400,
+        "boards": league_boards_json(&boards, &names_map, &attestations, now, 100),
+    })
+    .to_string()
+}
+
+/// `POST /api/attest` — record a device-attestation verdict (doc 03 §3.6,
+/// doc 07 §7.4: verdict-only, no identity). Body:
+/// `{worker, provider, detail?, token?}`; the caller may also send the
+/// token as `Authorization: Bearer <token>`. When the pool runs a
+/// `--workers-file`, the token is required and decides the worker (nobody
+/// can attest for someone else); on an open pool the submitted worker
+/// name groups the verdict. Only the self-labeled `"self"` provider is
+/// accepted until a real Play Integrity verifier is configured — the
+/// record is a display flag, not a security boundary.
+fn attest_api<P: TemplateProvider + 'static>(
+    server: &RunningServer<P>,
+    authorization: Option<&str>,
+    body: &str,
+) -> (&'static str, String) {
+    let req: serde_json::Value = match serde_json::from_str(body) {
+        Ok(v) => v,
+        Err(e) => {
+            return (
+                "400 Bad Request",
+                serde_json::json!({"error": format!("bad json: {e}")}).to_string(),
+            )
+        }
+    };
+    let provider = req.get("provider").and_then(|v| v.as_str()).unwrap_or("");
+    if provider != "self" {
+        return (
+            "400 Bad Request",
+            serde_json::json!({
+                "error": "unsupported provider; only 'self' is accepted until a Play Integrity verifier is configured"
+            })
+            .to_string(),
+        );
+    }
+    let bearer = authorization
+        .and_then(|a| a.strip_prefix("Bearer ").or_else(|| a.strip_prefix("bearer ")))
+        .map(str::trim)
+        .filter(|t| !t.is_empty());
+    let body_token = req
+        .get("token")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|t| !t.is_empty());
+    let worker = req
+        .get("worker")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    let miner = if server.worker_tokens_active() {
+        match bearer.or(body_token).and_then(|t| server.miner_for_token(t)) {
+            Some(m) => m,
+            None => {
+                return (
+                    "403 Forbidden",
+                    serde_json::json!({"error": "unknown token"}).to_string(),
+                )
+            }
+        }
+    } else if worker.is_empty() {
+        return (
+            "400 Bad Request",
+            serde_json::json!({"error": "missing worker (or send a token)"}).to_string(),
+        );
+    } else {
+        worker
+    };
+    let detail: String = req
+        .get("detail")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .chars()
+        .take(200)
+        .collect();
+    let now = now_secs();
+    server.set_attestation(
+        miner.clone(),
+        lm_stratum::server::Attestation {
+            provider: provider.to_string(),
+            time: now,
+            detail,
+        },
+    );
+    (
+        "200 OK",
+        serde_json::json!({
+            "ok": true,
+            "worker": miner,
+            "provider": provider,
+            "time": now,
+            "verified": false,
+        })
+        .to_string(),
+    )
 }
 
 /// Bounded line read for HTTP: a header line must never be able to
@@ -609,6 +816,7 @@ fn http_reply<P: TemplateProvider + 'static>(
             stats_json(server, node, &ctx.mode, ctx),
         ),
         ("GET", "/api/luckynodes") => ("200 OK", "application/json", luckynode_list(ctx)),
+        ("GET", "/api/league") => ("200 OK", "application/json", league_json(server)),
         ("GET", "/api/luckynode/pending") => {
             ("200 OK", "application/json", luckynode_pending(ctx))
         }
@@ -646,6 +854,10 @@ fn http_reply<P: TemplateProvider + 'static>(
         }
         ("POST", "/api/payout/settings") => {
             let (status, json) = payout_settings_api(server, &body);
+            (status, "application/json", json)
+        }
+        ("POST", "/api/attest") => {
+            let (status, json) = attest_api(server, Some(&authorization), &body);
             (status, "application/json", json)
         }
         _ => (
@@ -929,6 +1141,10 @@ struct PoolState {
     /// Per-miner payout settings (address/threshold overrides,.
     #[serde(default)]
     payout_settings: lm_stratum::server::PayoutSettings,
+    /// Per-worker device-attestation verdicts (doc 03 §3.6). `default`
+    /// so state files written before this field still load.
+    #[serde(default)]
+    attestations: lm_stratum::server::Attestations,
     /// League prize-pool balance (feeds the Luckynode draw budgets).
     /// `default` so state files written before this field still load.
     #[serde(default)]
@@ -955,6 +1171,7 @@ fn load_state<P: TemplateProvider + 'static>(
             server.restore_league(st.league_pool);
             let settings = st.payout_settings.len();
             server.restore_payout_settings(st.payout_settings);
+            server.restore_attestations(st.attestations);
             let n = st.blocks.len();
             server.restore_blocks(st.blocks);
             let (owed, paid, fees) = server.payout_totals();
@@ -1029,6 +1246,7 @@ fn save_state<P: TemplateProvider + 'static>(
         recent_draws,
         pending,
         payout_settings: server.payout_settings(),
+        attestations: server.attestations(),
         league_pool: server.league_balance(),
         luckynodes,
     };
@@ -1075,7 +1293,9 @@ fn state_saver<P: TemplateProvider + 'static>(
 
 /// SIGTERM arrives with the ledger up to 10 s stale: save once, then
 /// exit. The handler itself only flips an atomic (async-signal safety);
-/// this watcher thread does the actual saving.
+/// this watcher thread does the actual saving. Spawned with or without a
+/// state file — the handler is installed unconditionally, so without a
+/// watcher a SIGTERM to a no-state-file pool would be silently swallowed.
 static TERM: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 extern "C" fn on_sigterm(_sig: libc::c_int) {
     TERM.store(true, std::sync::atomic::Ordering::SeqCst);
@@ -1084,12 +1304,16 @@ extern "C" fn on_sigterm(_sig: libc::c_int) {
 fn term_watcher<P: TemplateProvider + 'static>(
     server: Arc<RunningServer<P>>,
     luckynode: Option<Arc<LuckynodeShared>>,
-    path: PathBuf,
+    path: Option<PathBuf>,
 ) {
     loop {
         if TERM.load(std::sync::atomic::Ordering::SeqCst) {
-            save_state(&server, luckynode.as_ref(), &path);
-            println!("SIGTERM: state saved to {} — exiting", path.display());
+            if let Some(path) = &path {
+                save_state(&server, luckynode.as_ref(), path);
+                println!("SIGTERM: state saved to {} — exiting", path.display());
+            } else {
+                println!("SIGTERM: no state file configured — exiting");
+            }
             std::process::exit(0);
         }
         std::thread::sleep(std::time::Duration::from_millis(250));
@@ -2741,13 +2965,14 @@ fn main() -> std::process::ExitCode {
                 let p = path.clone();
                 move || state_saver(srv, ln, p)
             });
-            std::thread::spawn({
-                let srv = Arc::clone(&server);
-                let ln = luckynode_shared.clone();
-                let p = path.clone();
-                move || term_watcher(srv, ln, p)
-            });
         }
+        // Always watch for SIGTERM (the handler is installed at startup).
+        std::thread::spawn({
+            let srv = Arc::clone(&server);
+            let ln = luckynode_shared.clone();
+            let p = state_file.clone();
+            move || term_watcher(srv, ln, p)
+        });
         let history = Arc::new(Mutex::new(VecDeque::new()));
         if let Some(a) = http_addr {
             let srv = Arc::clone(&server);
@@ -2875,12 +3100,13 @@ fn main() -> std::process::ExitCode {
                 let p = path.clone();
                 move || state_saver(srv, None, p)
             });
-            std::thread::spawn({
-                let srv = Arc::clone(&server);
-                let p = path.clone();
-                move || term_watcher(srv, None, p)
-            });
         }
+        // Always watch for SIGTERM (the handler is installed at startup).
+        std::thread::spawn({
+            let srv = Arc::clone(&server);
+            let p = state_file.clone();
+            move || term_watcher(srv, None, p)
+        });
         let history = Arc::new(Mutex::new(VecDeque::new()));
         if let Some(a) = http_addr {
             let srv = Arc::clone(&server);
@@ -3021,15 +3247,149 @@ mod tests {
             recent_draws: Vec::new(),
             pending: Vec::new(),
             payout_settings: lm_stratum::server::PayoutSettings::new(),
+            attestations: lm_stratum::server::Attestations::new(),
             league_pool: 260_317,
             luckynodes: Vec::new(),
         };
         let json = serde_json::to_string(&st).expect("serialize");
         let back: PoolState = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(back.league_pool, 260_317);
-        // Old state files (pre-league_pool) still load: field defaults to 0.
+        // Old state files (pre-league_pool / pre-attestations) still load.
         let old = r#"{"version":1,"ledger":{"owed":{},"fees":0,"paid":{}},"names":[],"blocks":[]}"#;
         let back: PoolState = serde_json::from_str(old).expect("old file");
         assert_eq!(back.league_pool, 0);
+        assert!(back.attestations.is_empty());
+    }
+
+    #[test]
+    fn state_file_roundtrips_attestations() {
+        let mut st = PoolState {
+            version: 1,
+            ledger: lm_pool::payout::PayoutLedger::default(),
+            names: Vec::new(),
+            blocks: Vec::new(),
+            recent_draws: Vec::new(),
+            pending: Vec::new(),
+            payout_settings: lm_stratum::server::PayoutSettings::new(),
+            attestations: lm_stratum::server::Attestations::new(),
+            league_pool: 0,
+            luckynodes: Vec::new(),
+        };
+        st.attestations.insert(
+            "worker-a".to_string(),
+            lm_stratum::server::Attestation {
+                provider: "self".to_string(),
+                time: 1_792_000_000,
+                detail: "Pixel 8".to_string(),
+            },
+        );
+        let json = serde_json::to_string(&st).expect("serialize");
+        let back: PoolState = serde_json::from_str(&json).expect("deserialize");
+        let a = back.attestations.get("worker-a").expect("kept");
+        assert_eq![a.provider, "self"];
+        assert_eq!(a.time, 1_792_000_000);
+    }
+
+    #[test]
+    fn league_boards_json_ranks_within_class_and_flags_fresh_attestations() {
+        use lm_pool::league::DeviceClass;
+        use lm_pool::ledger::BoardEntry;
+        let entry = |miner: &str, class: DeviceClass, work: u64| BoardEntry {
+            miner: miner.to_string(),
+            class,
+            eff_work: work,
+            days_active: 3,
+            streak_days: 1,
+        };
+        let boards = lm_pool::ledger::rank_by_class(vec![
+            entry("p1", DeviceClass::Phone, 900),
+            entry("p2", DeviceClass::Phone, 500),
+            entry("d1", DeviceClass::Desktop, 100),
+        ]);
+        let mut names = HashMap::new();
+        names.insert("p1".to_string(), "addr-p1".to_string());
+        let mut atts = lm_stratum::server::Attestations::new();
+        atts.insert(
+            "p1".to_string(),
+            lm_stratum::server::Attestation {
+                provider: "self".to_string(),
+                time: 100,
+                detail: String::new(),
+            },
+        );
+        // 30-day TTL: `now = 200` is fresh; the JSON carries the provider.
+        let out = league_boards_json(&boards, &names, &atts, 200, 20);
+        assert_eq!(out.len(), 4); // ladder order, farms present even if empty
+        assert_eq!(out[0]["class"], "phone");
+        assert_eq!(out[0]["size"], 2);
+        let top = &out[0]["entries"][0];
+        assert_eq!(top["rank"], 1);
+        assert_eq!(top["name"], "addr-p1");
+        assert_eq!(top["attested"], true);
+        assert_eq!(top["attestation"]["provider"], "self");
+        let second = &out[0]["entries"][1];
+        assert_eq!(second["rank"], 2);
+        assert_eq!(second["name"], "p2"); // no registered name → the miner id
+        assert_eq!(second["attested"], false);
+        assert_eq!(out[3]["class"], "farm");
+        assert_eq!(out[3]["entries"].as_array().unwrap().len(), 0);
+        // An expired verdict stops decorating rows.
+        let stale = league_boards_json(
+            &boards,
+            &names,
+            &atts,
+            100 + lm_stratum::server::ATTESTATION_TTL_SECS + 1,
+            20,
+        );
+        assert_eq!(stale[0]["entries"][0]["attested"], false);
+        // The per-class cap holds.
+        let capped = league_boards_json(&boards, &names, &atts, 200, 1);
+        assert_eq!(capped[0]["entries"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn attest_api_records_self_and_rejects_other_providers() {
+        let server = spawn_server(
+            MockProvider::new([0xff; 32], [0xff; 32], 1_000, 0),
+            "127.0.0.1:0",
+            None,
+            None,
+            None,
+        )
+        .expect("spawn");
+        // Only the self-labeled provider exists until a verifier is wired.
+        let (status, body) = attest_api(
+            &server,
+            None,
+            r#"{"worker":"w1","provider":"play_integrity"}"#,
+        );
+        assert_eq!(status, "400 Bad Request");
+        assert!(body.contains("unsupported provider"));
+        // An open pool needs the worker name.
+        let (status, _) = attest_api(&server, None, r#"{"provider":"self"}"#);
+        assert_eq!(status, "400 Bad Request");
+        // A self verdict records for the worker (latest wins).
+        let (status, _) = attest_api(
+            &server,
+            None,
+            r#"{"worker":"w1","provider":"self","detail":"Pixel 8"}"#,
+        );
+        assert_eq!(status, "200 OK");
+        let att = server
+            .attestation_for("w1", now_secs())
+            .expect("recorded");
+        assert_eq!(att.provider, "self");
+        assert_eq!(att.detail, "Pixel 8");
+        let (status, _) = attest_api(
+            &server,
+            None,
+            r#"{"worker":"w1","provider":"self","detail":"Pixel 9"}"#,
+        );
+        assert_eq!(status, "200 OK");
+        assert_eq!(
+            server.attestation_for("w1", now_secs()).expect("kept").detail,
+            "Pixel 9"
+        );
+        server.stop();
     }
 }

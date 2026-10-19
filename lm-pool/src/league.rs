@@ -33,6 +33,17 @@ impl DeviceClass {
     pub fn prize_eligible(self) -> bool {
         !matches!(self, DeviceClass::Farm)
     }
+
+    /// Stable wire name (dashboard/API JSON).
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            DeviceClass::Phone => "phone",
+            DeviceClass::MiniPc => "minipc",
+            DeviceClass::Desktop => "desktop",
+            DeviceClass::Farm => "farm",
+        }
+    }
 }
 
 /// Classify an observed sustained rate (hashes/second, trailing window).
@@ -71,5 +82,13 @@ mod tests {
         assert!(DeviceClass::MiniPc.prize_eligible());
         assert!(DeviceClass::Desktop.prize_eligible());
         assert!(!DeviceClass::Farm.prize_eligible());
+    }
+
+    #[test]
+    fn wire_names_are_stable() {
+        assert_eq!(DeviceClass::Phone.as_str(), "phone");
+        assert_eq!(DeviceClass::MiniPc.as_str(), "minipc");
+        assert_eq!(DeviceClass::Desktop.as_str(), "desktop");
+        assert_eq!(DeviceClass::Farm.as_str(), "farm");
     }
 }

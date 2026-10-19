@@ -151,6 +151,9 @@ struct Shared<P> {
     balances: Mutex<PayoutLedger>,
     /// Per-miner payout settings (address/threshold overrides,.
     payout_settings: Mutex<PayoutSettings>,
+    /// Per-worker device-attestation verdicts (doc 03 §3.6) — verdicts
+    /// only, no identity. Persisted with the state file.
+    attestations: Mutex<Attestations>,
     /// Pool fee in per-myriad, applied when blocks credit balances.
     pool_fee: Mutex<u16>,
     /// Dev-fee slice (miner id, per-myriad of the block), taken from the
@@ -184,6 +187,29 @@ pub struct MinerSettings {
 /// Per-miner payout settings keyed by miner id (persisted with the pool
 /// state file).
 pub type PayoutSettings = std::collections::BTreeMap<String, MinerSettings>;
+
+/// One device-attestation verdict (doc 03 §3.6, doc 07 §7.4):
+/// verdict-only, no identity — the worker name is the key, and `provider`
+/// names the verifier that produced the verdict. `"self"` is the
+/// unverified testnet stub used until a Play Integrity verifier is
+/// configured on the pool.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Attestation {
+    /// Verifier that produced the verdict.
+    pub provider: String,
+    /// When the pool recorded it (unix seconds).
+    pub time: u64,
+    /// Free-form verdict detail (device model, payload digest).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub detail: String,
+}
+
+/// Per-worker attestations keyed by miner id (persisted with the pool state).
+pub type Attestations = std::collections::BTreeMap<String, Attestation>;
+
+/// How long an attestation stays fresh. Phone-league entry is per season;
+/// an older verdict stops counting.
+pub const ATTESTATION_TTL_SECS: u64 = 30 * 24 * 60 * 60;
 
 /// One miner's dashboard row + value totals.
 #[derive(Debug, Clone, serde::Serialize)]
@@ -869,15 +895,24 @@ fn handle_v2_conn<P: TemplateProvider + 'static>(
     cert_validity: Duration,
 ) {
     let _ = stream.set_nodelay(true);
+    eprintln!("pool(v2): connection from {:?}", stream.peer_addr());
     // Handshake bound: a port scan that connects and says nothing must not
     // park a thread forever.
     let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
     let mut session = match V2Session::accept(stream, authority, cert_validity) {
         Ok(s) => s,
-        Err(_) => return,
+        Err(e) => {
+            // Loud: a failed handshake used to close silently, which made
+            // client-side "connect failed" reports impossible to place.
+            eprintln!("pool(v2): handshake failed: {e}");
+            return;
+        }
     };
-    let _ = session.set_read_timeout(Some(Duration::from_millis(100)));
-    // Version negotiation: mining protocol, must span version 2.
+    // Version negotiation: mining protocol, must span version 2. This
+    // runs under the 10 s handshake timeout — NOT the 100 ms polling
+    // timeout below: a slow client (a phone finishing the Noise math)
+    // needs more than 100 ms to send its setup frame, and treating that
+    // as an error closed the connection mid-negotiation.
     let setup = match accept_setup_connection(&mut session, |s| {
         if s.protocol != PROTOCOL_MINING || s.max_version < 2 || s.min_version > 2 {
             Err((0, "unsupported protocol/version (need mining v2)".to_string()))
@@ -889,8 +924,14 @@ fn handle_v2_conn<P: TemplateProvider + 'static>(
         }
     }) {
         Ok(s) => s,
-        Err(_) => return,
+        Err(e) => {
+            eprintln!("pool(v2): setup negotiation failed: {e}");
+            return;
+        }
     };
+    // From here the connection is in the polling loop: short reads let the
+    // handler notice shutdown and fan out fresh jobs between receives.
+    let _ = session.set_read_timeout(Some(Duration::from_millis(100)));
     // Open channels on this connection (usually one; a proxy may open
     // several workers down one Noise session). The registry window (16
     // jobs) is connection-wide and matches the V1 connection lifetime;
@@ -1184,6 +1225,17 @@ impl<P: TemplateProvider + 'static> RunningServer<P> {
         self.shared.ledger.lock().expect("ledger").streaks(now)
     }
 
+    /// Seasonal league board over `window_secs` (doc 03 §3.3), effective
+    /// work desc. O(miners) over the share log's retention window.
+    #[must_use]
+    pub fn leaderboard(&self, window_secs: u64, now: u64) -> Vec<lm_pool::ledger::BoardEntry> {
+        self.shared
+            .ledger
+            .lock()
+            .expect("ledger")
+            .leaderboard(window_secs, now)
+    }
+
     /// Spend from the league prize pool (draw payments); returns what was
     /// actually debited, capped at the credited balance.
     pub fn debit_league(&self, amount: u64) -> u64 {
@@ -1292,6 +1344,35 @@ impl<P: TemplateProvider + 'static> RunningServer<P> {
             .is_some()
     }
 
+    /// Attestation snapshot (persisted with the state file).
+    #[must_use]
+    pub fn attestations(&self) -> Attestations {
+        self.shared.attestations.lock().expect("attestations").clone()
+    }
+
+    /// Replace the attestation store (state restore).
+    pub fn restore_attestations(&self, attestations: Attestations) {
+        *self.shared.attestations.lock().expect("attestations") = attestations;
+    }
+
+    /// Record one worker's attestation verdict (latest wins).
+    pub fn set_attestation(&self, miner: String, attestation: Attestation) {
+        self.shared
+            .attestations
+            .lock()
+            .expect("attestations")
+            .insert(miner, attestation);
+    }
+
+    /// The current (non-expired) attestation for one miner.
+    #[must_use]
+    pub fn attestation_for(&self, miner: &str, now: u64) -> Option<Attestation> {
+        let all = self.shared.attestations.lock().expect("attestations");
+        all.get(miner)
+            .filter(|a| now.saturating_sub(a.time) <= ATTESTATION_TTL_SECS)
+            .cloned()
+    }
+
     /// Miner id owning a worker token (`--workers-file`), for the
     /// miner-facing HTTP endpoints. `None` when auth is off or the token is
     /// unknown.
@@ -1310,6 +1391,12 @@ impl<P: TemplateProvider + 'static> RunningServer<P> {
             .lock()
             .expect("workers")
             .miner_for_name(worker)
+    }
+
+    /// Whether a `--workers-file` token map is active (auth required).
+    #[must_use]
+    pub fn worker_tokens_active(&self) -> bool {
+        self.shared.worker_tokens.is_some()
     }
 
     /// `(owed_total, paid_total, fees)` — the payout reconciliation triple.
@@ -1438,6 +1525,7 @@ pub fn spawn_server<P: TemplateProvider + 'static>(
         workers: Mutex::new(WorkerStats::default()),
         balances: Mutex::new(PayoutLedger::default()),
         payout_settings: Mutex::new(PayoutSettings::new()),
+        attestations: Mutex::new(Attestations::new()),
         pool_fee: Mutex::new(0),
         dev_fee: Mutex::new(None),
         pool_password: password,
@@ -1700,6 +1788,27 @@ mod auth_tests {
         assert!(server.clear_payout_settings(&miner));
         assert!(!server.clear_payout_settings(&miner));
         assert!(server.payout_settings().is_empty());
+
+        // Attestation store: latest wins, expiry filters, restore replaces.
+        let now = now_secs();
+        server.set_attestation(
+            miner.clone(),
+            Attestation {
+                provider: "self".to_string(),
+                time: now,
+                detail: "test-device".to_string(),
+            },
+        );
+        let att = server
+            .attestation_for(&miner, now)
+            .expect("fresh attestation");
+        assert_eq!(att.provider, "self");
+        assert!(server
+            .attestation_for(&miner, now + ATTESTATION_TTL_SECS + 1)
+            .is_none());
+        assert_eq!(server.attestations().len(), 1);
+        server.restore_attestations(Attestations::new());
+        assert!(server.attestation_for(&miner, now).is_none());
 
         // The miner row is visible once connected.
         let row = server.miner_row(&miner, now_secs()).expect("row");
