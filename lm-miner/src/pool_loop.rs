@@ -574,8 +574,9 @@ fn run_v1(
 /// over [`LuckyJob`] templates with u64 submits. Dev-fee rotation, backoff
 /// reconnects, counters and stop semantics mirror [`run_v1`]; the wire is
 /// the only difference.
-// The extra context (agent is unused on V2, host/port ride with the
-// SetupConnection) mirrors run_v1's parameterization one-to-one.
+// The extra context (agent is unused on V1-style subscribe; host/port
+// ride with the SetupConnection) mirrors run_v1's parameterization
+// one-to-one.
 #[allow(clippy::too_many_arguments)]
 fn run_v2(
     cfg: &PoolConfig,
@@ -583,7 +584,7 @@ fn run_v2(
     policy: &MiningPolicy,
     stop: &AtomicBool,
     sink: &mut dyn FnMut(Event),
-    _agent: String,
+    agent: String,
     pool_host: String,
     addr: SocketAddr,
 ) -> Outcome {
@@ -596,7 +597,11 @@ fn run_v2(
         flags: 0,
         endpoint_host: pool_host,
         endpoint_port: addr.port(),
-        vendor: "lm-miner".to_string(),
+        // The vendor field carries the configured agent verbatim (identity
+        // + device family, e.g. "lm-miner-mobile/0.1 android"), so the
+        // pool reads the same device label on both wires. `hardware_version`
+        // stays the backend device ("cpu"/"opencl").
+        vendor: agent.clone(),
         hardware_version: backend.device().to_string(),
         firmware: "0.2".to_string(),
         // The pool authenticates the worker against the same password /

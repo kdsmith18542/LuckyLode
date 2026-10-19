@@ -200,6 +200,13 @@ fn run(
         Backend::Gpu(g) => format!("gpu: {}", g.name()),
         Backend::Cpu { threads } => format!("cpu: {threads} threads"),
     };
+    // The agent carries the device family for pool-side league labels
+    // (doc 03 §3.6): the wallet declares what it actually mines on.
+    let agent = match &backend {
+        Backend::Gpu(_) => "lucky-lode-wallet/0.1 opencl",
+        Backend::Cpu { .. } => "lucky-lode-wallet/0.1 cpu",
+    }
+    .to_string();
     {
         let mut s = status.lock().expect("s");
         s.device = device_label.clone();
@@ -209,7 +216,7 @@ fn run(
     let cfg = PoolConfig {
         pool: pool.clone(),
         worker: worker.clone(),
-        agent: Some("lucky-lode-wallet/0.1".to_string()),
+        agent: Some(agent),
         // The wallet always authorized with an empty password; open pools
         // ignore it either way.
         password: String::new(),
