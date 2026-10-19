@@ -65,6 +65,10 @@ consensus; the frozen strings below are called out precisely because they
   overrides must never leak into shipped defaults (a wallet once
   hard-coded a dev box's conf override as its default and would have
   missed every fresh user's node).
+- **Official pool stratum ports (recorded 2026-10-18):** V1 **3346**,
+  V2 (Noise NX) **3347**. The V2 endpoint pins a stable authority key
+  whose URL form the pool prints at startup and publishes on the
+  dashboard; clients pin that key as the responder certificate.
 
 ## 13.4 Doc numbering
 
