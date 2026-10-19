@@ -611,7 +611,7 @@ pub fn transactions(
     let map = wallet::own_script_map(&c.seed, c.net, c.recv_next, c.change_next)?;
     let n = count.unwrap_or(50) as usize;
     let start = scan.txids.len().saturating_sub(n);
-    let page = wallet::activity(&c.rpc, &scan.txids[start..], &map, n, &app_dir(&state))?;
+    let page = wallet::activity(&c.rpc, &scan.txids[start..], &map, n, scan.tip, &app_dir(&state))?;
     advance_cursors(&state, rmax.max(page.used_recv_max), cmax.max(page.used_change_max));
     Ok(json!(
         page.rows

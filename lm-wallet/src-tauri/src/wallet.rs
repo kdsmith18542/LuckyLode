@@ -402,6 +402,8 @@ pub struct ScanResult {
     pub mempool_net: i64,
     /// All history txids (deduped, node order).
     pub txids: Vec<String>,
+    /// Chain tip at scan time (confirmations recompute from this).
+    pub tip: u64,
 }
 
 fn str_field(v: &Value, key: &str) -> Option<String> {
@@ -593,6 +595,7 @@ pub fn scan(
         utxos,
         mempool_net,
         txids,
+        tip,
     })
 }
 
@@ -899,6 +902,7 @@ pub fn activity(
     txids: &[String],
     own_scripts: &HashMap<String, (u32, u32)>,
     limit: usize,
+    tip: u64,
     dir: &Path,
 ) -> Result<ActivityPage, String> {
     let mut meta = load_txmeta(dir);
@@ -908,7 +912,34 @@ pub fn activity(
     let mut used: Vec<(u32, u32)> = Vec::new();
     for txid in txids.iter().take(limit) {
         let raw = cached_verbose(rpc, &mut meta, &mut dirty, txid)?;
-        let tx = decode_tx(&raw);
+        let mut tx = decode_tx(&raw);
+        // A cached entry without a height was captured while unconfirmed
+        // (txmeta serves the verbose forever): re-fetch it once so it can
+        // land; otherwise it would freeze at 0 confirmations.
+        if tx.height.unwrap_or(0) == 0 {
+            let fresh = rpc.call("getrawtransaction", json!([txid, 1]))?;
+            meta.insert(
+                txid.clone(),
+                TxMeta {
+                    coinbase: is_coinbase_tx(&fresh),
+                    height: fresh.get("height").and_then(|v| v.as_u64()).unwrap_or(0),
+                    verbose: Some(fresh.clone()),
+                },
+            );
+            dirty = true;
+            tx = decode_tx(&fresh);
+        }
+        // Confirmations must track the CURRENT tip: the cached verbose's
+        // own `confirmations` value is frozen at first-fetch depth (a
+        // payout cached at 1 conf read "1" forever — the "confirmations
+        // look off" report). Recompute from the cached height + live tip.
+        // (In-chain reorgs could leave the cached height stale until the
+        // entry is re-fetched; resets drop txids from the index entirely.)
+        if let Some(h) = tx.height {
+            if h > 0 {
+                tx.confirmations = tip.saturating_sub(h).saturating_add(1);
+            }
+        }
         // Prime the prev cache through the shared verbose cache.
         for (ptxid, pvout) in &tx.vin {
             if let (Some(pt), Some(pv)) = (ptxid, pvout) {
@@ -1120,7 +1151,18 @@ pub fn tx_detail(
     let mut meta = load_txmeta(dir);
     let mut dirty = false;
     let raw = cached_verbose(rpc, &mut meta, &mut dirty, txid)?;
-    let tx = decode_tx(&raw);
+    let mut tx = decode_tx(&raw);
+    // Confirmations from the current tip, not the frozen first-fetch value
+    // (best-effort: keep the cached value if the tip call fails).
+    if let Some(h) = tx.height {
+        if h > 0 {
+            if let Ok(v) = rpc.call("getblockcount", json!([])) {
+                if let Some(tip) = v.as_u64() {
+                    tx.confirmations = tip.saturating_sub(h).saturating_add(1);
+                }
+            }
+        }
+    }
     // Resolve previous outputs for direction + fee.
     let mut prevs: HashMap<(String, u32), Option<(u64, String)>> = HashMap::new();
     for (ptxid, pvout) in &tx.vin {
@@ -1253,10 +1295,13 @@ mod tests {
         // Dead endpoint: any RPC attempt fails, so this only passes on a
         // pure cache hit (the whole point of the fix).
         let dead = RpcClient::new("http://127.0.0.1:9", "", "");
-        let page = activity(&dead, std::slice::from_ref(&txid), &map, 25, &dir).expect("cache hit");
+        let page = activity(&dead, std::slice::from_ref(&txid), &map, 25, 20, &dir).expect("cache hit");
         assert_eq!(page.rows.len(), 1);
         assert_eq!(page.rows[0].txid, txid);
         assert_eq!(page.rows[0].category, "receive");
+        // Confirmations recompute from the CURRENT tip (20), not the
+        // frozen first-fetch value in the cache (150): 20 - height 10 + 1.
+        assert_eq!(page.rows[0].confirmations, 11);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1312,6 +1357,7 @@ mod tests {
             ],
             mempool_net: -500,
             txids: vec!["a".into(), "b".into(), "c".into()],
+            tip: 200,
         };
         let b = balances_of(&scan, 1000);
         assert_eq!((b.available, b.immature, b.unconfirmed, b.txcount), (5000, 2000, -500, 3));
@@ -1525,7 +1571,7 @@ mod tests {
             assert_eq!((b.available, b.immature), (1_000_000, 0));
             // Activity shows the receive.
             let map = own_script_map(&seed, net, 0, 0)?;
-            let page = activity(&rpc, &scan_res.txids, &map, 50, &wdir)?;
+            let page = activity(&rpc, &scan_res.txids, &map, 50, scan_res.tip, &wdir)?;
             assert!(page.rows.iter().any(|r| r.category == "receive"
                 && (r.amount - 0.01).abs() < 1e-9
                 && r.txid == fund));
@@ -1626,7 +1672,7 @@ mod tests {
         let b = balances_of(&scan, 0);
         assert!(b.available >= 1_000_000, "available {}", b.available);
         let map = own_script_map(&seed, net, 0, 0).expect("map");
-        let page = activity(&rpc, &scan.txids, &map, 20, &dir).expect("activity");
+        let page = activity(&rpc, &scan.txids, &map, 20, scan.tip, &dir).expect("activity");
         assert!(page.rows.iter().any(|r| r.txid == fund && r.category == "receive"));
         // Send part of it back to the pool node address.
         let dest = "n2dQr43hTDtDx5XwKnwozN7un4ZbpFzESc";
