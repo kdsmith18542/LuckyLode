@@ -542,9 +542,10 @@ fn stats_json<P: TemplateProvider + 'static>(
     }
     if let Some(shared) = &ctx.luckynode {
         let now = now_secs();
-        let reg = shared.registry.lock().expect("registry");
-        let active = reg.active(now, shared.cfg.hb_window);
-        let nodes: Vec<serde_json::Value> = reg
+        let core = shared.core.lock().expect("luckynode");
+        let active = core.registry.active(now, shared.cfg.hb_window);
+        let nodes: Vec<serde_json::Value> = core
+            .registry
             .all_nodes()
             .iter()
             .map(|n| {
@@ -555,10 +556,8 @@ fn stats_json<P: TemplateProvider + 'static>(
                 })
             })
             .collect();
-        let draws: Vec<serde_json::Value> = shared
+        let draws: Vec<serde_json::Value> = core
             .recent_draws
-            .lock()
-            .expect("draws")
             .iter()
             .rev()
             .map(|d| {
@@ -571,10 +570,8 @@ fn stats_json<P: TemplateProvider + 'static>(
             .collect();
         // Only events still awaiting their first cosign count as pending;
         // cosigned entries stay in the list as evidence.
-        let pending: usize = shared
+        let pending: usize = core
             .pending
-            .lock()
-            .expect("pending")
             .iter()
             .filter(|p| p.cosigns.is_empty())
             .count();
@@ -1225,6 +1222,11 @@ fn http_serve<P: TemplateProvider + 'static>(
         Arc::new(std::sync::atomic::AtomicUsize::new(0));
     for s in listener.incoming().flatten() {
         if active.load(std::sync::atomic::Ordering::SeqCst) >= 64 {
+            // Loud: the one time this fired in production (2026-10-19)
+            // every API route was already dead — the counter never drains
+            // when handler threads wedge, so log it instead of failing
+            // silently into per-client 503s.
+            eprintln!("http: connection cap hit, 503 for peer {}", s.peer_addr().map(|a| a.to_string()).unwrap_or_else(|_| "?".to_string()));
             let mut s = s;
             let _ = writeln!(
                 s,
@@ -1393,12 +1395,13 @@ fn load_state<P: TemplateProvider + 'static>(
             let (mut draws, mut pend) = (0usize, 0usize);
             let mut lnodes = 0usize;
             if let Some(ln) = luckynode {
+                let mut core = ln.core.lock().expect("luckynode");
                 draws = st.recent_draws.len();
                 pend = st.pending.len();
                 lnodes = st.luckynodes.len();
-                *ln.recent_draws.lock().expect("draws") = st.recent_draws.into();
-                *ln.pending.lock().expect("pending") = st.pending;
-                ln.registry.lock().expect("registry").restore(st.luckynodes);
+                core.recent_draws = st.recent_draws.into();
+                core.pending = st.pending;
+                core.registry.restore(st.luckynodes);
             }
             println!(
                 "state loaded from {}: {n} blocks, owed {owed}, paid {paid}, fees {fees}, league {} {}{}",
@@ -1442,17 +1445,14 @@ fn save_state<P: TemplateProvider + 'static>(
     path: &Path,
 ) {
     let (recent_draws, pending, luckynodes) = match luckynode {
-        Some(ln) => (
-            ln.recent_draws.lock().expect("draws").iter().cloned().collect(),
-            ln.pending.lock().expect("pending").clone(),
-            ln.registry
-                .lock()
-                .expect("registry")
-                .all_nodes()
-                .iter()
-                .map(|n| (*n).clone())
-                .collect(),
-        ),
+        Some(ln) => {
+            let core = ln.core.lock().expect("luckynode");
+            (
+                core.recent_draws.iter().cloned().collect(),
+                core.pending.clone(),
+                core.registry.all_nodes().iter().map(|n| (*n).clone()).collect(),
+            )
+        }
         None => (Vec::new(), Vec::new(), Vec::new()),
     };
     let st = PoolState {
@@ -1720,11 +1720,24 @@ struct DrawRecord {
     cosigns: u32,
 }
 
+/// Pool-side luckynode state behind ONE mutex (shared by the HTTP
+/// threads and the draw loop). Single lock by design: the registry,
+/// pending cosigns and draw records are always read/written together,
+/// and three fine-grained mutexes deadlocked the pool in production
+/// (2026-10-19: every HTTP thread parked in lock_contended, all API
+/// routes 503 — ABBA between the cosign path's pending→registry→draws
+/// order and the list path's registry→draws order). Contention is
+/// trivial (a few ops/sec), so one coarse lock is strictly correct.
+/// Never hold it across RPC (snapshot IDs first, re-lock to write).
+struct LuckynodeCore {
+    registry: lm_luckynode::Registry,
+    pending: Vec<PendingCosign>,
+    recent_draws: VecDeque<DrawRecord>,
+}
+
 /// Pool-side luckynode state, shared by the HTTP thread and the draw loop.
 struct LuckynodeShared {
-    registry: Mutex<lm_luckynode::Registry>,
-    pending: Mutex<Vec<PendingCosign>>,
-    recent_draws: Mutex<VecDeque<DrawRecord>>,
+    core: Mutex<LuckynodeCore>,
     /// Highest epoch already drawn (None = none yet). Startup marks
     /// already-completed epochs as drawn (no backfill); only new
     /// boundaries draw — restart-safe without persistence.
@@ -1734,6 +1747,16 @@ struct LuckynodeShared {
     /// First-tick init done (last_epoch + snapshot set once).
     init_done: Mutex<bool>,
     cfg: LuckynodeCfg,
+}
+
+/// One node's bond inputs, snapshotted under the luckynode lock so the
+/// blocking RPC checks run unlocked (never hold luckynode state over
+/// network I/O).
+struct BondCheck {
+    id: String,
+    addr: String,
+    owned: bool,
+    bond_utxo: Option<(String, u32)>,
 }
 
 /// Bond balance for one address (base units). Preferred: the node's
@@ -1792,37 +1815,48 @@ fn luckynode_tick<P: TemplateProvider + 'static>(
     }
     // Bond verification (pool-side; the node holds the funds). Per
     // address via the address index (falls back to wallet listunspent).
-    {
-        let mut reg = shared.registry.lock().expect("registry");
-        let ids: Vec<(String, String)> = reg
+    // Snapshot under the lock, release it across the blocking RPC calls,
+    // re-lock only to stamp verdicts (never hold luckynode state over
+    // network I/O — that stalled every HTTP thread in production once).
+    let checks: Vec<BondCheck> = {
+        let core = shared.core.lock().expect("luckynode");
+        core.registry
             .all_nodes()
             .iter()
-            .map(|n| (n.id.clone(), n.address.clone()))
-            .collect();
-        for (id, addr) in ids {
-            // Bond verdict: funded AND ownership-proven at registration.
-            let owned = reg.get(&id).map(|n| n.owned).unwrap_or(false);
-            let mut ok = bond_balance(rpc, &addr) >= cfg.bond && owned;
-            // Locked-collateral check: a designated bond UTXO must still
-            // be unspent — spending it evicts immediately, even if the
-            // address balance was topped up elsewhere. gettxout needs no
-            // address index, so third-party nodes can bond too.
-            if let Some((txid, vout)) = reg
-                .get(&id)
-                .and_then(|n| n.bond_utxo.clone())
-            {
-                let spent = match rpc.call(
-                    "gettxout",
-                    serde_json::json!([txid, vout, true]),
-                ) {
-                    Ok(v) => v.is_null(),
-                    Err(_) => true, // fail closed on RPC trouble
-                };
-                if spent {
-                    ok = false;
-                }
+            .map(|n| BondCheck {
+                id: n.id.clone(),
+                addr: n.address.clone(),
+                owned: n.owned,
+                bond_utxo: n.bond_utxo.clone(),
+            })
+            .collect()
+    };
+    let mut verdicts: Vec<(String, bool)> = Vec::with_capacity(checks.len());
+    for c in checks {
+        // Bond verdict: funded AND ownership-proven at registration.
+        let mut ok = bond_balance(rpc, &c.addr) >= cfg.bond && c.owned;
+        // Locked-collateral check: a designated bond UTXO must still
+        // be unspent — spending it evicts immediately, even if the
+        // address balance was topped up elsewhere. gettxout needs no
+        // address index, so third-party nodes can bond too.
+        if let Some((txid, vout)) = c.bond_utxo {
+            let spent = match rpc.call(
+                "gettxout",
+                serde_json::json!([txid, vout, true]),
+            ) {
+                Ok(v) => v.is_null(),
+                Err(_) => true, // fail closed on RPC trouble
+            };
+            if spent {
+                ok = false;
             }
-            reg.set_bond(&id, ok, now);
+        }
+        verdicts.push((c.id, ok));
+    }
+    {
+        let mut core = shared.core.lock().expect("luckynode");
+        for (id, ok) in verdicts {
+            core.registry.set_bond(&id, ok, now);
         }
     }
     // Epoch draws: epoch E completes at height (E+1)*epoch (seeded by the
@@ -1853,13 +1887,13 @@ fn luckynode_tick<P: TemplateProvider + 'static>(
             // Reconcile state written before the `cosigns` field existed:
             // stamp draw records from already-cosigned pending entries.
             {
-                let pend = shared.pending.lock().expect("pending");
-                let mut draws = shared.recent_draws.lock().expect("draws");
-                for p in pend.iter() {
+                let mut guard = shared.core.lock().expect("luckynode");
+                let LuckynodeCore { pending, recent_draws, .. } = &mut *guard;
+                for p in pending.iter() {
                     if p.cosigns.is_empty() {
                         continue;
                     }
-                    if let Some(d) = draws
+                    if let Some(d) = recent_draws
                         .iter_mut()
                         .find(|d| format!("draw-{}", d.epoch) == p.draw_id)
                     {
@@ -1901,8 +1935,8 @@ fn luckynode_tick<P: TemplateProvider + 'static>(
             .unwrap_or(0.0);
         if spendable > 0.0 {
             let held: Vec<(String, u64, u64, String)> = {
-                let draws = shared.recent_draws.lock().expect("draws");
-                draws
+                let core = shared.core.lock().expect("luckynode");
+                core.recent_draws
                     .iter()
                     .filter(|d| {
                         d.txid.starts_with("held:") && d.budget > 0 && !d.winner.is_empty()
@@ -1918,8 +1952,9 @@ fn luckynode_tick<P: TemplateProvider + 'static>(
                 let addr = if !saved_addr.is_empty() {
                     saved_addr
                 } else {
-                    let reg = shared.registry.lock().expect("registry");
-                    reg.all_nodes()
+                    let core = shared.core.lock().expect("luckynode");
+                    core.registry
+                        .all_nodes()
                         .iter()
                         .find(|n| n.id == winner_id)
                         .map(|n| n.address.clone())
@@ -1949,16 +1984,16 @@ fn luckynode_tick<P: TemplateProvider + 'static>(
                                 h.pop_front();
                             }
                         }
-                        let mut draws = shared.recent_draws.lock().expect("draws");
-                        for d in draws.iter_mut() {
+                        let mut core = shared.core.lock().expect("luckynode");
+                        for d in core.recent_draws.iter_mut() {
                             if d.epoch == epoch && d.txid.starts_with("held:") {
                                 d.txid = t.clone();
                             }
                         }
                     }
                     Err(e) => {
-                        let mut draws = shared.recent_draws.lock().expect("draws");
-                        for d in draws.iter_mut() {
+                        let mut core = shared.core.lock().expect("luckynode");
+                        for d in core.recent_draws.iter_mut() {
                             if d.epoch == epoch && d.txid.starts_with("held:") {
                                 d.txid = format!("held: {e}");
                             }
@@ -2011,14 +2046,14 @@ fn run_draw<P: TemplateProvider + 'static>(
         }
     };
     let (entrants, winner_addr) = {
-        let reg = shared.registry.lock().expect("registry");
-        let bonded = reg.draw_eligibles(now, cfg.hb_window);
+        let core = shared.core.lock().expect("luckynode");
+        let bonded = core.registry.draw_eligibles(now, cfg.hb_window);
         let ent: Vec<(String, u64)> = bonded
             .iter()
             .map(|n| {
                 (
                     n.id.clone(),
-                    lm_luckynode::tenure_weight_millis(reg.tenure_secs(n, now)),
+                    lm_luckynode::tenure_weight_millis(core.registry.tenure_secs(n, now)),
                 )
             })
             .collect();
@@ -2093,8 +2128,8 @@ fn run_draw<P: TemplateProvider + 'static>(
         println!("luckynode: draw {e} @height {height}: {txid}");
     }
     {
-        let mut draws = shared.recent_draws.lock().expect("draws");
-        draws.push_back(DrawRecord {
+        let mut core = shared.core.lock().expect("luckynode");
+        core.recent_draws.push_back(DrawRecord {
             epoch: e,
             height,
             seed_hash: seed_h.clone(),
@@ -2105,15 +2140,12 @@ fn run_draw<P: TemplateProvider + 'static>(
             time: now,
             cosigns: 0,
         });
-        while draws.len() > 20 {
-            draws.pop_front();
+        while core.recent_draws.len() > 20 {
+            core.recent_draws.pop_front();
         }
-    }
-    // Post for cosigning (notarization duty): luckynodes cosign the
-    // result; anyone can recompute the draw from the seed + registry.
-    {
-        let mut pend = shared.pending.lock().expect("pending");
-        pend.push(PendingCosign {
+        // Post for cosigning (notarization duty): luckynodes cosign the
+        // result; anyone can recompute the draw from the seed + registry.
+        core.pending.push(PendingCosign {
             draw_id: draw_id.clone(),
             kind: "luckynode-draw".to_string(),
             height,
@@ -2122,8 +2154,8 @@ fn run_draw<P: TemplateProvider + 'static>(
             cosigns: Vec::new(),
             created_at: now,
         });
-        while pend.len() > 20 {
-            pend.remove(0);
+        while core.pending.len() > 20 {
+            core.pending.remove(0);
         }
     }
 }
@@ -2165,8 +2197,9 @@ fn luckynode_list(ctx: &HttpCtx) -> String {
         return luckynode_disabled();
     };
     let now = now_secs();
-    let reg = shared.registry.lock().expect("registry");
-    let nodes: Vec<serde_json::Value> = reg
+    let core = shared.core.lock().expect("luckynode");
+    let nodes: Vec<serde_json::Value> = core
+        .registry
         .all_nodes()
         .iter()
         .map(|n| {
@@ -2174,25 +2207,25 @@ fn luckynode_list(ctx: &HttpCtx) -> String {
                 "id": n.id, "address": n.address,
                 "heartbeats": n.heartbeats, "last_heartbeat": n.last_heartbeat,
                 "bond_ok": n.bond_ok,
-                "tenure_secs": reg.tenure_secs(n, now),
-                "weight_millis": lm_luckynode::tenure_weight_millis(reg.tenure_secs(n, now)),
+                "tenure_secs": core.registry.tenure_secs(n, now),
+                "weight_millis": lm_luckynode::tenure_weight_millis(core.registry.tenure_secs(n, now)),
             })
         })
         .collect();
-    let active: Vec<String> = reg
+    let active: Vec<String> = core
+        .registry
         .active(now, shared.cfg.hb_window)
         .iter()
         .map(|n| n.id.clone())
         .collect();
-    let draws: Vec<serde_json::Value> = shared
+    let draws: Vec<serde_json::Value> = core
         .recent_draws
-        .lock()
-        .expect("draws")
         .iter()
         .map(|d| {
             serde_json::json!({
                 "epoch": d.epoch, "height": d.height, "seed": d.seed_hash,
                 "winner": d.winner, "budget": d.budget, "txid": d.txid, "time": d.time,
+                "cosigns": d.cosigns,
             })
         })
         .collect();
@@ -2210,8 +2243,9 @@ fn luckynode_pending(ctx: &HttpCtx) -> String {
     let Some(shared) = luckynode_shared(ctx) else {
         return luckynode_disabled();
     };
-    let pend = shared.pending.lock().expect("pending");
-    let list: Vec<serde_json::Value> = pend
+    let core = shared.core.lock().expect("luckynode");
+    let list: Vec<serde_json::Value> = core
+        .pending
         .iter()
         .map(|p| {
             serde_json::json!({
@@ -2281,9 +2315,10 @@ fn luckynode_register(ctx: &HttpCtx, body: &str) -> (bool, String) {
         return (false, serde_json::json!({"ok": false, "error": "payout address ownership not proven (sign the registration with the address's key)"}).to_string());
     }
     shared
-        .registry
+        .core
         .lock()
-        .expect("registry")
+        .expect("luckynode")
+        .registry
         .register(id, address, now, true);
     // Optional designated bond UTXO (locked collateral): "txid:vout".
     // The pool verifies it is unspent every tick; spending it evicts the
@@ -2292,13 +2327,14 @@ fn luckynode_register(ctx: &HttpCtx, body: &str) -> (bool, String) {
     if let Some(utxo) = v.get("bond_utxo").and_then(|x| x.as_str()) {
         if let Some((txid, vout)) = utxo.split_once(':') {
             if let Ok(vout) = vout.parse::<u32>() {
-                if !txid.is_empty() && txid.len() == 64 {
-                    bond_locked = shared
-                        .registry
-                        .lock()
-                        .expect("registry")
-                        .designate_bond(id, txid, vout);
-                }
+            if !txid.is_empty() && txid.len() == 64 {
+                bond_locked = shared
+                    .core
+                    .lock()
+                    .expect("luckynode")
+                    .registry
+                    .designate_bond(id, txid, vout);
+            }
             }
         }
         if !bond_locked {
@@ -2339,11 +2375,11 @@ fn luckynode_heartbeat(ctx: &HttpCtx, body: &str) -> (bool, String) {
     if !lm_luckynode::notarize::verify(&pk, &lm_luckynode::notarize::heartbeat_msg(id, ts), &sigb) {
         return (false, serde_json::json!({"ok": false, "error": "bad signature"}).to_string());
     }
-    let mut reg = shared.registry.lock().expect("registry");
-    if reg.get(id).is_none() {
+    let mut core = shared.core.lock().expect("luckynode");
+    if core.registry.get(id).is_none() {
         return (false, serde_json::json!({"ok": false, "error": "unknown node (register first)"}).to_string());
     }
-    reg.heartbeat(id, now, shared.cfg.reset_gap);
+    core.registry.heartbeat(id, now, shared.cfg.reset_gap);
     (true, serde_json::json!({"ok": true}).to_string())
 }
 
@@ -2362,12 +2398,16 @@ fn luckynode_notarize(ctx: &HttpCtx, body: &str) -> (bool, String) {
     if draw_id.is_empty() || id.is_empty() || sig.is_empty() {
         return (false, serde_json::json!({"ok": false, "error": "need draw_id, id, sig"}).to_string());
     }
-    let mut pend = shared.pending.lock().expect("pending");
-    let Some(p) = pend.iter_mut().find(|p| p.draw_id == draw_id) else {
+    // Single lock for the whole cosign: the pending entry, the
+    // registry lookup and the draw-record stamp used to take three
+    // nested mutexes (pending→registry→draws) while the list path took
+    // registry→draws — that ABBA wedged every HTTP thread in production.
+    let mut guard = shared.core.lock().expect("luckynode");
+    let LuckynodeCore { registry, pending, recent_draws } = &mut *guard;
+    let Some(p) = pending.iter_mut().find(|p| p.draw_id == draw_id) else {
         return (false, serde_json::json!({"ok": false, "error": "unknown draw"}).to_string());
     };
-    let reg = shared.registry.lock().expect("registry");
-    let Some(node) = reg.get(id) else {
+    let Some(node) = registry.get(id) else {
         return (false, serde_json::json!({"ok": false, "error": "unknown node"}).to_string());
     };
     let pk = match lm_luckynode::notarize::unhex(&node.id) {
@@ -2387,20 +2427,18 @@ fn luckynode_notarize(ctx: &HttpCtx, body: &str) -> (bool, String) {
     }
     // Stamp the draw record: the notarization count must outlive the
     // pending list (which is capped) and show up in the draw table.
+    let want = p.draw_id.clone();
+    let n = p.cosigns.len() as u32;
+    if let Some(d) = recent_draws
+        .iter_mut()
+        .find(|d| format!("draw-{}", d.epoch) == want)
     {
-        let want = p.draw_id.clone();
-        let n = p.cosigns.len() as u32;
-        let mut draws = shared.recent_draws.lock().expect("draws");
-        if let Some(d) = draws
-            .iter_mut()
-            .find(|d| format!("draw-{}", d.epoch) == want)
-        {
-            d.cosigns = n;
-        }
+        d.cosigns = n;
     }
+    let total = p.cosigns.len();
     (
         true,
-        serde_json::json!({"ok": true, "cosigns": p.cosigns.len()}).to_string(),
+        serde_json::json!({"ok": true, "cosigns": total}).to_string(),
     )
 }
 
@@ -3170,9 +3208,11 @@ fn main() -> std::process::ExitCode {
         // into it.
         let luckynode_shared: Option<Arc<LuckynodeShared>> = if luckynode {
             Some(Arc::new(LuckynodeShared {
-                registry: Mutex::new(lm_luckynode::Registry::new()),
-                pending: Mutex::new(Vec::new()),
-                recent_draws: Mutex::new(VecDeque::new()),
+                core: Mutex::new(LuckynodeCore {
+                    registry: lm_luckynode::Registry::new(),
+                    pending: Vec::new(),
+                    recent_draws: VecDeque::new(),
+                }),
                 last_epoch: Mutex::new(None),
                 league_snapshot: Mutex::new(0),
                 init_done: Mutex::new(false),
@@ -3418,6 +3458,137 @@ mod tests {
         assert_eq!(coins_to_base(&serde_json::json!("1.99047620")), 199_047_620);
         assert_eq!(coins_to_base(&serde_json::json!(-1.0)), 0);
         assert_eq!(coins_to_base(&serde_json::json!(null)), 0);
+    }
+
+    #[test]
+    fn luckynode_routes_share_one_lock_without_deadlock() {
+        // Regression: the registry/pending/draws triple mutex deadlocked
+        // production (all HTTP threads parked, every route 503). They now
+        // live behind a single lock, so no lock order exists to invert —
+        // this drives heartbeat + notarize + list + pending through the
+        // real handlers, then hammers list/notarize from threads with a
+        // bounded join (a re-split would hang CI instead of passing).
+        use lm_luckynode::notarize;
+        let secret = [7u8; 32];
+        // Pinned ed25519 pubkey for the fixed test secret (libsodium
+        // crypto_sign_seed_keypair; signatures are deterministic, so all
+        // vectors below are stable).
+        let id = "ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c".to_string();
+        let shared = Arc::new(LuckynodeShared {
+            core: Mutex::new(LuckynodeCore {
+                registry: lm_luckynode::Registry::new(),
+                pending: vec![PendingCosign {
+                    draw_id: "draw-7".to_string(),
+                    kind: "luckynode-draw".to_string(),
+                    height: 21,
+                    block_hash: "00".repeat(32),
+                    detail: "epoch 7".to_string(),
+                    cosigns: Vec::new(),
+                    created_at: 1,
+                }],
+                recent_draws: VecDeque::from([DrawRecord {
+                    epoch: 7,
+                    height: 21,
+                    seed_hash: "00".repeat(32),
+                    winner: id.clone(),
+                    winner_addr: "mx5tDPWsWxhC7EVkJXGCR14dUoMdps8fLy".to_string(),
+                    budget: 100,
+                    txid: "held: empty".to_string(),
+                    time: 1,
+                    cosigns: 0,
+                }]),
+            }),
+            last_epoch: Mutex::new(None),
+            league_snapshot: Mutex::new(0),
+            init_done: Mutex::new(false),
+            cfg: LuckynodeCfg {
+                bond: 0,
+                epoch: 3,
+                slice_bps: 1000,
+                hb_window: 3600,
+                reset_gap: 3600,
+                exec: false,
+                interval: 60,
+            },
+        });
+        {
+            let mut guard = shared.core.lock().expect("luckynode");
+            guard.registry.register(&id, "mx5tDPWsWxhC7EVkJXGCR14dUoMdps8fLy", 1000, true);
+        }
+        let ctx = HttpCtx {
+            node: None,
+            mode: "mock".to_string(),
+            exec: false,
+            threshold: 0,
+            history: Arc::new(Mutex::new(VecDeque::new())),
+            luckynode: Some(Arc::clone(&shared)),
+            network: "test".to_string(),
+        };
+        let ts = now_secs();
+        let hb_sig = notarize::hex(
+            &notarize::sign(&secret, &notarize::heartbeat_msg(&id, ts)).expect("sign"),
+        );
+        let (ok, _) = luckynode_heartbeat(
+            &ctx,
+            &serde_json::json!({"id": id, "timestamp": ts, "sig": hb_sig}).to_string(),
+        );
+        assert!(ok, "heartbeat must accept a valid signature");
+        let co_sig = notarize::hex(
+            &notarize::sign(&secret, &notarize::cosign_msg("draw-7", &"00".repeat(32)))
+                .expect("sign"),
+        );
+        let (ok, body) = luckynode_notarize(
+            &ctx,
+            &serde_json::json!({"draw_id": "draw-7", "id": id, "sig": co_sig}).to_string(),
+        );
+        assert!(ok, "notarize must accept a valid cosign: {body}");
+        assert_eq!(serde_json::from_str::<serde_json::Value>(&body).unwrap()["cosigns"], 1);
+        // Duplicate cosign is idempotent, not double-counted.
+        let (ok, _) = luckynode_notarize(
+            &ctx,
+            &serde_json::json!({"draw_id": "draw-7", "id": id, "sig": co_sig}).to_string(),
+        );
+        assert!(ok);
+        let list: serde_json::Value =
+            serde_json::from_str(&luckynode_list(&ctx)).expect("list json");
+        assert_eq!(list["nodes"].as_array().map(|n| n.len()), Some(1));
+        assert_eq!(list["recent_draws"][0]["cosigns"], 1, "stamp must land on the draw");
+        let pend: serde_json::Value =
+            serde_json::from_str(&luckynode_pending(&ctx)).expect("pending json");
+        assert_eq!(pend.as_array().map(|p| p.len()), Some(1));
+        // Concurrent hammering across the same routes (bounded join: a
+        // reintroduced lock order would hang, and the timeout fails loud
+        // instead of wedging CI forever).
+        let (tx, rx) = std::sync::mpsc::channel();
+        for _ in 0..8 {
+            let tx = tx.clone();
+            let ctx2 = HttpCtx {
+                node: None,
+                mode: "mock".to_string(),
+                exec: false,
+                threshold: 0,
+                history: Arc::new(Mutex::new(VecDeque::new())),
+                luckynode: Some(Arc::clone(&shared)),
+                network: "test".to_string(),
+            };
+            let (id2, sig2) = (id.clone(), co_sig.clone());
+            std::thread::spawn(move || {
+                for _ in 0..50 {
+                    let _ = luckynode_list(&ctx2);
+                    let _ = luckynode_pending(&ctx2);
+                    let _ = luckynode_notarize(
+                        &ctx2,
+                        &serde_json::json!({"draw_id": "draw-7", "id": id2, "sig": sig2})
+                            .to_string(),
+                    );
+                }
+                let _ = tx.send(());
+            });
+        }
+        drop(tx);
+        for _ in 0..8 {
+            rx.recv_timeout(std::time::Duration::from_secs(30)).expect("threads must finish: lock deadlock?");
+        }
     }
 
     #[test]
