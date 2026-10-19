@@ -17,6 +17,13 @@ use std::net::TcpStream;
 pub struct Indexer {
     db: Connection,
     rpc: RpcClient,
+    /// Optional price feed (JSON URL) for the market page. None = no
+    /// price source; the market view then shows supply/liquidity only
+    /// and says so plainly rather than inventing a price.
+    price_url: Option<String>,
+    price_source: Option<String>,
+    /// Cached price feed result: (price_per_coin, fetched_at, source).
+    price_cache: Option<(f64, i64, String)>,
 }
 
 #[derive(Debug, Default)]
@@ -107,7 +114,12 @@ fn schema(db: &Connection) -> rusqlite::Result<()> {
             synced_at INTEGER NOT NULL,
             PRIMARY KEY(class, rank));
           CREATE TABLE IF NOT EXISTS mempool_seen(
-            txid TEXT PRIMARY KEY, first_seen INTEGER NOT NULL);",
+            txid TEXT PRIMARY KEY, first_seen INTEGER NOT NULL);
+          -- Per-tx fee/weight facts, resolved from the node's raw hex (the
+          -- fork's verbose tx format carries no vsize for confirmed txs).
+          CREATE TABLE IF NOT EXISTS tx_facts(
+            txid TEXT PRIMARY KEY, size INTEGER NOT NULL, fee INTEGER NOT NULL,
+            feerate REAL NOT NULL DEFAULT 0, height INTEGER NOT NULL DEFAULT 0);",
     )
 }
 
@@ -130,7 +142,25 @@ impl Indexer {
             "ALTER TABLE blocks ADD COLUMN merkleroot TEXT NOT NULL DEFAULT ''",
             [],
         );
-        let mut this = Self { db, rpc };
+        // Migration: block `chainwork` (hex) — the cumulative work the
+        // node's own hashrate estimator differentiates (2026-10-19 charts).
+        let _ = db.execute(
+            "ALTER TABLE blocks ADD COLUMN chainwork TEXT NOT NULL DEFAULT ''",
+            [],
+        );
+        // Migration: block `fees` (sats) — total fees collected, so daily
+        // aggregates don't need the outs join on every chart query.
+        let _ = db.execute(
+            "ALTER TABLE blocks ADD COLUMN fees INTEGER NOT NULL DEFAULT 0",
+            [],
+        );
+        let mut this = Self {
+            db,
+            rpc,
+            price_url: None,
+            price_source: None,
+            price_cache: None,
+        };
         // Backfill the exact PoS marker for indexed rows (cheap header
         // call each — the whole testnet chain is a few hundred blocks).
         // Rows already marked stay untouched.
@@ -138,7 +168,27 @@ impl Indexer {
         // Backfill size/merkleroot the same way (one getblock each, skipped
         // silently when the node is unreachable — the columns just stay 0).
         this.backfill_block_meta();
+        // Backfill chainwork the same way (getblock carries it).
+        this.backfill_chainwork();
+        // Backfill per-block fee totals for rows indexed before the
+        // column existed. Index-only (no node call): a block with no
+        // non-coinbase tx has no fees by definition, so only blocks
+        // that contain spends are recomputed.
+        this.backfill_block_fees();
+        // Backfill exact tx sizes/rates for recent spends (one raw-tx
+        // call each, bounded so a long chain never stalls startup).
+        this.backfill_tx_facts(2000);
         Ok(this)
+    }
+
+    /// Configure an optional price feed for the market page. The feed is
+    /// a JSON URL returning `{"price": <usd per coin>, "source": "..."}`.
+    /// With no feed configured the market view reports liquidity/supply
+    /// only — it never invents a price.
+    pub fn set_price_feed(&mut self, url: Option<String>, source: Option<String>) {
+        self.price_url = url.filter(|u| !u.trim().is_empty());
+        self.price_source = source;
+        self.price_cache = None;
     }
 
     /// Fill `pos` for rows indexed before the column existed, newest
@@ -194,6 +244,107 @@ impl Indexer {
                     rusqlite::params![size, root, h],
                 );
             }
+        }
+    }
+
+    /// Fill `chainwork` for rows indexed before the column existed. The
+    /// node returns the cumulative work hex in every `getblock`; the
+    /// hashrate chart differentiates it exactly the way the node's own
+    /// `getnetworkhashps` does. Empty string = unknown (node unreachable).
+    fn backfill_chainwork(&mut self) {
+        let rows: Vec<(i64, String)> = self
+            .db
+            .prepare("SELECT height, hash FROM blocks WHERE chainwork = '' ORDER BY height DESC LIMIT 5000")
+            .and_then(|mut st| {
+                st.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+                    .and_then(|it| it.collect::<Result<Vec<_>, _>>())
+            })
+            .unwrap_or_default();
+        for (h, hash) in rows {
+            let Ok(b) = self.rpc.call("getblock", serde_json::json!([hash, 1])) else { continue };
+            let cw = b.get("chainwork").and_then(|v| v.as_str()).unwrap_or("");
+            if !cw.is_empty() {
+                let _ = self.db.execute(
+                    "UPDATE blocks SET chainwork = ?1 WHERE height = ?2",
+                    rusqlite::params![cw, h],
+                );
+            }
+        }
+    }
+
+    /// Recompute per-block fee totals for rows indexed before the
+    /// `fees` column existed. Index-only — no node call. Only blocks
+    /// holding non-coinbase transactions can have fees, so the rest
+    /// are left alone.
+    fn backfill_block_fees(&mut self) {
+        let heights: Vec<i64> = self
+            .db
+            .prepare(
+                "SELECT DISTINCT height FROM txs WHERE coinbase = 0
+                 AND height IN (SELECT height FROM blocks WHERE fees = 0)
+                 ORDER BY height DESC LIMIT 20000",
+            )
+            .and_then(|mut st| {
+                st.query_map([], |r| r.get(0)).and_then(|it| it.collect::<Result<Vec<_>, _>>())
+            })
+            .unwrap_or_default();
+        for h in heights {
+            let fees: i64 = self
+                .db
+                .query_row(
+                    "SELECT COALESCE((SELECT SUM(o2.value) FROM outs o2 WHERE o2.spent_by IN (SELECT txid FROM txs WHERE height = ?1)),0)
+                          - COALESCE((SELECT SUM(o1.value) FROM outs o1 JOIN txs t ON t.txid = o1.txid WHERE t.height = ?1 AND t.coinbase = 0),0)",
+                    [h],
+                    |r| r.get(0),
+                )
+                .unwrap_or(0);
+            let _ = self.db.execute(
+                "UPDATE blocks SET fees = ?1 WHERE height = ?2",
+                params![fees, h],
+            );
+        }
+    }
+
+    /// Backfill exact sizes + fee rates for recent spends that were
+    /// indexed before the facts table existed. One raw-tx call per tx,
+    /// newest first, bounded by `limit`.
+    fn backfill_tx_facts(&mut self, limit: i64) {
+        let txids: Vec<String> = self
+            .db
+            .prepare(
+                "SELECT t.txid FROM txs t
+                 WHERE t.coinbase = 0
+                 AND t.txid NOT IN (SELECT txid FROM tx_facts)
+                 ORDER BY t.height DESC LIMIT ?1",
+            )
+            .and_then(|mut st| {
+                st.query_map([limit], |r| r.get(0)).and_then(|it| it.collect::<Result<Vec<_>, _>>())
+            })
+            .unwrap_or_default();
+        for txid in txids {
+            let size = self.tx_size(&txid);
+            if size <= 0 {
+                continue;
+            }
+            let fee: i64 = self
+                .db
+                .query_row(
+                    "SELECT COALESCE((SELECT SUM(value) FROM outs WHERE spent_by = ?1),0)
+                          - COALESCE((SELECT SUM(value) FROM outs WHERE txid = ?1),0)",
+                    [&txid],
+                    |r| r.get(0),
+                )
+                .unwrap_or(0);
+            let height: i64 = self
+                .db
+                .query_row("SELECT height FROM txs WHERE txid = ?1", [&txid], |r| r.get(0))
+                .unwrap_or(0);
+            let feerate = fee as f64 / size as f64;
+            let _ = self.db.execute(
+                "INSERT INTO tx_facts(txid, size, fee, feerate, height) VALUES (?1, ?2, ?3, ?4, ?5)
+                 ON CONFLICT(txid) DO UPDATE SET size = ?2, fee = ?3, feerate = ?4, height = ?5",
+                params![txid, size, fee, feerate, height],
+            );
         }
     }
 
@@ -268,15 +419,18 @@ impl Indexer {
         let pos = b.get("pos").and_then(|v| v.as_bool()).unwrap_or(false) as i64;
         let size = b.get("size").and_then(|v| v.as_i64()).unwrap_or(0);
         let merkleroot = b.get("merkleroot").and_then(|v| v.as_str()).unwrap_or("");
+        // Cumulative work hex — the hashrate chart differentiates this
+        // the same way the node's `getnetworkhashps` does.
+        let chainwork = b.get("chainwork").and_then(|v| v.as_str()).unwrap_or("");
 
         let txn = self
             .db
             .transaction()
             .map_err(|e| format!("index txn: {e}"))?;
         txn.execute(
-            "INSERT INTO blocks(height, hash, time, ntx, difficulty, reserve, pot, drought, pos, size, merkleroot)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
-            params![height as i64, hash, time, txs.len() as i64, difficulty, reserve, pot, drought, pos, size, merkleroot],
+            "INSERT INTO blocks(height, hash, time, ntx, difficulty, reserve, pot, drought, pos, size, merkleroot, chainwork)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            params![height as i64, hash, time, txs.len() as i64, difficulty, reserve, pot, drought, pos, size, merkleroot, chainwork],
         )
         .map_err(|e| format!("index block {height}: {e}"))?;
         for t in txs {
@@ -335,11 +489,92 @@ impl Indexer {
             }
         }
         txn.commit().map_err(|e| format!("index commit {height}: {e}"))?;
+        // Per-tx facts (exact size + fee rate) and the block's fee total.
+        // Best-effort: a node that cannot serve the raw tx just leaves
+        // size at 0 (the UI then shows "–" rather than a wrong number).
+        self.record_block_facts(height, txs);
         Ok(())
+    }
+
+    /// Resolve exact serialized size + fee rate for a block's
+    /// transactions, and total the block's fees.
+    ///
+    /// The fork's verbose tx JSON carries no `size`/`vsize` for confirmed
+    /// txs (its `getrawtransaction` verbose form omits them), so the
+    /// exact byte size comes from the raw hex — `getrawtransaction <txid>`
+    /// with verbosity 0 — which the node serves for confirmed txs
+    /// (the fork keeps a tx index; verified against old confirmed
+    /// heights). Fee rate is then fee ÷ size, in sat/vB.
+    ///
+    /// This chain has no segwit, so serialized size == virtual size.
+    fn record_block_facts(&mut self, height: u64, txs: &[serde_json::Value]) {
+        // Total fees for the block: spent inputs minus non-coinbase
+        // outputs (index-only, exact — the same definition the block page
+        // uses).
+        let block_fees: i64 = self
+            .db
+            .query_row(
+                "SELECT COALESCE((SELECT SUM(o2.value) FROM outs o2 WHERE o2.spent_by IN (SELECT txid FROM txs WHERE height = ?1)),0)
+                      - COALESCE((SELECT SUM(o1.value) FROM outs o1 JOIN txs t ON t.txid = o1.txid WHERE t.height = ?1 AND t.coinbase = 0),0)",
+                [height as i64],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+        let _ = self.db.execute(
+            "UPDATE blocks SET fees = ?1 WHERE height = ?2",
+            params![block_fees, height as i64],
+        );
+
+        for t in txs {
+            let Some(txid) = t.get("txid").and_then(|v| v.as_str()) else { continue };
+            let vin = t.get("vin").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+            if vin.first().map(|v| v.get("coinbase").is_some()).unwrap_or(false) {
+                // Coinbase: no fee by definition. Record its size only if
+                // it is cheap to get; the fee rate is not meaningful.
+                continue;
+            }
+            let fee: i64 = self
+                .db
+                .query_row(
+                    "SELECT COALESCE((SELECT SUM(value) FROM outs WHERE spent_by = ?1),0)
+                          - COALESCE((SELECT SUM(value) FROM outs WHERE txid = ?1),0)",
+                    [txid],
+                    |r| r.get(0),
+                )
+                .unwrap_or(0);
+            let size = self.tx_size(txid);
+            if size <= 0 {
+                continue;
+            }
+            // sat/vB — fee is in sats, size in bytes.
+            let feerate = fee as f64 / size as f64;
+            let _ = self.db.execute(
+                "INSERT INTO tx_facts(txid, size, fee, feerate, height) VALUES (?1, ?2, ?3, ?4, ?5)
+                 ON CONFLICT(txid) DO UPDATE SET size = ?2, fee = ?3, feerate = ?4, height = ?5",
+                params![txid, size, fee, feerate, height as i64],
+            );
+        }
+    }
+
+    /// Exact serialized size of a transaction in bytes, from the node's
+    /// raw hex. 0 when unavailable (node unreachable, tx not indexed).
+    fn tx_size(&mut self, txid: &str) -> i64 {
+        if let Ok(v) = self.rpc.call("getrawtransaction", serde_json::json!([txid, 0])) {
+            if let Some(hex) = v.as_str() {
+                // Two hex chars per byte.
+                return (hex.len() / 2) as i64;
+            }
+        }
+        0
     }
 
     /// One sync pass: roll back any diverged tip, then index forward.
     pub fn sync(&mut self) -> Result<SyncReport, String> {
+        // Catch up any history the indexer predates (fee totals, exact
+        // tx sizes) — bounded per pass so a long chain fills in over
+        // several passes instead of stalling the sync.
+        self.backfill_block_fees();
+        self.backfill_tx_facts(200);
         let tip = self
             .rpc
             .call("getblockcount", serde_json::json!([]))?
@@ -599,11 +834,15 @@ impl Indexer {
             out_list.push(serde_json::json!({"n": n, "address": addr, "value": value, "spent": spent}));
         }
         let tip = self.height().unwrap_or(height);
+        // Exact size + fee rate when captured at index time.
+        let facts = self.tx_facts(txid);
         Ok(Some(serde_json::json!({
             "txid": txid, "height": height, "coinbase": coinbase == 1,
             "confirmations": tip - height + 1,
             "vin": ins, "vout": out_list,
             "fee": if coinbase == 1 { 0 } else { in_total - out_total },
+            "size": facts.map(|f| f.0),
+            "feerate": facts.map(|f| f.2),
         })))
     }
 
@@ -708,11 +947,19 @@ fn first_seen(addr: &str, db: &Connection) -> Option<i64> {
 impl Indexer {
     pub fn stats(&self) -> Result<serde_json::Value, String> {
         let tip = self.height()?;
+        // Circulating supply = sum of UNSPENT outputs. This chain burns
+        // transaction fees (the node's `GetNewCoins` subtracts them from
+        // the emitted total, and `coinsupply` reports the unspent sum),
+        // so the full coinbase sum overstates money in existence by the
+        // fees paid. The unspent sum matches the node's `coinsupply`
+        // exactly.
         let supply: i64 = self
             .db
-            .query_row("SELECT COALESCE(SUM(value),0) FROM outs WHERE coinbase = 1", [], |r| {
-                r.get(0)
-            })
+            .query_row(
+                "SELECT COALESCE(SUM(value),0) FROM outs WHERE spent_by IS NULL",
+                [],
+                |r| r.get(0),
+            )
             .map_err(|e| format!("supply: {e}"))?;
         let tip_row: Option<(String, i64, f64)> = self
             .db
@@ -839,9 +1086,307 @@ impl Indexer {
             out.push(serde_json::json!({
                 "txid": txid, "height": height, "time": time,
                 "coinbase": coinbase == 1, "value": outs, "fee": fee,
+                "size": self.tx_facts(&txid).map(|f| f.0),
+                "feerate": self.tx_facts(&txid).map(|f| f.2),
             }));
         }
         Ok(out)
+    }
+
+    /// Daily history series for the charts page: one bucket per UTC day
+    /// with blocks, transactions, fees, subsidy paid, average difficulty
+    /// and the day's average hashrate.
+    ///
+    /// Hashrate uses the node's own estimator: the work difference
+    /// (`chainwork`) over the time difference, matching
+    /// `getnetworkhashps`. The node's version is a windowed estimate over
+    /// the last N blocks; here the same quantity is computed per day from
+    /// the indexed chainwork, so the series is self-contained.
+    pub fn daily_series(&self, days: i64) -> Result<serde_json::Value, String> {
+        // Per-day block facts.
+        let mut st = self
+            .db
+            .prepare(
+                "SELECT (time / 86400) * 86400 AS day,
+                        COUNT(*), SUM(ntx), SUM(fees), AVG(difficulty),
+                        MIN(time), MAX(time), MIN(chainwork), MAX(chainwork)
+                 FROM blocks
+                 WHERE time > 0
+                 GROUP BY day
+                 ORDER BY day DESC
+                 LIMIT ?1",
+            )
+            .map_err(|e| format!("daily series: {e}"))?;
+        let rows = st
+            .query_map([days.max(1)], |r| {
+                Ok((
+                    r.get::<_, i64>(0)?, // day
+                    r.get::<_, i64>(1)?, // blocks
+                    r.get::<_, i64>(2)?, // txs
+                    r.get::<_, i64>(3)?, // fees
+                    r.get::<_, f64>(4)?, // avg difficulty
+                    r.get::<_, i64>(5)?, // first block time
+                    r.get::<_, i64>(6)?, // last block time
+                    r.get::<_, Option<String>>(7)?, // chainwork at first block
+                    r.get::<_, Option<String>>(8)?, // chainwork at last block
+                ))
+            })
+            .map_err(|e| format!("daily series: {e}"))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| format!("daily series: {e}"))?;
+        drop(st);
+
+        // Per-day supply minted (coinbase outputs) and unique addresses
+        // touched — both from the outs index.
+        let mut supply: std::collections::HashMap<i64, i64> = std::collections::HashMap::new();
+        {
+            let mut s2 = self
+                .db
+                .prepare(
+                    "SELECT (b.time / 86400) * 86400 AS day, COALESCE(SUM(o.value),0)
+                     FROM outs o JOIN txs t ON t.txid = o.txid JOIN blocks b ON b.height = t.height
+                     WHERE o.coinbase = 1
+                     GROUP BY day",
+                )
+                .map_err(|e| format!("daily supply: {e}"))?;
+            let r = s2
+                .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)))
+                .map_err(|e| format!("daily supply: {e}"))?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| format!("daily supply: {e}"))?;
+            for (d, v) in r {
+                supply.insert(d, v);
+            }
+        }
+        let mut addrs: std::collections::HashMap<i64, i64> = std::collections::HashMap::new();
+        {
+            let mut s3 = self
+                .db
+                .prepare(
+                    "SELECT (b.time / 86400) * 86400 AS day, COUNT(DISTINCT o.address)
+                     FROM outs o JOIN txs t ON t.txid = o.txid JOIN blocks b ON b.height = t.height
+                     WHERE o.address IS NOT NULL
+                     GROUP BY day",
+                )
+                .map_err(|e| format!("daily addrs: {e}"))?;
+            let r = s3
+                .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)))
+                .map_err(|e| format!("daily addrs: {e}"))?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| format!("daily addrs: {e}"))?;
+            for (d, v) in r {
+                addrs.insert(d, v);
+            }
+        }
+
+        let mut out = Vec::new();
+        // rows are newest-first; walk oldest-first for a cumulative
+        // supply curve.
+        let mut cumulative: i64 = 0;
+        let mut oldest_first: Vec<_> = rows.into_iter().collect();
+        oldest_first.reverse();
+        // Seed the cumulative total with everything before the window.
+        // Supply = coins in existence: coinbases minus the fees this
+        // chain burns (matches the node's `coinsupply`).
+        if let Some(first_day) = oldest_first.first().map(|r| r.0) {
+            let before: i64 = self
+                .db
+                .query_row(
+                    "SELECT COALESCE((SELECT SUM(o.value) FROM outs o JOIN txs t ON t.txid = o.txid
+                         JOIN blocks b ON b.height = t.height
+                         WHERE o.coinbase = 1 AND b.time < ?1),0)
+                       - COALESCE((SELECT SUM(fees) FROM blocks b WHERE b.time < ?1),0)",
+                    [first_day],
+                    |r| r.get(0),
+                )
+                .unwrap_or(0);
+            cumulative = before;
+        }
+        for (day, blocks, txs, fees, difficulty, t0, t1, cw0, cw1) in oldest_first {
+            let minted = supply.get(&day).copied().unwrap_or(0);
+            cumulative += minted - fees;
+            // Average hashrate for the day: work delta ÷ time delta, the
+            // same quantity `getnetworkhashps` reports.
+            let hashrate = match (cw0, cw1) {
+                (Some(a), Some(b)) if t1 > t0 => {
+                    match (u128::from_str_radix(a.trim_start_matches("0x"), 16), u128::from_str_radix(b.trim_start_matches("0x"), 16)) {
+                        (Ok(lo), Ok(hi)) if hi > lo => {
+                            Some((hi - lo) as f64 / (t1 - t0) as f64)
+                        }
+                        _ => None,
+                    }
+                }
+                _ => None,
+            };
+            out.push(serde_json::json!({
+                "day": day, "blocks": blocks, "txs": txs, "fees": fees,
+                "minted": minted, "supply": cumulative,
+                "difficulty": difficulty, "hashrate": hashrate,
+                "addresses": addrs.get(&day).copied().unwrap_or(0),
+                "first_time": t0, "last_time": t1,
+            }));
+        }
+        Ok(serde_json::json!({ "days": out }))
+    }
+
+    /// Chain-supply series (cumulative coins in existence) for the
+    /// market view. Uses the same definition as the node's `coinsupply`:
+    /// coins minted from coinbases, minus the transaction fees this chain
+    /// burns.
+    fn supply_curve(&self) -> Result<Vec<serde_json::Value>, String> {
+        let mut st = self
+            .db
+            .prepare(
+                "SELECT b.height, b.time,
+                        COALESCE((SELECT SUM(o.value) FROM outs o
+                             JOIN txs t ON t.txid = o.txid WHERE t.height = b.height AND o.coinbase = 1),0),
+                        COALESCE(b.fees,0)
+                 FROM blocks b ORDER BY b.height",
+            )
+            .map_err(|e| format!("supply curve: {e}"))?;
+        let rows = st
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, i64>(1)?,
+                    r.get::<_, i64>(2)?,
+                    r.get::<_, i64>(3)?,
+                ))
+            })
+            .map_err(|e| format!("supply curve: {e}"))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| format!("supply curve: {e}"))?;
+        let mut cum: i64 = 0;
+        let mut out = Vec::new();
+        for (h, t, minted, fees) in rows {
+            cum += minted - fees;
+            out.push(serde_json::json!({"height": h, "time": t, "supply": cum}));
+        }
+        Ok(out)
+    }
+
+    /// Market page data: supply, liquidity, activity, and — only when a
+    /// price feed is configured — price and market cap.
+    ///
+    /// With no exchange listing there is no price source, so the market
+    /// view reports what the chain itself proves (supply, mined per day,
+    /// active addresses, value moved) and says plainly that price is
+    /// unavailable rather than inventing one.
+    pub fn market(&mut self) -> Result<serde_json::Value, String> {
+        let tip = self.height()?;
+        // Circulating supply: coins in existence. This chain burns
+        // transaction fees, so the unspent-output total is the correct
+        // figure (it matches the node's `coinsupply` exactly); the raw
+        // coinbase sum would be higher by the fees paid.
+        let supply: i64 = self
+            .db
+            .query_row("SELECT COALESCE(SUM(value),0) FROM outs WHERE spent_by IS NULL", [], |r| r.get(0))
+            .map_err(|e| format!("market supply: {e}"))?;
+        // Value moved in the last 24h (non-coinbase outputs) and fees.
+        let day_ago = self
+            .db
+            .query_row("SELECT COALESCE(MAX(time),0) - 86400 FROM blocks", [], |r| r.get::<_, i64>(0))
+            .unwrap_or(0);
+        let (moved_24h, fees_24h, txs_24h, blocks_24h, addrs_24h): (i64, i64, i64, i64, i64) = self
+            .db
+            .query_row(
+                "SELECT
+                   COALESCE((SELECT SUM(o.value) FROM outs o JOIN txs t ON t.txid = o.txid
+                             JOIN blocks b ON b.height = t.height
+                             WHERE t.coinbase = 0 AND b.time >= ?1),0),
+                   COALESCE((SELECT SUM(b.fees) FROM blocks b WHERE b.time >= ?1),0),
+                   COALESCE((SELECT COUNT(*) FROM txs t JOIN blocks b ON b.height = t.height
+                             WHERE t.coinbase = 0 AND b.time >= ?1),0),
+                   COALESCE((SELECT COUNT(*) FROM blocks b WHERE b.time >= ?1),0),
+                   COALESCE((SELECT COUNT(DISTINCT o.address) FROM outs o JOIN txs t ON t.txid = o.txid
+                             JOIN blocks b ON b.height = t.height
+                             WHERE b.time >= ?1),0)",
+                [day_ago],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+            )
+            .unwrap_or((0, 0, 0, 0, 0));
+        let holders: i64 = self
+            .db
+            .query_row(
+                "SELECT COUNT(DISTINCT address) FROM outs WHERE address IS NOT NULL",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+        let utxos: i64 = self
+            .db
+            .query_row(
+                "SELECT COUNT(*) FROM outs WHERE spent_by IS NULL AND address IS NOT NULL",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+
+        // Price: only from a configured feed. None configured = no
+        // price, and the UI says so.
+        let price = self.price();
+        let market_cap = price.map(|p| p * supply as f64 / 100_000_000.0);
+        let curve = self.supply_curve()?;
+        Ok(serde_json::json!({
+            "height": tip,
+            "supply": supply,
+            "holders": holders,
+            "utxos": utxos,
+            "moved_24h": moved_24h,
+            "fees_24h": fees_24h,
+            "txs_24h": txs_24h,
+            "blocks_24h": blocks_24h,
+            "addresses_24h": addrs_24h,
+            "price": price,
+            "price_source": self.price_source.clone(),
+            "market_cap": market_cap,
+            "supply_curve": curve,
+        }))
+    }
+
+    /// Fetch the configured price feed (cached ~10 min). Returns None
+    /// when no feed is configured or the fetch failed — the market view
+    /// then shows no price at all.
+    fn price(&mut self) -> Option<f64> {
+        let url = self.price_url.clone()?;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        if let Some((p, at, _)) = &self.price_cache {
+            if now - at < 600 {
+                return Some(*p);
+            }
+        }
+        let v = http_get_json(&url).ok()?;
+        // Accept {"price": 0.123} or {"ticker": {"price": ...}} shapes.
+        let p = v
+            .get("price")
+            .or_else(|| v.get("ticker").and_then(|t| t.get("price")))
+            .or_else(|| v.get("last"))
+            .and_then(|x| x.as_f64())
+            .filter(|x| x.is_finite() && *x > 0.0)?;
+        let source = v
+            .get("source")
+            .or_else(|| v.get("ticker").and_then(|t| t.get("source")))
+            .and_then(|x| x.as_str())
+            .map(|s| s.to_string())
+            .or_else(|| self.price_source.clone())
+            .unwrap_or_else(|| url.clone());
+        self.price_cache = Some((p, now, source));
+        Some(p)
+    }
+
+    /// Per-tx facts captured at index time: exact size, fee, fee rate
+    /// (sat/vB). None when the node could not serve the raw tx.
+    pub fn tx_facts(&self, txid: &str) -> Option<(i64, i64, f64)> {
+        self.db
+            .query_row(
+                "SELECT size, fee, feerate FROM tx_facts WHERE txid = ?1",
+                [txid],
+                |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, f64>(2)?)),
+            )
+            .ok()
     }
 
     /// Top funded addresses (unspent only). Small-chain GROUP BY — exact
@@ -1266,6 +1811,139 @@ mod tests {
         assert_eq!(a["txcount"], 2); // cb0 received + spend1 spent
         assert_eq!(a["first_seen"], 0);
         assert!(a["unconfirmed"].is_null());
+        let _ = std::fs::remove_file(&dir);
+    }
+
+    #[test]
+    fn daily_series_buckets_by_day_and_derives_hashrate_from_chainwork() {
+        let rpc = RpcClient::new("127.0.0.1:1", "u", "p");
+        let dir = std::env::temp_dir().join("explorer-series-test.db");
+        let _ = std::fs::remove_file(&dir);
+        let idx = Indexer::open(dir.to_str().expect("path"), rpc).expect("open");
+        let day = 1_700_000_000_i64 / 86400 * 86400;
+        idx.db
+            .execute_batch(&format!(
+                "INSERT INTO blocks(height, hash, time, ntx, difficulty, reserve, pot, drought, pos, size, merkleroot, chainwork, fees)
+                 VALUES (0, 'h0', {day}, 1, 10.0, 0, 0, 0, 0, 200, 'm0', '00000000000000000000000000000000000000000000000000000000000003e8', 0),
+                        (1, 'h1', {}, 2, 20.0, 0, 0, 0, 0, 300, 'm1', '00000000000000000000000000000000000000000000000000000000000007d0', 500),
+                        (2, 'h2', {}, 1, 30.0, 0, 0, 0, 0, 250, 'm2', '0000000000000000000000000000000000000000000000000000000000000bb8', 100);
+                 INSERT INTO txs(txid, height, coinbase) VALUES ('cb0', 0, 1), ('cb1', 1, 1), ('spend1', 1, 0), ('cb2', 2, 1);
+                 INSERT INTO outs(txid, n, address, value, coinbase, spent_by, spent_n)
+                 VALUES ('cb0', 0, 'A1', 1000, 1, NULL, NULL),
+                        ('cb1', 0, 'A2', 2000, 1, NULL, NULL),
+                        ('spend1', 0, 'A1', 900, 0, NULL, NULL),
+                        ('spend1', 1, 'B9', 100, 0, NULL, NULL),
+                        ('cb2', 0, 'A3', 3000, 1, NULL, NULL);",
+                day + 60,
+                day + 120
+            ))
+            .expect("fixture");
+        let s = idx.daily_series(30).expect("series");
+        let days = s["days"].as_array().expect("days array");
+        assert_eq!(days.len(), 1, "one UTC day bucket");
+        let d = &days[0];
+        assert_eq!(d["blocks"], 3);
+        // blocks.ntx summed: 1 + 2 + 1 = 4 txs (cb0, cb1, spend1, cb2).
+        assert_eq!(d["txs"], 4);
+        assert_eq!(d["fees"], 600);
+        // Minted = coinbase outputs that day (1000 + 2000 + 3000).
+        assert_eq!(d["minted"], 6000);
+        // Cumulative supply = coins in existence: minted minus the fees
+        // this chain burns (600). The node's `coinsupply` uses the same
+        // definition — the raw coinbase sum would be 600 too high.
+        assert_eq!(d["supply"], 5400);
+        // Addresses touched that day.
+        assert_eq!(d["addresses"], 4);
+        // Hashrate: work delta (0xbb8 - 0x3e8 = 2000) over the day's
+        // time span (120 s) — the same work/time quantity the node uses.
+        let hr = d["hashrate"].as_f64().expect("hashrate");
+        assert!((hr - 2000.0 / 120.0).abs() < 1e-9, "hashrate {hr}");
+        let _ = std::fs::remove_file(&dir);
+    }
+
+    #[test]
+    fn market_reports_supply_and_no_price_without_a_feed() {
+        let rpc = RpcClient::new("127.0.0.1:1", "u", "p");
+        let dir = std::env::temp_dir().join("explorer-market-test.db");
+        let _ = std::fs::remove_file(&dir);
+        let mut idx = Indexer::open(dir.to_str().expect("path"), rpc).expect("open");
+        idx.db
+            .execute_batch(
+                "INSERT INTO blocks(height, hash, time, ntx, difficulty, reserve, pot, drought, pos, size, merkleroot, chainwork, fees)
+                 VALUES (0, 'h0', 1000, 1, 1.0, 0, 0, 0, 0, 200, 'm0', '0x1', 0);
+                 INSERT INTO txs(txid, height, coinbase) VALUES ('cb0', 0, 1);
+                 INSERT INTO outs(txid, n, address, value, coinbase, spent_by, spent_n)
+                 VALUES ('cb0', 0, 'A1', 4000, 1, NULL, NULL);",
+            )
+            .expect("fixture");
+        let m = idx.market().expect("market");
+        // Supply = coins in existence (unspent outputs). This chain burns
+        // fees, so the coinbase sum is NOT the supply — the node's
+        // `coinsupply` reports the unspent total.
+        assert_eq!(m["supply"], 4000);
+        assert_eq!(m["holders"], 1);
+        assert_eq!(m["utxos"], 1);
+        // No price feed configured → no price, no market cap. The page
+        // must say "unavailable" rather than invent a number.
+        assert!(m["price"].is_null());
+        assert!(m["market_cap"].is_null());
+        // The supply curve is present for the chart.
+        assert_eq!(m["supply_curve"].as_array().map(|c| c.len()), Some(1));
+        let _ = std::fs::remove_file(&dir);
+    }
+
+    #[test]
+    fn tx_facts_carry_exact_size_and_fee_rate() {
+        let rpc = RpcClient::new("127.0.0.1:1", "u", "p");
+        let dir = std::env::temp_dir().join("explorer-facts-test.db");
+        let _ = std::fs::remove_file(&dir);
+        let idx = Indexer::open(dir.to_str().expect("path"), rpc).expect("open");
+        idx.db
+            .execute_batch(
+                "INSERT INTO tx_facts(txid, size, fee, feerate, height)
+                 VALUES ('t1', 200, 1000, 5.0, 7);",
+            )
+            .expect("fixture");
+        let f = idx.tx_facts("t1").expect("facts");
+        assert_eq!(f.0, 200);
+        assert_eq!(f.1, 1000);
+        assert_eq!(f.2, 5.0);
+        assert!(idx.tx_facts("missing").is_none());
+        let _ = std::fs::remove_file(&dir);
+    }
+
+    #[test]
+    fn supply_counts_coins_in_existence_not_burned_fees() {
+        // Regression: this chain BURNS transaction fees (the node's
+        // GetNewCoins subtracts them, and `coinsupply` reports the
+        // unspent-output total). Counting the full coinbase sum
+        // overstated supply by every fee ever paid — 430k sats on the
+        // testnet chain at the time this was found.
+        let rpc = RpcClient::new("127.0.0.1:1", "u", "p");
+        let dir = std::env::temp_dir().join("explorer-supply-test.db");
+        let _ = std::fs::remove_file(&dir);
+        let idx = Indexer::open(dir.to_str().expect("path"), rpc).expect("open");
+        idx.db
+            .execute_batch(
+                "INSERT INTO blocks(height, hash, time, ntx, difficulty, reserve, pot, drought, pos, size, merkleroot, chainwork, fees)
+                 VALUES (0, 'h0', 1000, 1, 1.0, 0, 0, 0, 0, 200, 'm0', '0x1', 0),
+                        (1, 'h1', 1060, 1, 1.0, 0, 0, 0, 0, 200, 'm1', '0x2', 100);
+                 INSERT INTO txs(txid, height, coinbase) VALUES ('cb0', 0, 1), ('spend1', 1, 0);
+                 INSERT INTO outs(txid, n, address, value, coinbase, spent_by, spent_n)
+                 VALUES ('cb0', 0, 'A1', 1000, 1, 'spend1', 0),
+                        ('spend1', 0, 'A1', 900, 0, NULL, NULL);",
+            )
+            .expect("fixture");
+        // 1000 minted, 100 burned as fee → 900 in existence.
+        let stats = idx.stats().expect("stats");
+        assert_eq!(stats["supply"], 900);
+        // The market view must use the same definition.
+        let mut idx2 = Indexer::open(dir.to_str().expect("path"), RpcClient::new("127.0.0.1:1", "u", "p")).expect("open");
+        let m = idx2.market().expect("market");
+        assert_eq!(m["supply"], 900);
+        // The supply curve ends at the same figure.
+        let curve = m["supply_curve"].as_array().expect("curve");
+        assert_eq!(curve.last().expect("last")["supply"], 900);
         let _ = std::fs::remove_file(&dir);
     }
 

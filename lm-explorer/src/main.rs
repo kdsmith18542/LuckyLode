@@ -19,13 +19,20 @@ use lm_stratum::rpc::RpcClient;
 
 const USAGE: &str = "usage:
   explorer --node-rpc HOST:PORT --rpc-user U --rpc-pass P --bind HOST:PORT --db PATH [--pool-api URL] [--resync] [--sync-interval SECS]
+           [--price-url URL] [--price-source NAME]
 
   indexes the node's chain into SQLite (./explorer.db style path) and serves
   a read-only UI + JSON API: /block/<height|hash> /tx/<txid> /address/<addr>
-  /game /league /mempool /richlist /search?q= /api/tip /api/stats /api/game
-  /api/league /api/mempool /api/richlist. Reorg-safe (rolls back to
-  the fork point). Game events (jackpot/pot/league per block, Luckynode
-  Draws) and the seasonal league boards come from the pool's dashboard API (best-effort).
+  /game /league /mempool /richlist /charts /market /search?q= /api/tip /api/stats
+  /api/game /api/league /api/mempool /api/richlist /api/charts /api/market.
+  Reorg-safe (rolls back to the fork point). Game events (jackpot/pot/league per
+  block, Luckynode Draws) and the seasonal league boards come from the pool's
+  dashboard API (best-effort).
+
+  --price-url is OPTIONAL: a JSON feed returning {\"price\": <usd per coin>}
+  used by the market page for price and market cap. With no listing there is no
+  price source, so without it the market page shows supply and liquidity only
+  and says so plainly.
 defaults: bind=127.0.0.1:8888; sync-interval=5s; pool-api=http://127.0.0.1:8081.";
 
 fn arg_value(args: &[String], i: &mut usize, flag: &str) -> Result<String, String> {
@@ -49,6 +56,8 @@ fn main() -> std::process::ExitCode {
     let mut resync = false;
     let mut interval = 5u64;
     let mut pool_api = "http://127.0.0.1:8081".to_string();
+    let mut price_url: Option<String> = None;
+    let mut price_source: Option<String> = None;
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
@@ -58,6 +67,8 @@ fn main() -> std::process::ExitCode {
             "--bind" => bind = arg_value(&args, &mut i, "bind").unwrap_or_else(|e| fatal(e)),
             "--db" => db = arg_value(&args, &mut i, "db").unwrap_or_else(|e| fatal(e)),
             "--pool-api" => pool_api = arg_value(&args, &mut i, "pool-api").unwrap_or_else(|e| fatal(e)),
+            "--price-url" => price_url = Some(arg_value(&args, &mut i, "price-url").unwrap_or_else(|e| fatal(e))),
+            "--price-source" => price_source = Some(arg_value(&args, &mut i, "price-source").unwrap_or_else(|e| fatal(e))),
             "--sync-interval" => {
                 interval = arg_value(&args, &mut i, "sync-interval")
                     .unwrap_or_else(|e| fatal(e))
@@ -80,13 +91,14 @@ fn main() -> std::process::ExitCode {
         let _ = std::fs::remove_file(&db);
     }
     let rpc = RpcClient::new(&node, &user, &pass);
-    let idx = match Indexer::open(&db, rpc) {
+    let mut idx = match Indexer::open(&db, rpc) {
         Ok(x) => x,
         Err(e) => {
             eprintln!("error: {e}");
             return std::process::ExitCode::from(1);
         }
     };
+    idx.set_price_feed(price_url, price_source);
     let idx = Arc::new(Mutex::new(idx));
     {
         let idx = Arc::clone(&idx);

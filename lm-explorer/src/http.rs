@@ -17,11 +17,11 @@ use std::sync::{Arc, Mutex};
 
 use crate::index::Indexer;
 
-const CSS: &str = "body{background:#0d1117;color:#e6edf3;font:14px ui-monospace,Menlo,monospace;margin:0 auto;padding:24px;max-width:960px}h1{font-size:20px;color:#ffd166}a{color:#7ee787}table{border-collapse:collapse;width:100%;margin:12px 0}td,th{border:1px solid #30363d;padding:6px 10px;text-align:left;font-size:13px}.dim{color:#8b949e}.pos{color:#7ee787}.card{background:#161b22;border:1px solid #30363d;border-radius:10px;padding:12px;margin:12px 0}input{width:70%;padding:8px;background:#0d1117;color:#e6edf3;border:1px solid #30363d;border-radius:6px}button{padding:8px 14px;background:#161b22;color:#ffd166;border:1px solid #ffd166;border-radius:6px}";
+const CSS: &str = "body{background:#0d1117;color:#e6edf3;font:14px ui-monospace,Menlo,monospace;margin:0 auto;padding:24px;max-width:960px}h1{font-size:20px;color:#ffd166}a{color:#7ee787}table{border-collapse:collapse;width:100%;margin:12px 0}td,th{border:1px solid #30363d;padding:6px 10px;text-align:left;font-size:13px}.dim{color:#8b949e}.pos{color:#7ee787}.card{background:#161b22;border:1px solid #30363d;border-radius:10px;padding:12px;margin:12px 0}input{width:70%;padding:8px;background:#0d1117;color:#e6edf3;border:1px solid #30363d;border-radius:6px}button{padding:8px 14px;background:#161b22;color:#ffd166;border:1px solid #ffd166;border-radius:6px}svg.chart{width:100%;height:190px;display:block}";
 
 fn page(title: &str, body: String) -> String {
     format!(
-        "<!doctype html><html><head><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>{title} — Lucky Lode explorer</title><style>{CSS}</style></head><body><h1><a href=/ style=\"color:#ffd166;text-decoration:none\">Lucky Lode explorer</a></h1><div class=dim style=\"margin:-4px 0 12px;font-size:13px\"><a href=/>blocks</a> · <a href=/game>game</a> · <a href=/league>leagues</a> · <a href=/mempool>mempool</a> · <a href=/richlist>rich</a></div>{body}</body></html>"
+        "<!doctype html><html><head><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>{title} — Lucky Lode explorer</title><style>{CSS}</style></head><body><h1><a href=/ style=\"color:#ffd166;text-decoration:none\">Lucky Lode explorer</a></h1><div class=dim style=\"margin:-4px 0 12px;font-size:13px\"><a href=/>blocks</a> · <a href=/charts>charts</a> · <a href=/market>market</a> · <a href=/game>game</a> · <a href=/league>leagues</a> · <a href=/mempool>mempool</a> · <a href=/richlist>rich</a></div>{body}</body></html>"
     )
 }
 
@@ -56,6 +56,24 @@ fn hs(v: f64) -> String {
         format!("{:.1} kH/s", v / 1e3)
     } else {
         format!("{v:.0} H/s")
+    }
+}
+
+/// Fee rate in sat/vB from a captured fact. Null when the node could not
+/// serve the raw tx (size unknown) — shown as a dash, never a guess.
+fn feerate_cell(v: &serde_json::Value) -> String {
+    match v.get("feerate").and_then(|x| x.as_f64()) {
+        Some(r) if r > 0.0 => format!("{r:.2}"),
+        Some(_) => "0.00".to_string(),
+        None => "<span class=dim>–</span>".to_string(),
+    }
+}
+
+/// Size in bytes, or a dash when unknown.
+fn size_cell(v: &serde_json::Value) -> String {
+    match v.get("size").and_then(|x| x.as_i64()) {
+        Some(s) if s > 0 => format!("{s} B"),
+        _ => "<span class=dim>–</span>".to_string(),
     }
 }
 
@@ -187,21 +205,23 @@ fn home(idx: &mut Indexer) -> String {
             coins(t["fee"].as_i64().unwrap_or(0))
         };
         txrows += &format!(
-            "<tr><td><a href=/tx/{txid}>{}</a></td><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
+            "<tr><td><a href=/tx/{txid}>{}</a></td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
             &txid[..txid.len().min(16)],
             link_block(t["height"].as_i64().unwrap_or(0)),
             fmt_time(t["time"].as_i64().unwrap_or(0)),
             coins(t["value"].as_i64().unwrap_or(0)),
             fee,
+            size_cell(&t),
+            feerate_cell(&t),
         );
     }
     if txrows.is_empty() {
-        txrows = "<tr><td colspan=5 class=dim>no transactions indexed yet</td></tr>".to_string();
+        txrows = "<tr><td colspan=7 class=dim>no transactions indexed yet</td></tr>".to_string();
     }
     page(
         "home",
         format!(
-            "{}<div class=card>height <b>{}</b> · hash <span class=dim>{}</span> · supply <b>{}</b> · difficulty {:.2} · minted (PoS) in last 20: <b>{}</b></div>{}{}{}<h2>Recent blocks</h2><table><tr><th>height</th><th>type</th><th>hash</th><th>txs</th><th>block reward</th><th>jackpot bonus</th><th>pot splash</th><th>league inflow</th></tr>{rows}</table><h2>Recent transactions</h2><table><tr><th>txid</th><th>block</th><th>time</th><th>value</th><th>fee</th></tr>{txrows}</table>",
+            "{}<div class=card>height <b>{}</b> · hash <span class=dim>{}</span> · supply <b>{}</b> · difficulty {:.2} · minted (PoS) in last 20: <b>{}</b></div>{}{}{}<h2>Recent blocks</h2><table><tr><th>height</th><th>type</th><th>hash</th><th>txs</th><th>block reward</th><th>jackpot bonus</th><th>pot splash</th><th>league inflow</th></tr>{rows}</table><h2>Recent transactions</h2><table><tr><th>txid</th><th>block</th><th>time</th><th>value</th><th>fee</th><th>size</th><th>fee rate (sat/vB)</th></tr>{txrows}</table>",
             search_box(),
             h,
             esc(stats.get("hash").and_then(|v| v.as_str()).unwrap_or("")),
@@ -305,6 +325,318 @@ fn game_page(idx: &Indexer) -> String {
     )
 }
 
+/// Compact number for chart axes: 1.2k, 3.4M, 5.6B.
+fn compact(v: f64) -> String {
+    let a = v.abs();
+    if a >= 1e9 {
+        format!("{:.1}B", v / 1e9)
+    } else if a >= 1e6 {
+        format!("{:.1}M", v / 1e6)
+    } else if a >= 1e3 {
+        format!("{:.1}k", v / 1e3)
+    } else if a >= 1.0 {
+        format!("{v:.1}")
+    } else if a > 0.0 {
+        format!("{v:.3}")
+    } else {
+        "0".to_string()
+    }
+}
+
+/// One chart: a title, a value series (x = day index, y = value) and a
+/// unit label. Rendered as a self-contained inline SVG (no JS, no
+/// external assets — the explorer serves plain HTML).
+struct Chart {
+    title: String,
+    unit: String,
+    points: Vec<(f64, f64)>,
+    /// Optional second series drawn as a second line (e.g. supply).
+    overlay: Vec<(f64, f64)>,
+    bars: bool,
+}
+
+impl Chart {
+    fn new(title: &str, unit: &str, points: Vec<(f64, f64)>) -> Self {
+        Self {
+            title: title.to_string(),
+            unit: unit.to_string(),
+            points,
+            overlay: Vec::new(),
+            bars: false,
+        }
+    }
+
+    fn with_overlay(mut self, o: Vec<(f64, f64)>) -> Self {
+        self.overlay = o;
+        self
+    }
+
+    fn bars(mut self) -> Self {
+        self.bars = true;
+        self
+    }
+
+    /// Render the chart as inline SVG. Width is fluid (viewBox), the
+    /// page CSS scales it to the column.
+    fn render(&self) -> String {
+        let w = 640.0_f64;
+        let h = 200.0_f64;
+        let pad_l = 56.0;
+        let pad_r = 12.0;
+        let pad_t = 12.0;
+        let pad_b = 26.0;
+        let plot_w = w - pad_l - pad_r;
+        let plot_h = h - pad_t - pad_b;
+
+        let mut all: Vec<f64> = self.points.iter().map(|p| p.1).collect();
+        all.extend(self.overlay.iter().map(|p| p.1));
+        if all.is_empty() {
+            return format!(
+                "<div class=card><b>{}</b><p class=dim>no data yet</p></div>",
+                esc(&self.title)
+            );
+        }
+        let max_v = all.iter().cloned().fold(0.0_f64, f64::max);
+        let min_v = all.iter().cloned().fold(f64::INFINITY, f64::min);
+        let min_v = if min_v.is_finite() { min_v } else { 0.0 };
+        // Include zero when the series does not go negative.
+        let (lo, hi) = if min_v < 0.0 {
+            (min_v, max_v)
+        } else {
+            (0.0, max_v)
+        };
+        let span = if (hi - lo).abs() < f64::EPSILON { 1.0 } else { hi - lo };
+        let n = self.points.len().max(1) as f64;
+        let x_of = |i: f64| pad_l + if n <= 1.0 { plot_w / 2.0 } else { i / (n - 1.0) * plot_w };
+        let y_of = |v: f64| pad_t + plot_h - (v - lo) / span * plot_h;
+
+        let mut svg = String::new();
+        svg.push_str(&format!(
+            "<svg viewBox='0 0 {} {}' class=chart preserveAspectRatio='none' role=img aria-label='{}'>",
+            w, h, esc(&self.title)
+        ));
+        // Horizontal gridlines + y labels.
+        for i in 0..=4 {
+            let v = lo + span * i as f64 / 4.0;
+            let y = y_of(v);
+            svg.push_str(&format!(
+                "<line x1='{pad_l}' y1='{y:.1}' x2='{}' y2='{y:.1}' stroke='#30363d' stroke-width='1'/>",
+                w - pad_r
+            ));
+            svg.push_str(&format!(
+                "<text x='{}' y='{:.1}' fill='#8b949e' font-size='10' text-anchor='end'>{}</text>",
+                pad_l - 6.0,
+                y + 3.0,
+                esc(&compact(v))
+            ));
+        }
+        if self.bars {
+            let bw = (plot_w / n).max(1.0);
+            for (i, (_, v)) in self.points.iter().enumerate() {
+                let x = x_of(i as f64) - bw / 2.0;
+                let y = y_of(*v);
+                svg.push_str(&format!(
+                    "<rect x='{x:.1}' y='{y:.1}' width='{bw:.1}' height='{:.1}' fill='#388bfd' opacity='0.85'/>",
+                    (y_of(lo) - y).max(0.0)
+                ));
+            }
+        } else {
+            let path: String = self
+                .points
+                .iter()
+                .enumerate()
+                .map(|(i, (_, v))| format!("{:.1},{:.1}", x_of(i as f64), y_of(*v)))
+                .collect::<Vec<_>>()
+                .join(" ");
+            svg.push_str(&format!(
+                "<polyline points='{path}' fill='none' stroke='#58a6ff' stroke-width='2'/>"
+            ));
+            // Area fill under the line.
+            if !self.points.is_empty() {
+                let base = y_of(lo);
+                let area: String = self
+                    .points
+                    .iter()
+                    .enumerate()
+                    .map(|(i, (_, v))| format!("{:.1},{:.1}", x_of(i as f64), y_of(*v)))
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                svg.push_str(&format!(
+                    "<polygon points='{:.1},{base:.1} {area} {:.1},{base:.1}' fill='#58a6ff' opacity='0.12'/>",
+                    x_of(0.0),
+                    x_of(self.points.len() as f64 - 1.0)
+                ));
+            }
+        }
+        if !self.overlay.is_empty() {
+            let path: String = self
+                .overlay
+                .iter()
+                .enumerate()
+                .map(|(i, (_, v))| format!("{:.1},{:.1}", x_of(i as f64), y_of(*v)))
+                .collect::<Vec<_>>()
+                .join(" ");
+            svg.push_str(&format!(
+                "<polyline points='{path}' fill='none' stroke='#f0883e' stroke-width='2' stroke-dasharray='4 3'/>"
+            ));
+        }
+        // X labels: first and last day.
+        let fmt_day = |ts: f64| -> String {
+            chrono::DateTime::from_timestamp(ts as i64, 0)
+                .map(|d| d.format("%Y-%m-%d").to_string())
+                .unwrap_or_default()
+        };
+        if let Some((first, _)) = self.points.first() {
+            svg.push_str(&format!(
+                "<text x='{pad_l}' y='{}' fill='#8b949e' font-size='10'>{}</text>",
+                h - 8.0,
+                esc(&fmt_day(*first))
+            ));
+        }
+        if let Some((last, _)) = self.points.last() {
+            svg.push_str(&format!(
+                "<text x='{}' y='{}' fill='#8b949e' font-size='10' text-anchor='end'>{}</text>",
+                w - pad_r,
+                h - 8.0,
+                esc(&fmt_day(*last))
+            ));
+        }
+        svg.push_str("</svg>");
+        format!(
+            "<div class=card><b>{}</b><p class=dim style='margin:2px 0 6px'>{}</p>{}</div>",
+            esc(&self.title),
+            esc(&self.unit),
+            svg
+        )
+    }
+}
+
+/// Charts page: daily history — hashrate, difficulty, transactions, fees,
+/// supply and active addresses. All series come from the local index.
+fn charts_page(idx: &Indexer, days: i64) -> String {
+    let series = idx.daily_series(days).unwrap_or(serde_json::json!({"days": []}));
+    let d = series["days"].as_array().cloned().unwrap_or_default();
+    let day_of = |i: usize| -> f64 { d[i]["day"].as_f64().unwrap_or(0.0) };
+    let num = |i: usize, k: &str| -> f64 { d[i][k].as_f64().unwrap_or(0.0) };
+
+    let hashrate: Vec<(f64, f64)> = (0..d.len())
+        .filter_map(|i| d[i]["hashrate"].as_f64().map(|h| (day_of(i), h)))
+        .collect();
+    let difficulty: Vec<(f64, f64)> = (0..d.len()).map(|i| (day_of(i), num(i, "difficulty"))).collect();
+    let txs: Vec<(f64, f64)> = (0..d.len()).map(|i| (day_of(i), num(i, "txs"))).collect();
+    let fees: Vec<(f64, f64)> = (0..d.len()).map(|i| (day_of(i), num(i, "fees"))).collect();
+    let supply: Vec<(f64, f64)> = (0..d.len()).map(|i| (day_of(i), num(i, "supply"))).collect();
+    let mined: Vec<(f64, f64)> = (0..d.len()).map(|i| (day_of(i), num(i, "minted"))).collect();
+    let addrs: Vec<(f64, f64)> = (0..d.len()).map(|i| (day_of(i), num(i, "addresses"))).collect();
+
+    let mut body = String::new();
+    body.push_str(&format!(
+        "<div class=card>daily history · last <b>{}</b> days with indexed blocks · hashrate is work ÷ time over each day (the node's own estimate uses a 120-block window)</div>",
+        days
+    ));
+    // Range switcher.
+    body.push_str("<p>");
+    for r in [7i64, 30, 90, 365] {
+        let sel = if r == days { " style='color:#ffd166'" } else { "" };
+        body.push_str(&format!("<a href='/charts?days={r}'{sel}> {r}d</a>"));
+    }
+    body.push_str("</p>");
+    if d.is_empty() {
+        body.push_str("<div class=card>no blocks indexed yet — charts appear once the index has history</div>");
+    } else {
+        body.push_str(&Chart::new("Hashrate", "solutions per second — work ÷ time over the day (the node's getnetworkhashps uses a 120-block window)", hashrate).render());
+        body.push_str(&Chart::new("Difficulty", "average difficulty of the day's blocks", difficulty).render());
+        body.push_str(&Chart::new("Transactions", "non-coinbase transactions per day", txs).bars().render());
+        body.push_str(&Chart::new("Fees collected", "sats paid in transaction fees per day", fees).bars().render());
+        body.push_str(&Chart::new("Cumulative supply", "coins minted so far (solid line: total; dashed: added that day)", supply).with_overlay(mined).render());
+        body.push_str(&Chart::new("Active addresses", "distinct addresses touched per day", addrs).bars().render());
+    }
+    // A small table with the same numbers (readable, copyable).
+    if !d.is_empty() {
+        let mut rows = String::new();
+        for day in d.iter().rev().take(30) {
+            let day_ts = day["day"].as_i64().unwrap_or(0);
+            let date = chrono::DateTime::from_timestamp(day_ts, 0)
+                .map(|x| x.format("%Y-%m-%d").to_string())
+                .unwrap_or_default();
+            rows.push_str(&format!(
+                "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
+                date,
+                day["blocks"].as_i64().unwrap_or(0),
+                day["txs"].as_i64().unwrap_or(0),
+                day["addresses"].as_i64().unwrap_or(0),
+                coins(day["fees"].as_i64().unwrap_or(0)),
+                coins(day["minted"].as_i64().unwrap_or(0)),
+                hs(day["hashrate"].as_f64().unwrap_or(0.0)),
+            ));
+        }
+        body.push_str(&format!(
+            "<h2>Daily detail</h2><table><tr><th>date</th><th>blocks</th><th>txs</th><th>addresses</th><th>fees</th><th>minted</th><th>hashrate</th></tr>{rows}</table>"
+        ));
+    }
+    page("charts", format!("{}{}", search_box(), body))
+}
+
+/// Market page: on-chain market facts. Price and market cap appear only
+/// when a price feed is configured — with no exchange listing there is no
+/// price source, and the page says so instead of inventing one.
+fn market_page(idx: &mut Indexer) -> String {
+    let m = idx.market().unwrap_or(serde_json::json!({}));
+    let price = m["price"].as_f64();
+    let cap = m["market_cap"].as_f64();
+    let mut body = String::new();
+
+    let price_row = match (price, cap) {
+        (Some(p), Some(c)) => format!(
+            "<div class=card>price <b>${p:.8}</b> · market cap <b>${c:.0}</b> <span class=dim>({})</span></div>",
+            esc(m["price_source"].as_str().unwrap_or("configured feed"))
+        ),
+        _ => "<div class=card>price <span class=dim>unavailable — no exchange listing for {ticker}, so there is no price source to read</span></div>".replace("{ticker}", TICK),
+    };
+    body.push_str(&price_row);
+    body.push_str(&format!(
+        "<div class=card>circulating supply <b>{}</b> · holders <b>{}</b> · unspent outputs <b>{}</b></div>",
+        coins(m["supply"].as_i64().unwrap_or(0)),
+        m["holders"].as_i64().unwrap_or(0),
+        m["utxos"].as_i64().unwrap_or(0),
+    ));
+    body.push_str(&format!(
+        "<div class=card>last 24h: <b>{}</b> blocks · <b>{}</b> transactions · <b>{}</b> active addresses · moved <b>{}</b> · fees <b>{}</b></div>",
+        m["blocks_24h"].as_i64().unwrap_or(0),
+        m["txs_24h"].as_i64().unwrap_or(0),
+        m["addresses_24h"].as_i64().unwrap_or(0),
+        coins(m["moved_24h"].as_i64().unwrap_or(0)),
+        coins(m["fees_24h"].as_i64().unwrap_or(0)),
+    ));
+    // Supply curve.
+    let curve = m["supply_curve"].as_array().cloned().unwrap_or_default();
+    if curve.len() > 1 {
+        // Sample to keep the SVG small.
+        let step = (curve.len() / 200).max(1);
+        let pts: Vec<(f64, f64)> = curve
+            .iter()
+            .step_by(step)
+            .map(|p| (p["time"].as_f64().unwrap_or(0.0), p["supply"].as_f64().unwrap_or(0.0)))
+            .collect();
+        body.push_str(&Chart::new("Supply over time", "cumulative coins minted, per block height", pts).render());
+    }
+    // Top holders (reuse the rich list).
+    let top = idx.richlist(20).unwrap_or_default();
+    let mut rows = String::new();
+    for (i, e) in top.iter().enumerate() {
+        let addr = esc(e["address"].as_str().unwrap_or(""));
+        rows.push_str(&format!(
+            "<tr><td>{}</td><td><a href=/address/{addr}>{addr}</a></td><td>{}</td></tr>",
+            i + 1,
+            coins(e["balance"].as_i64().unwrap_or(0)),
+        ));
+    }
+    body.push_str(&format!(
+        "<h2>Largest balances</h2><p class=dim>unspent outputs only — exchange and pool wallets dominate by construction</p><table><tr><th>#</th><th>address</th><th>balance</th></tr>{rows}</table>"
+    ));
+    page("market", format!("{}{}", search_box(), body))
+}
+
 /// Seasonal league boards (doc 03 §3.3: phones race phones), as last
 /// synced from the pool's dashboard API. Snapshot data, not consensus —
 /// the pool is the board authority; the explorer mirrors it.
@@ -359,7 +691,7 @@ fn mempool_page(idx: &mut Indexer) -> String {
     let mp = idx.mempool().unwrap_or(serde_json::json!({}));
     let entries = mp["entries"].as_array().cloned().unwrap_or_default();
     let rows = if entries.is_empty() {
-        "<tr><td colspan=4 class=dim>mempool empty — everything indexed is confirmed</td></tr>".to_string()
+        "<tr><td colspan=5 class=dim>mempool empty — everything indexed is confirmed</td></tr>".to_string()
     } else {
         entries
             .iter()
@@ -368,12 +700,18 @@ fn mempool_page(idx: &mut Indexer) -> String {
                     Some(v) if v.is_i64() || v.is_u64() => coins(v.as_i64().unwrap_or(0)),
                     _ => "<span class=dim>–</span>".to_string(),
                 };
+                // Fee rate: fee ÷ vsize, when the fee is known.
+                let rate = match (e.get("fee").and_then(|f| f.as_i64()), e.get("vsize").and_then(|s| s.as_u64())) {
+                    (Some(f), Some(s)) if s > 0 => format!("{:.2}", f as f64 / s as f64),
+                    _ => "<span class=dim>–</span>".to_string(),
+                };
                 format!(
-                    "<tr><td><a href=/tx/{}>{}</a></td><td>{}</td><td>{}</td><td>{}</td></tr>",
+                    "<tr><td><a href=/tx/{}>{}</a></td><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
                     e["txid"].as_str().unwrap_or(""),
                     &e["txid"].as_str().unwrap_or("")[..e["txid"].as_str().unwrap_or("").len().min(16)],
                     fee,
                     e["vsize"].as_u64().unwrap_or(0),
+                    rate,
                     fmt_time(e["time"].as_i64().unwrap_or(0)),
                 )
             })
@@ -392,7 +730,7 @@ fn mempool_page(idx: &mut Indexer) -> String {
     page(
         "mempool",
         format!(
-            "{}<div class=card>pending <b>{}</b> · size <b>{} B</b> · mempool usage <b>{} B</b> · waiting fees <b>{}</b></div>{}<h2>Pending transactions</h2><table><tr><th>txid</th><th>fee</th><th>vsize</th><th>first seen</th></tr>{rows}</table>",
+            "{}<div class=card>pending <b>{}</b> · size <b>{} B</b> · mempool usage <b>{} B</b> · waiting fees <b>{}</b></div>{}<h2>Pending transactions</h2><table><tr><th>txid</th><th>fee</th><th>vsize</th><th>fee rate (sat/vB)</th><th>first seen</th></tr>{rows}</table>",
             search_box(),
             mp["size"].as_u64().unwrap_or(0),
             mp["bytes"].as_u64().unwrap_or(0),
@@ -440,7 +778,18 @@ fn block_page(idx: &Indexer, b: &serde_json::Value) -> String {    let h = b["he
     let txs = idx.block_txs(h).unwrap_or_default();
     let mut rows = String::new();
     for t in &txs {
-        rows += &format!("<tr><td>{}</td></tr>", link_tx(t));
+        // Per-tx facts (size/fee rate) captured at index time.
+        let fact = idx.tx_facts(t);
+        let (size, rate) = match fact {
+            Some((sz, _fee, r)) => (format!("{sz} B"), format!("{r:.2}")),
+            None => ("<span class=dim>–</span>".to_string(), "<span class=dim>–</span>".to_string()),
+        };
+        rows += &format!(
+            "<tr><td>{}</td><td>{}</td><td>{}</td></tr>",
+            link_tx(t),
+            size,
+            rate
+        );
     }
     let game_rows = match idx.game_block(h).unwrap_or(None) {
         Some(g) => format!(
@@ -455,7 +804,7 @@ fn block_page(idx: &Indexer, b: &serde_json::Value) -> String {    let h = b["he
     page(
         &format!("block {h}"),
         format!(
-            "<table><tr><th>height</th><td>{}</td></tr><tr><th>hash</th><td>{}</td></tr><tr><th>time</th><td>{}</td></tr><tr><th>type</th><td>{}</td></tr><tr><th>confirmations</th><td>{}</td></tr><tr><th>txs</th><td>{}</td></tr><tr><th>size</th><td>{} bytes</td></tr><tr><th>merkle root</th><td>{}</td></tr><tr><th>difficulty</th><td>{:.2}</td></tr><tr><th>fees collected</th><td>{}</td></tr><tr><th>jackpot reserve</th><td>{}</td></tr><tr><th>pot</th><td>{}</td></tr><tr><th>drought</th><td>{} blocks</td></tr>{game_rows}</table><h2>Transactions</h2><table>{rows}</table>",
+            "<table><tr><th>height</th><td>{}</td></tr><tr><th>hash</th><td>{}</td></tr><tr><th>time</th><td>{}</td></tr><tr><th>type</th><td>{}</td></tr><tr><th>confirmations</th><td>{}</td></tr><tr><th>txs</th><td>{}</td></tr><tr><th>size</th><td>{} bytes</td></tr><tr><th>merkle root</th><td>{}</td></tr><tr><th>difficulty</th><td>{:.2}</td></tr><tr><th>fees collected</th><td>{}</td></tr><tr><th>jackpot reserve</th><td>{}</td></tr><tr><th>pot</th><td>{}</td></tr><tr><th>drought</th><td>{} blocks</td></tr>{game_rows}</table><h2>Transactions</h2><table><tr><th>txid</th><th>size</th><th>fee rate (sat/vB)</th></tr>{rows}</table>",
             link_block(h),
             b["hash"].as_str().unwrap_or(""),
             fmt_time(b["time"].as_i64().unwrap_or(0)),
@@ -501,11 +850,13 @@ fn tx_page(_idx: &Indexer, t: &serde_json::Value) -> String {
     page(
         "tx",
         format!(
-            "<table><tr><th>txid</th><td>{}</td></tr><tr><th>block</th><td>{} ({} confs)</td></tr><tr><th>fee</th><td>{}</td></tr></table><h2>Inputs</h2><table><tr><th>#</th><th>from</th><th>value</th><th>tx</th></tr>{ins}</table><h2>Outputs</h2><table><tr><th>#</th><th>to</th><th>value</th><th>state</th></tr>{outs}</table>",
+            "<table><tr><th>txid</th><td>{}</td></tr><tr><th>block</th><td>{} ({} confs)</td></tr><tr><th>fee</th><td>{}</td></tr><tr><th>size</th><td>{}</td></tr><tr><th>fee rate</th><td>{} sat/vB</td></tr></table><h2>Inputs</h2><table><tr><th>#</th><th>from</th><th>value</th><th>tx</th></tr>{ins}</table><h2>Outputs</h2><table><tr><th>#</th><th>to</th><th>value</th><th>state</th></tr>{outs}</table>",
             t["txid"].as_str().unwrap_or(""),
             link_block(t["height"].as_i64().unwrap_or(0)),
             t["confirmations"],
             coins(t["fee"].as_i64().unwrap_or(0)),
+            size_cell(t),
+            feerate_cell(t),
         ),
     )
 }
@@ -638,6 +989,18 @@ fn handle(idx: &mut Indexer, method: &str, path: &str) -> String {
             "boards": idx.league_boards().unwrap_or_default(),
         }));
     }
+    if route == "/api/charts" {
+        let days = query
+            .split('&')
+            .find_map(|p| p.strip_prefix("days="))
+            .and_then(|v| v.parse::<i64>().ok())
+            .unwrap_or(30)
+            .clamp(1, 3650);
+        return json_resp(&idx.daily_series(days).unwrap_or(serde_json::json!({"days": []})));
+    }
+    if route == "/api/market" {
+        return json_resp(&idx.market().unwrap_or(serde_json::json!({})));
+    }
     // HTML routes
     if route == "/" {
         return html_resp(&home(idx));
@@ -653,6 +1016,18 @@ fn handle(idx: &mut Indexer, method: &str, path: &str) -> String {
     }
     if route == "/richlist" {
         return html_resp(&richlist_page(idx));
+    }
+    if route == "/charts" {
+        let days = query
+            .split('&')
+            .find_map(|p| p.strip_prefix("days="))
+            .and_then(|v| v.parse::<i64>().ok())
+            .unwrap_or(30)
+            .clamp(1, 3650);
+        return html_resp(&charts_page(idx, days));
+    }
+    if route == "/market" {
+        return html_resp(&market_page(idx));
     }
     if route == "/api/mempool" {
         return json_resp(&idx.mempool().unwrap_or(serde_json::json!({})));
