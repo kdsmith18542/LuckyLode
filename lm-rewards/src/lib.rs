@@ -24,6 +24,7 @@
 pub mod luck;
 pub mod pot;
 pub mod reserve;
+pub mod seed;
 
 /// Per-mille cap denominator base.
 pub const CAP_DENOM: u64 = 1000;

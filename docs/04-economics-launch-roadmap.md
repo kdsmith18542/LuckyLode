@@ -41,6 +41,15 @@ least-evil transparent mix; implementation pending before mainnet):
    dashboard-traceable coin-for-coin.
 3. **Treasury block share: OFF by default** (≤5%, governance-capped,
    sunsets unless renewed by community vote) — only if 1+2 underfund.
+4. **Seed capital, not premine** (internal/20): the faucet (100,000
+   testnet) and the dev fund (50,000 testnet) start as consensus
+   balances at genesis and pay out only through capped per-block
+   coinbase claims to pinned addresses (faucet: any block; dev: every
+   100th block). No spendable genesis outputs — the fair-launch story
+   holds. Testnet pins: faucet `mxVc37AiDBhP4FcydkCu5AEZqgfMYy8hC9`,
+   dev 2-of-3 `2NFdM6aq2Rtr444aGVrE9CZXLzZ2JF8dadE` (test keys;
+   mainnet needs real keyholders + ceremony). Mainnet pins are empty
+   until the ceremony — the rules are inert there, fail closed.
 
 All funding addresses + spends on a public dashboard from day one. The
 moment funding looks sneaky, the fair-launch story dies and so does the

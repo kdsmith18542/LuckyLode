@@ -22,7 +22,9 @@ const USAGE: &str = "usage:
          [--amount COINS] [--per-address-secs N] [--state-file PATH]
 
 defaults: rpc-user=u, rpc-pass=p, amount=1.0, per-address-secs=86400.
-Testnet only. Fund the node wallet before inviting miners.";
+Testnet only. The wallet is funded from the consensus faucet reserve
+(internal/20): the pool's --claim-faucet tops it up from per-block
+coinbase claims, so no manual funding is needed while the reserve lasts.";
 
 fn now() -> u64 {
     SystemTime::now()

@@ -202,6 +202,8 @@ async function tick(){
   add('shares', j.pool.shares); add('rejects', j.pool.rejects);
   add('blocks found', j.pool.blocks); add('league pool', coin(j.pool.league_pool));
   if(j.jackpot){add('jackpot reserve', coin(j.jackpot.reserve)); add('lucky pot', coin(j.jackpot.pot)); add('pot drought', j.jackpot.drought+' / '+(j.jackpot.potdrought||4320)+' blocks');}
+  if(j.jackpot&&j.jackpot.faucet!==undefined)add('faucet reserve', coin(j.jackpot.faucet));
+  if(j.jackpot&&j.jackpot.dev!==undefined)add('dev reserve', coin(j.jackpot.dev));
   const NET=(j.network&&j.network.ticker)?j.network:{ticker:'tLKYL',name:'testnet',prefixes:'m, n, 2'};
   TICK=NET.ticker;
   const setT=(id,v)=>{const e=document.getElementById(id);if(e)e.textContent=v;};
@@ -2212,6 +2214,7 @@ fn luckynode_loop<P: TemplateProvider + 'static>(
 const USAGE: &str = "usage:
   pool-server [--bind HOST:PORT] [--reward R] [--fees F] [--pool-password PASS] [--pool-target (HEX64|max)] [--net-target (HEX64|max)]
   pool-server --node-rpc HOST:PORT [--rpc-user U] [--rpc-pass P] [--pool-password PASS] [--bind HOST:PORT] [--claim-jackpots] [--claim-pot]
+  [--claim-faucet] [--claim-dev]   (seed-fund claims, internal/20)
   both forms accept [--http HOST:PORT] to serve the live dashboard (/ and /api/stats)
   node mode accepts [--payout-threshold V] [--payout-interval SECS] [--payout-exec]
   [--claim-pot-tier 10|25|50] [--pot-divisor N] [--jackpot-divisor N]
@@ -2249,6 +2252,13 @@ jackpotbonus (submitted only on jackpot finds); --claim-pot claims the credited
 pot and only submits pot events; --claim-pot-tier 10|25|50 sets the claimed
 band (floor / B+ / C) — higher tiers claim more; draws are pre-committed per
 height, so every find lands either way (nothing is withheld).
+seed funds (node mode, internal/20): --claim-faucet tops up the faucet wallet
+toward 1,000 tLKYL whenever a template advertises a nonzero faucetdrip (the
+pool reads the wallet balance via listunspent — no addressindex needed);
+--claim-dev claims the advertised devdrip on dev-epoch heights (every 100th
+block). Both splice exact pinned-script outputs (node is source of truth);
+unclaimed amounts stay in their reserves. Empty node pins (mainnet until the
+ceremony) disable both legs.
 payouts (node mode,: balances at/above --payout-threshold
 (base units) are sent from the node wallet every --payout-interval seconds
 (default 60); WITHOUT --payout-exec the loop only logs what it would send.
@@ -2345,6 +2355,8 @@ fn main() -> std::process::ExitCode {
     let mut rpc_pass = std::env::var("LUCKY_POOL_RPC_PASS").unwrap_or_else(|_| "p".to_string());
     let mut claim_jackpots = false;
     let mut claim_pot = false;
+    let mut claim_faucet = false;
+    let mut claim_dev = false;
     let mut http: Option<String> = None;
     let mut claim_pot_tier = 10u64; // claim the 10% floor by default
     let mut pot_divisor = 1000u64; // frozen spec; regtest may override
@@ -2447,6 +2459,16 @@ fn main() -> std::process::ExitCode {
             }
             "--claim-pot" => {
                 claim_pot = true;
+                i += 1; // valueless flag: do not skip the next argument
+                continue;
+            }
+            "--claim-faucet" => {
+                claim_faucet = true;
+                i += 1; // valueless flag: do not skip the next argument
+                continue;
+            }
+            "--claim-dev" => {
+                claim_dev = true;
                 i += 1; // valueless flag: do not skip the next argument
                 continue;
             }
@@ -2814,7 +2836,9 @@ fn main() -> std::process::ExitCode {
         ) {
             Ok(p) => p
                 .with_pot_divisor(pot_divisor)
-                .with_jackpot_divisor(jackpot_divisor),
+                .with_jackpot_divisor(jackpot_divisor)
+                .with_claim_faucet(claim_faucet)
+                .with_claim_dev(claim_dev),
             Err(e) => {
                 eprintln!("error: cannot reach node RPC {node}: {e}");
                 return std::process::ExitCode::from(1);

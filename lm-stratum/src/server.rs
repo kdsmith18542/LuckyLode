@@ -525,6 +525,15 @@ fn apply_block_found<P: TemplateProvider + 'static>(
         }
         drop(blocks);
         shared.stats.lock().expect("stats").blocks += 1;
+        // Seed-fund claims ride along for the record (third-party outputs —
+        // never miner-owed, so no ledger impact; the node already validated
+        // and debited the reserves).
+        if outcome.faucet > 0 || outcome.dev > 0 {
+            println!(
+                "seed claim landed: height {} faucet {} dev {}",
+                job.height, outcome.faucet, outcome.dev
+            );
+        }
     }
 }
 

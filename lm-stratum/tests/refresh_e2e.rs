@@ -64,6 +64,8 @@ impl TemplateProvider for GatedProvider {
             jackpot: false,
             bonus: 0,
             pot: 0,
+            faucet: 0,
+            dev: 0,
             league_overflow: 0,
             reserve: 0,
             coinbase: 0,
@@ -148,18 +150,20 @@ fn background_refresh_publishes_new_templates() {
                 league: 0,
             }
         }
-        fn submit_block(&mut self, _h: &[u8], _ht: u64, _n: u64) -> BlockOutcome {
-            BlockOutcome {
-                accepted: false,
-                out: [0u8; 32],
-                jackpot: false,
-                bonus: 0,
-                pot: 0,
-                league_overflow: 0,
-                reserve: 0,
-                coinbase: 0,
-            }
+    fn submit_block(&mut self, _h: &[u8], _ht: u64, _n: u64) -> BlockOutcome {
+        BlockOutcome {
+            accepted: false,
+            out: [0u8; 32],
+            jackpot: false,
+            bonus: 0,
+            pot: 0,
+            faucet: 0,
+            dev: 0,
+            league_overflow: 0,
+            reserve: 0,
+            coinbase: 0,
         }
+    }
     }
 
     let calls = Arc::new(AtomicUsize::new(0));

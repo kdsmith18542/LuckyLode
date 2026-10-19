@@ -40,6 +40,10 @@ pub struct BlockOutcome {
     pub pot: u64,
     /// Levy slice diverted to the league prize pool (cap overflow).
     pub league_overflow: u64,
+    /// Seed-fund faucet output claimed by this block's coinbase (0 = none).
+    pub faucet: u64,
+    /// Seed-fund dev output claimed by this block's coinbase (0 = none).
+    pub dev: u64,
     /// Reserve balance after this block.
     pub reserve: u64,
     /// Net block value the pool receives for an accepted block
@@ -137,6 +141,10 @@ impl TemplateProvider for MockProvider {
                 jackpot: false,
                 bonus: 0,
                 pot: 0,
+                // The mock flow never claims (claims need the GBT path —
+                // a node-provider behavior proven live, not mocked).
+                faucet: 0,
+                dev: 0,
                 league_overflow: 0,
                 reserve: self.reserve,
                 coinbase: 0,
@@ -171,6 +179,9 @@ impl TemplateProvider for MockProvider {
             bonus: p.jackpot_bonus,
             // Mock chain has no pot (the node-side rules own it).
             pot: 0,
+            // No seed claims on the mock flow (see above).
+            faucet: 0,
+            dev: 0,
             league_overflow: p.to_league,
             reserve: p.reserve,
             // Net normal (before the bonus) — the same number NodeProvider
