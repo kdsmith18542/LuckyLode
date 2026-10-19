@@ -50,11 +50,11 @@ Leagues are by **declared device family, policed by observed rate**
 (self-declared + statistically policed, see §3.6). When a miner
 connects it declares its family in the agent string (V1 subscribe
 agent; V2 `SetupConnection.vendor` carries the configured agent
-verbatim): `android`/`mobile` → arm (phones), `opencl`/`gpu` →
+verbatim): `android`/`mobile`/`arm` → phone, `opencl`/`gpu` →
 discrete GPUs, `cpu` → CPUs. The pool reads the label and checks it
 against the miner's trailing-24h rate:
 
-- 📱 **arm league** — phones, SBCs, anything ARM. Claims above
+- 📱 **phone league** — phones and small ARM boards. Claims above
   ~10 kH/s are not phones.
 - 🖥️ **cpu league** — laptops, desktops, servers mining on CPU.
   Claims above ~100 kH/s are not CPU miners.
@@ -64,7 +64,7 @@ against the miner's trailing-24h rate:
 
 Labels only ever get corrected *up* (a slow desktop stays a desktop;
 a "phone" at 50 kH/s does not), unlabeled miners fall back to the
-rate-implied family, and the arm-league prize tier is attestation-gated
+rate-implied family, and the phone-league prize tier is attestation-gated
 (§3.6) once prizes exist. Rate bands are fraud bounds, not targets —
 generous on purpose, retuned against measured LuckyHash rates
 (phone-class CPUs ~0.02–2 kH/s, desktop CPUs ~3–10 kH/s, GTX 1080
@@ -78,7 +78,10 @@ like a pool finding a block. **Nobody cares they were 4,000th globally.**
 
 Prizes: jackpot multipliers on their shares for a week, badge NFTs/IDs,
 fee rebates, merch for season winners. Keep cash prizes modest — status >
-money at these sums.
+money at these sums. **Prize splits are whale-blunted** (sqrt weights +
+25% cap once 5+ miners qualify — the same split rule as the jackpot,
+doc 06 §6.3): linear pro-rata would let one big rig take almost the
+whole pool, which defeats the "phones race phones" point.
 
 ## 3.4 Streaks & habits (the retention engine)
 

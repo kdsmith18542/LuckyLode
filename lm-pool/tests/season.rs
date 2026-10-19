@@ -1,6 +1,6 @@
 //! Season simulation: the full pool-side loop across modules.
 //!
-//! A 30-day season with an arm loyalist (daily overnight shares at a
+//! A 30-day season with a phone loyalist (daily overnight shares at a
 //! phone-class ~1.5 kH/s), a weekend cpu warrior (sporadic, 10x rate),
 //! a comeback miner (15-day gap then return), and a farm. Exercises
 //! streak accrual + reset, comeback boost, overnight weighting, league
@@ -13,17 +13,17 @@ use lm_pool::ledger::{Ledger, ShareRec, PPLNS_WINDOW_SECS};
 
 const D: u64 = 86_400;
 
-fn arm_share(day: u64) -> ShareRec {
-    // ~1.5 kH/s arm miner: 1500 H/s × 86400 s of nominal credit per daily share.
+fn phone_share(day: u64) -> ShareRec {
+    // ~1.5 kH/s phone-class miner: 1500 H/s × 86400 s of nominal credit per daily share.
     ShareRec { miner: "m1".to_string(), ts: day * D + 3_600, work: 1_500 * D, overnight: true }
 }
 
 #[test]
 fn season_rewards_loyalty_over_raw_rate() {
     let mut l = Ledger::new();
-    // Miner 1: arm loyalist, every day 1..=30, overnight, modest rate.
+    // Miner 1: phone loyalist, every day 1..=30, overnight, modest rate.
     for day in 1..=30u64 {
-        l.submit(arm_share(day));
+        l.submit(phone_share(day));
     }
     // Miner 2: cpu warrior, 6 weekend days, 10x the per-share work.
     for day in [6, 7, 13, 14, 20, 21] {
@@ -46,7 +46,7 @@ fn season_rewards_loyalty_over_raw_rate() {
     // Loyalist: 30-day streak capped at +300‰, arm class by rate.
     let loyal = &agg[0];
     assert_eq!((loyal.miner.clone(), loyal.streak_days, loyal.streak_per_mille), ("m1".to_string(), 30, 300));
-    assert_eq!(loyal.class, DeviceFamily::Arm);
+    assert_eq!(loyal.class, DeviceFamily::Phone);
     // 3 window shares × 1500·D × 1.05 overnight × 1.30 streak.
     let expect_loyal = 3 * 1_500 * D * 105 / 100 * 130 / 100;
     assert_eq!(loyal.eff_work, expect_loyal);
@@ -96,7 +96,7 @@ fn comeback_boost_lands_in_window() {
 fn leaderboard_ranks_and_flags_farm() {
     let mut l = Ledger::new();
     for day in 28..=30u64 {
-        l.submit(arm_share(day)); // miner 1, eff ≈ 3 × 1500·D × 1.05 × 1.03
+        l.submit(phone_share(day)); // miner 1, eff ≈ 3 × 1500·D × 1.05 × 1.03
         l.submit(ShareRec { miner: "m2".to_string(), ts: day * D, work: 100, overnight: false });
         l.submit(ShareRec {
             miner: "m9".to_string(),
@@ -111,19 +111,20 @@ fn leaderboard_ranks_and_flags_farm() {
     assert_eq!(board[0].miner, "m9");
     assert_eq!(board[0].class, DeviceFamily::Farm);
     assert_eq!(board[1].miner, "m1");
-    assert_eq!(board[1].class, DeviceFamily::Arm);
+    assert_eq!(board[1].class, DeviceFamily::Phone);
     assert_eq!(board[2].miner, "m2");
     // Effective work strictly descends down the board.
     assert!(board[0].eff_work > board[1].eff_work);
     assert!(board[1].eff_work > board[2].eff_work);
 
-    // League pool: farm excluded, arm loyalist + small fry split it all.
+    // League pool: farm excluded, phone loyalist + small fry split it
+    // all — sqrt-blunted (the loyalist takes ~99.9%, not ~100%).
     l.credit_league(1_000_000);
     let pays = l.split_league_pool(PPLNS_WINDOW_SECS, now);
     assert_eq!(pays.iter().map(|(_, p)| p).sum::<u64>(), 1_000_000);
     assert!(pays.iter().all(|(m, _)| m != "m9"));
     assert_eq!(pays[0].0, "m1");
-    assert!(pays[0].1 >= 999_999, "loyalist dominates: {:?}", pays[0]);
+    assert!(pays[0].1 >= 999_000, "loyalist dominates: {:?}", pays[0]);
     assert_eq!(l.league_balance(), 0);
 }
 
@@ -134,11 +135,11 @@ fn audit_replay_recomputes_identically() {
     let mut a = Ledger::new();
     let mut b = Ledger::new();
     let recs = vec![
-        arm_share(28),
+        phone_share(28),
         ShareRec { miner: "m2".to_string(), ts: 29 * D, work: 700, overnight: true },
-        arm_share(29),
+        phone_share(29),
         ShareRec { miner: "m2".to_string(), ts: 30 * D, work: 700, overnight: false },
-        arm_share(30),
+        phone_share(30),
     ];
     for r in &recs {
         a.submit(r.clone());

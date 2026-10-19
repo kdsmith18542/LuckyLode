@@ -3335,8 +3335,8 @@ mod tests {
             hps: 1,
         };
         let boards = lm_pool::ledger::rank_by_class(vec![
-            entry("a1", DeviceFamily::Arm, 900),
-            entry("a2", DeviceFamily::Arm, 500),
+            entry("a1", DeviceFamily::Phone, 900),
+            entry("a2", DeviceFamily::Phone, 500),
             entry("g1", DeviceFamily::Gpu, 100),
         ]);
         let mut names = HashMap::new();
@@ -3353,7 +3353,7 @@ mod tests {
         // 30-day TTL: `now = 200` is fresh; the JSON carries the provider.
         let out = league_boards_json(&boards, &names, &atts, 200, 20);
         assert_eq!(out.len(), 4); // ladder order, farms present even if empty
-        assert_eq!(out[0]["class"], "arm");
+        assert_eq!(out[0]["class"], "phone");
         assert_eq!(out[0]["size"], 2);
         let top = &out[0]["entries"][0];
         assert_eq!(top["rank"], 1);
@@ -3394,7 +3394,7 @@ mod tests {
         .collect();
         let entry = |miner: &str, hps: u64| BoardEntry {
             miner: miner.to_string(),
-            class: lm_pool::league::DeviceFamily::Arm, // placeholder, resolved below
+            class: lm_pool::league::DeviceFamily::Phone, // placeholder, resolved below
             eff_work: 1,
             days_active: 1,
             streak_days: 0,
@@ -3418,7 +3418,7 @@ mod tests {
                 .as_str()
                 .to_string()
         };
-        assert_eq!(league("honest-arm"), "arm");
+        assert_eq!(league("honest-arm"), "phone");
         assert_eq!(league("honest-gpu"), "gpu");
         // A farm cannot hide behind a cpu label.
         assert_eq!(league("lying-farm"), "farm");

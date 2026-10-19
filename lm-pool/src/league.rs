@@ -16,8 +16,8 @@
 //! The ceilings below are fraud bounds (generous on purpose: no honest
 //! miner may trip one), not performance targets.
 
-/// A phone/ARM claim hashing above this is not a phone.
-pub const ARM_CEIL_HPS: u64 = 10_000;
+/// A phone-class claim hashing above this is not a phone.
+pub const PHONE_CEIL_HPS: u64 = 10_000;
 /// A CPU claim hashing above this is not a CPU miner.
 pub const CPU_CEIL_HPS: u64 = 100_000;
 /// Farm scale: at or above this is farm territory whatever the miner
@@ -28,7 +28,7 @@ pub const FARM_MIN_HPS: u64 = 500_000;
 /// rate contradicts the claim.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum DeviceFamily {
-    Arm,
+    Phone,
     Cpu,
     Gpu,
     Farm,
@@ -45,7 +45,7 @@ impl DeviceFamily {
     #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
-            DeviceFamily::Arm => "arm",
+            DeviceFamily::Phone => "phone",
             DeviceFamily::Cpu => "cpu",
             DeviceFamily::Gpu => "gpu",
             DeviceFamily::Farm => "farm",
@@ -57,13 +57,13 @@ impl DeviceFamily {
 /// up in the same shape (`lm-miner/0.2 opencl`, `lm-miner-mobile/0.1
 /// android`, `v2 lm-miner cpu`, `lucky-lode-wallet/0.1 cpu`), so one
 /// parser serves both. `None` = the miner declared nothing usable.
-/// Checked arm-first: a V2 phone agent contains both `android` and the
+/// Checked phone-first: a V2 phone agent contains both `android` and the
 /// backend device (`cpu`).
 #[must_use]
 pub fn family_of(agent: &str) -> Option<DeviceFamily> {
     let a = agent.to_ascii_lowercase();
     if a.contains("android") || a.contains("mobile") || a.contains("arm") {
-        Some(DeviceFamily::Arm)
+        Some(DeviceFamily::Phone)
     } else if a.contains("opencl") || a.contains("gpu") {
         Some(DeviceFamily::Gpu)
     } else if a.contains("cpu") {
@@ -81,7 +81,7 @@ pub fn league_for(claimed: Option<DeviceFamily>, hps: u64) -> DeviceFamily {
         return DeviceFamily::Farm;
     }
     match claimed {
-        Some(DeviceFamily::Arm) if hps <= ARM_CEIL_HPS => DeviceFamily::Arm,
+        Some(DeviceFamily::Phone) if hps <= PHONE_CEIL_HPS => DeviceFamily::Phone,
         Some(DeviceFamily::Cpu) if hps <= CPU_CEIL_HPS => DeviceFamily::Cpu,
         Some(DeviceFamily::Gpu) => DeviceFamily::Gpu,
         _ => rate_fallback(hps),
@@ -92,8 +92,8 @@ pub fn league_for(claimed: Option<DeviceFamily>, hps: u64) -> DeviceFamily {
 /// something the rate contradicts). The fraud ceilings double as the
 /// boundaries, so the fallback can never disagree with the police rule.
 fn rate_fallback(hps: u64) -> DeviceFamily {
-    if hps <= ARM_CEIL_HPS {
-        DeviceFamily::Arm
+    if hps <= PHONE_CEIL_HPS {
+        DeviceFamily::Phone
     } else if hps <= CPU_CEIL_HPS {
         DeviceFamily::Cpu
     } else {
@@ -106,12 +106,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn family_parses_both_wires_arm_first() {
-        assert_eq!(family_of("lm-miner-mobile/0.1 android"), Some(DeviceFamily::Arm));
+    fn family_parses_both_wires_phone_first() {
+        assert_eq!(family_of("lm-miner-mobile/0.1 android"), Some(DeviceFamily::Phone));
         // V2 phone agents carry the backend device too — android wins.
         assert_eq!(
             family_of("v2 lm-miner-mobile/0.1 android cpu"),
-            Some(DeviceFamily::Arm)
+            Some(DeviceFamily::Phone)
         );
         assert_eq!(family_of("lm-miner/0.2 cpu"), Some(DeviceFamily::Cpu));
         assert_eq!(family_of("v2 lm-miner cpu"), Some(DeviceFamily::Cpu));
@@ -127,11 +127,11 @@ mod tests {
     #[test]
     fn claims_stand_but_the_farm_bar_overrides_everything() {
         // Honest miners keep their labels at real rates.
-        assert_eq!(league_for(Some(DeviceFamily::Arm), 1_500), DeviceFamily::Arm);
+        assert_eq!(league_for(Some(DeviceFamily::Phone), 1_500), DeviceFamily::Phone);
         assert_eq!(league_for(Some(DeviceFamily::Cpu), 8_000), DeviceFamily::Cpu);
         assert_eq!(league_for(Some(DeviceFamily::Gpu), 21_000), DeviceFamily::Gpu);
         // A farm cannot hide in a small league behind any label.
-        for claimed in [None, Some(DeviceFamily::Arm), Some(DeviceFamily::Cpu), Some(DeviceFamily::Gpu)] {
+        for claimed in [None, Some(DeviceFamily::Phone), Some(DeviceFamily::Cpu), Some(DeviceFamily::Gpu)] {
             assert_eq!(league_for(claimed, 500_000), DeviceFamily::Farm);
             assert_eq!(league_for(claimed, u64::MAX), DeviceFamily::Farm);
         }
@@ -141,20 +141,20 @@ mod tests {
     fn contradicted_claims_fall_back_to_rate() {
         // A "phone" at 50 kH/s is not a phone; a "cpu" at 200 kH/s is
         // not a CPU miner. Slow miners keep their (harmless) labels.
-        assert_eq!(league_for(Some(DeviceFamily::Arm), 50_000), DeviceFamily::Cpu);
+        assert_eq!(league_for(Some(DeviceFamily::Phone), 50_000), DeviceFamily::Cpu);
         assert_eq!(league_for(Some(DeviceFamily::Cpu), 200_000), DeviceFamily::Gpu);
         assert_eq!(league_for(Some(DeviceFamily::Gpu), 500), DeviceFamily::Gpu);
         assert_eq!(league_for(Some(DeviceFamily::Cpu), 500), DeviceFamily::Cpu);
         // Unlabeled miners get the rate-implied family.
-        assert_eq!(league_for(None, 0), DeviceFamily::Arm);
-        assert_eq!(league_for(None, 9_000), DeviceFamily::Arm);
+        assert_eq!(league_for(None, 0), DeviceFamily::Phone);
+        assert_eq!(league_for(None, 9_000), DeviceFamily::Phone);
         assert_eq!(league_for(None, 15_000), DeviceFamily::Cpu);
         assert_eq!(league_for(None, 499_999), DeviceFamily::Gpu);
     }
 
     #[test]
     fn only_farms_miss_prizes() {
-        assert!(DeviceFamily::Arm.prize_eligible());
+        assert!(DeviceFamily::Phone.prize_eligible());
         assert!(DeviceFamily::Cpu.prize_eligible());
         assert!(DeviceFamily::Gpu.prize_eligible());
         assert!(!DeviceFamily::Farm.prize_eligible());
@@ -162,7 +162,7 @@ mod tests {
 
     #[test]
     fn wire_names_are_stable() {
-        assert_eq!(DeviceFamily::Arm.as_str(), "arm");
+        assert_eq!(DeviceFamily::Phone.as_str(), "phone");
         assert_eq!(DeviceFamily::Cpu.as_str(), "cpu");
         assert_eq!(DeviceFamily::Gpu.as_str(), "gpu");
         assert_eq!(DeviceFamily::Farm.as_str(), "farm");

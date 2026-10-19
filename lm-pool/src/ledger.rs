@@ -100,12 +100,12 @@ pub struct BoardEntry {
 /// Rank a leaderboard within each device family (doc 03 §3.3: phones
 /// race phones). Ranks are 1-based positions in the board's own order
 /// (effective work desc, miner id asc); families come back in league
-/// ladder order — Arm, Cpu, Gpu, Farm. Every family is present even
+/// ladder order — Phone, Cpu, Gpu, Farm. Every family is present even
 /// when empty, so callers can render a stable section.
 #[must_use]
 pub fn rank_by_class(board: Vec<BoardEntry>) -> Vec<(DeviceFamily, Vec<(u32, BoardEntry)>)> {
     const LADDER: [DeviceFamily; 4] = [
-        DeviceFamily::Arm,
+        DeviceFamily::Phone,
         DeviceFamily::Cpu,
         DeviceFamily::Gpu,
         DeviceFamily::Farm,
@@ -360,55 +360,30 @@ impl Ledger {
         rows
     }
 
-    /// Pay the whole league prize pool pro-rata (linear, not sqrt — league
-    /// prizes reward sustained season effort) over prize-eligible miners by
-    /// effective work. Floor each share; leftover dust goes largest-remainder
-    /// (remainder desc, miner id asc). Drains the balance to 0. Returns empty
-    /// (balance kept) when there is nothing to pay or nobody eligible.
+    /// Pay the whole league prize pool over prize-eligible miners by
+    /// effective work, using the same whale-blunted split as the jackpot
+    /// (sqrt weights + 25% cap once 5+ miners qualify, doc 06 §6.3):
+    /// linear pro-rata let a single large rig take almost the whole pool,
+    /// which defeats the "phones race phones" point of leagues. Drains the
+    /// balance to 0. Returns empty (balance kept) when there is nothing to
+    /// pay or nobody eligible.
     pub fn split_league_pool(&mut self, window_secs: u64, now_ts: u64) -> Vec<(String, u64)> {
         let balance = self.league_pool;
         if balance == 0 {
             return Vec::new();
         }
-        let mut rows: Vec<(String, u64)> = self
+        let shares: Vec<Share> = self
             .aggregate(window_secs, now_ts)
             .into_iter()
             .filter(|a| a.class.prize_eligible() && a.eff_work > 0)
-            .map(|a| (a.miner, a.eff_work))
+            .map(|a| Share { miner: a.miner, shares: a.eff_work })
             .collect();
-        if rows.is_empty() {
+        if shares.is_empty() {
             return Vec::new();
         }
-        rows.sort_by(|a, b| a.0.cmp(&b.0));
-        let total: u128 = rows.iter().map(|(_, w)| *w as u128).sum();
-        let mut pays = vec![0u64; rows.len()];
-        let mut fracs: Vec<(u128, String)> = Vec::new();
-        let mut assigned = 0u64;
-        for (i, (_, w)) in rows.iter().enumerate() {
-            let num = balance as u128 * *w as u128;
-            pays[i] = (num / total) as u64;
-            assigned += pays[i];
-            fracs.push((num % total, rows[i].0.clone()));
-        }
-        fracs.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
-        let mut dust = balance - assigned;
-        // Row index by id once — the dust walk is O(1) per step, not a
-        // linear rescan per unit (O(n^2) over the window before).
-        let row_index: std::collections::HashMap<&str, usize> = rows
-            .iter()
-            .enumerate()
-            .map(|(i, (m, _))| (m.as_str(), i))
-            .collect();
-        for (_, id) in fracs {
-            if dust == 0 {
-                break;
-            }
-            pays[*row_index.get(id.as_str()).expect("id present")] += 1;
-            dust -= 1;
-        }
+        let pays = split_jackpot(&shares, balance);
         self.league_pool = 0;
-        debug_assert_eq!(pays.iter().sum::<u64>(), balance);
-        rows.into_iter().zip(pays).map(|((id, _), p)| (id, p)).collect()
+        pays
     }
 }
 
@@ -519,10 +494,33 @@ mod tests {
         l.submit(rec("m2", 9, 1000));
         l.credit_league(1000);
         let pays = l.split_league_pool(3 * D, 9 * D + 200);
-        assert_eq!(pays, vec![("m1".to_string(), 750), ("m2".to_string(), 250)]);
+        // Whale-blunted split (sqrt weights): 3x the work pays ~1.7x,
+        // not 3x — the linear pro-rata let one big rig take almost all.
+        assert_eq!(pays.iter().map(|(_, p)| p).sum::<u64>(), 1000);
+        let m1 = pays.iter().find(|(m, _)| m == "m1").expect("m1").1;
+        let m2 = pays.iter().find(|(m, _)| m == "m2").expect("m2").1;
+        assert!(m1 > m2 && m1 < 750, "sqrt-blunted: m1={m1}, m2={m2}");
         assert_eq!(l.league_balance(), 0);
         // Empty pool pays nothing and keeps nothing.
         assert!(l.split_league_pool(3 * D, 9 * D + 200).is_empty());
+    }
+
+    #[test]
+    fn league_split_caps_a_dominant_rig() {
+        let mut l = Ledger::new();
+        // One giant rig against four small miners: 5+ miners, so the
+        // 25% cap applies — a farm cannot take the pool even if its
+        // shares dominate the window.
+        l.submit(rec("whale", 9, 1_000_000));
+        for m in ["a", "b", "c", "d"] {
+            l.submit(rec(m, 9, 10_000));
+        }
+        l.credit_league(1_000_000);
+        let pays = l.split_league_pool(3 * D, 9 * D + 200);
+        assert_eq!(pays.iter().map(|(_, p)| p).sum::<u64>(), 1_000_000);
+        let whale = pays.iter().find(|(m, _)| m == "whale").expect("whale").1;
+        assert!(whale <= 250_000, "dominant rig capped at 25%: {whale}");
+        assert_eq!(l.league_balance(), 0);
     }
 
     #[test]
@@ -672,16 +670,16 @@ mod tests {
             hps: 1,
         };
         let board = vec![
-            entry("a1", DeviceFamily::Arm, 100),
+            entry("a1", DeviceFamily::Phone, 100),
             entry("g1", DeviceFamily::Gpu, 400),
-            entry("a2", DeviceFamily::Arm, 50),
+            entry("a2", DeviceFamily::Phone, 50),
             entry("f1", DeviceFamily::Farm, 999),
             entry("c1", DeviceFamily::Cpu, 10),
         ];
         let ranked = rank_by_class(board);
         // Ladder order, every family present.
         assert_eq!(ranked.len(), 4);
-        assert_eq!(ranked[0].0, DeviceFamily::Arm);
+        assert_eq!(ranked[0].0, DeviceFamily::Phone);
         assert_eq!(ranked[1].0, DeviceFamily::Cpu);
         assert_eq!(ranked[2].0, DeviceFamily::Gpu);
         assert_eq!(ranked[3].0, DeviceFamily::Farm);
