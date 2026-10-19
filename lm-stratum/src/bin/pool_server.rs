@@ -87,7 +87,7 @@ footer{margin-top:26px;color:var(--dim);font-size:12px;line-height:1.5}
 <h2>Workers</h2>
 <input type="search" id="wfilter" placeholder="filter by worker / payout address">
 <table><thead><tr><th></th><th>worker</th><th>device</th><th>60s</th><th>10m</th><th>1h</th><th>24h</th><th>shares</th><th>streak</th><th>league</th><th>rejects</th><th>last share</th></tr></thead><tbody id="workers"></tbody></table>
-<h2>League boards <span style="text-transform:none">(season = 30 days, effective work; phones race phones)</span></h2>
+<h2>League boards <span style="text-transform:none">(season = 30 days, effective work; declared device family, policed by rate)</span></h2>
 <div id="league"><span style="color:var(--dim)">no ranked workers yet</span></div>
 <h2>Blocks</h2>
 <table><thead><tr><th>height</th><th>finder</th><th>block reward</th><th>jackpot bonus</th><th>pot splash</th><th>league inflow</th><th>pplns payouts</th></tr></thead><tbody id="blocks"></tbody></table>
@@ -325,12 +325,20 @@ fn stats_json<P: TemplateProvider + 'static>(
         .into_iter()
         .map(|s| (s.miner.clone(), s))
         .collect();
-    // Seasonal league boards (doc 03 §3.3): per-class ranks over the
+    // Seasonal league boards (doc 03 §3.3): per-family ranks over the
     // 30-day season window, plus the per-worker rank shortcut the app
-    // tiles read. Fresh attestation verdicts decorate the rows.
-    let boards = lm_pool::ledger::rank_by_class(
+    // tiles read. The league is the miner's declared device family from
+    // its connect-time agent string, policed by the trailing rate —
+    // labels decide, hashrate polices (doc 03 §3.6). Fresh attestation
+    // verdicts decorate the rows.
+    let agent_map: HashMap<&str, &str> = workers
+        .iter()
+        .map(|w| (w.miner.as_str(), w.agent.as_str()))
+        .collect();
+    let boards = lm_pool::ledger::rank_by_class(resolve_leagues(
         server.leaderboard(lm_pool::ledger::SEASON_WINDOW_SECS, now),
-    );
+        &agent_map,
+    ));
     let mut rank_map: HashMap<String, (String, u32, u32)> = HashMap::new();
     for (class, rows) in &boards {
         let class_size = rows.len() as u32;
@@ -558,11 +566,29 @@ fn stats_json<P: TemplateProvider + 'static>(
     obj.to_string()
 }
 
-/// Per-class league boards as JSON (doc 03 §3.3: phones race phones).
-/// `cap` limits entries per class (0 = uncapped). Fresh attestation
+/// Resolve display leagues: the miner's declared device family from its
+/// connect-time agent string decides, the trailing-24h rate polices
+/// (doc 03 §3.6 — self-declared + statistically policed). Unlabeled or
+/// contradicted miners fall back to the rate-implied family.
+fn resolve_leagues(
+    board: Vec<lm_pool::ledger::BoardEntry>,
+    agents: &HashMap<&str, &str>,
+) -> Vec<lm_pool::ledger::BoardEntry> {
+    board
+        .into_iter()
+        .map(|mut e| {
+            let agent = agents.get(e.miner.as_str()).copied().unwrap_or("");
+            e.class = lm_pool::league::league_for(lm_pool::league::family_of(agent), e.hps);
+            e
+        })
+        .collect()
+}
+
+/// Per-family league boards as JSON (doc 03 §3.3: phones race phones).
+/// `cap` limits entries per family (0 = uncapped). Fresh attestation
 /// verdicts decorate rows (`attested` + the verdict's provider/time).
 fn league_boards_json(
-    boards: &[(lm_pool::league::DeviceClass, Vec<(u32, lm_pool::ledger::BoardEntry)>)],
+    boards: &[(lm_pool::league::DeviceFamily, Vec<(u32, lm_pool::ledger::BoardEntry)>)],
     names: &HashMap<String, String>,
     attestations: &lm_stratum::server::Attestations,
     now: u64,
@@ -603,14 +629,20 @@ fn league_boards_json(
         .collect()
 }
 
-/// `GET /api/league` — the full seasonal league boards (all classes, up
+/// `GET /api/league` — the full seasonal league boards (all families, up
 /// to 100 entries each), same shape as the `league` object on
 /// `/api/stats`.
 fn league_json<P: TemplateProvider + 'static>(server: &RunningServer<P>) -> String {
     let now = now_secs();
-    let boards = lm_pool::ledger::rank_by_class(
+    let workers = server.workers(now);
+    let agent_map: HashMap<&str, &str> = workers
+        .iter()
+        .map(|w| (w.miner.as_str(), w.agent.as_str()))
+        .collect();
+    let boards = lm_pool::ledger::rank_by_class(resolve_leagues(
         server.leaderboard(lm_pool::ledger::SEASON_WINDOW_SECS, now),
-    );
+        &agent_map,
+    ));
     let names_map: HashMap<String, String> = server.names().into_iter().collect();
     let attestations = server.attestations();
     serde_json::json!({
@@ -3291,26 +3323,27 @@ mod tests {
     }
 
     #[test]
-    fn league_boards_json_ranks_within_class_and_flags_fresh_attestations() {
-        use lm_pool::league::DeviceClass;
+    fn league_boards_json_ranks_within_family_and_flags_fresh_attestations() {
+        use lm_pool::league::DeviceFamily;
         use lm_pool::ledger::BoardEntry;
-        let entry = |miner: &str, class: DeviceClass, work: u64| BoardEntry {
+        let entry = |miner: &str, class: DeviceFamily, work: u64| BoardEntry {
             miner: miner.to_string(),
             class,
             eff_work: work,
             days_active: 3,
             streak_days: 1,
+            hps: 1,
         };
         let boards = lm_pool::ledger::rank_by_class(vec![
-            entry("p1", DeviceClass::Phone, 900),
-            entry("p2", DeviceClass::Phone, 500),
-            entry("d1", DeviceClass::Desktop, 100),
+            entry("a1", DeviceFamily::Arm, 900),
+            entry("a2", DeviceFamily::Arm, 500),
+            entry("g1", DeviceFamily::Gpu, 100),
         ]);
         let mut names = HashMap::new();
-        names.insert("p1".to_string(), "addr-p1".to_string());
+        names.insert("a1".to_string(), "addr-a1".to_string());
         let mut atts = lm_stratum::server::Attestations::new();
         atts.insert(
-            "p1".to_string(),
+            "a1".to_string(),
             lm_stratum::server::Attestation {
                 provider: "self".to_string(),
                 time: 100,
@@ -3320,16 +3353,16 @@ mod tests {
         // 30-day TTL: `now = 200` is fresh; the JSON carries the provider.
         let out = league_boards_json(&boards, &names, &atts, 200, 20);
         assert_eq!(out.len(), 4); // ladder order, farms present even if empty
-        assert_eq!(out[0]["class"], "phone");
+        assert_eq!(out[0]["class"], "arm");
         assert_eq!(out[0]["size"], 2);
         let top = &out[0]["entries"][0];
         assert_eq!(top["rank"], 1);
-        assert_eq!(top["name"], "addr-p1");
+        assert_eq!(top["name"], "addr-a1");
         assert_eq!(top["attested"], true);
         assert_eq!(top["attestation"]["provider"], "self");
         let second = &out[0]["entries"][1];
         assert_eq!(second["rank"], 2);
-        assert_eq!(second["name"], "p2"); // no registered name → the miner id
+        assert_eq!(second["name"], "a2"); // no registered name → the miner id
         assert_eq!(second["attested"], false);
         assert_eq!(out[3]["class"], "farm");
         assert_eq!(out[3]["entries"].as_array().unwrap().len(), 0);
@@ -3342,9 +3375,55 @@ mod tests {
             20,
         );
         assert_eq!(stale[0]["entries"][0]["attested"], false);
-        // The per-class cap holds.
+        // The per-family cap holds.
         let capped = league_boards_json(&boards, &names, &atts, 200, 1);
         assert_eq!(capped[0]["entries"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn resolve_leagues_uses_labels_and_polices_by_rate() {
+        use lm_pool::ledger::BoardEntry;
+        let agents: HashMap<&str, &str> = [
+            ("honest-arm", "lm-miner-mobile/0.1 android"),
+            ("honest-gpu", "lm-miner/0.2 opencl"),
+            ("lying-farm", "lm-miner/0.2 cpu"),
+            ("silent", "mystery-miner/9.9"),
+        ]
+        .iter()
+        .map(|(m, a)| (*m, *a))
+        .collect();
+        let entry = |miner: &str, hps: u64| BoardEntry {
+            miner: miner.to_string(),
+            class: lm_pool::league::DeviceFamily::Arm, // placeholder, resolved below
+            eff_work: 1,
+            days_active: 1,
+            streak_days: 0,
+            hps,
+        };
+        let resolved = resolve_leagues(
+            vec![
+                entry("honest-arm", 1_500),
+                entry("honest-gpu", 21_000),
+                entry("lying-farm", 600_000),
+                entry("silent", 15_000),
+            ],
+            &agents,
+        );
+        let league = |m: &str| {
+            resolved
+                .iter()
+                .find(|e| e.miner == m)
+                .expect("row")
+                .class
+                .as_str()
+                .to_string()
+        };
+        assert_eq!(league("honest-arm"), "arm");
+        assert_eq!(league("honest-gpu"), "gpu");
+        // A farm cannot hide behind a cpu label.
+        assert_eq!(league("lying-farm"), "farm");
+        // An unlabeled miner falls back to the rate-implied family.
+        assert_eq!(league("silent"), "cpu");
     }
 
     #[test]

@@ -1,38 +1,39 @@
 //! Season simulation: the full pool-side loop across modules.
 //!
-//! A 30-day season with a phone loyalist (daily overnight shares), a
-//! weekend desktop warrior (sporadic, high-rate), a comeback miner (15-day
-//! gap then return), and a farm. Exercises streak accrual + reset, comeback
-//! boost, overnight weighting, league classification, jackpot conservation,
-//! league-pool drain, and audit replay — the whole doc 03 §3.3–§3.4 +
-//! doc 06 §6.3 path in one deterministic story.
+//! A 30-day season with an arm loyalist (daily overnight shares at a
+//! phone-class ~1.5 kH/s), a weekend cpu warrior (sporadic, 10x rate),
+//! a comeback miner (15-day gap then return), and a farm. Exercises
+//! streak accrual + reset, comeback boost, overnight weighting, league
+//! classification, jackpot conservation, league-pool drain, and audit
+//! replay — the whole doc 03 §3.3–§3.4 + doc 06 §6.3 path in one
+//! deterministic story.
 
-use lm_pool::league::DeviceClass;
+use lm_pool::league::DeviceFamily;
 use lm_pool::ledger::{Ledger, ShareRec, PPLNS_WINDOW_SECS};
 
 const D: u64 = 86_400;
 
-fn phone_share(day: u64) -> ShareRec {
-    // ~5 MH/s phone: 5e6 H/s × 86400 s of nominal credit per daily share.
-    ShareRec { miner: "m1".to_string(), ts: day * D + 3_600, work: 5_000_000 * D, overnight: true }
+fn arm_share(day: u64) -> ShareRec {
+    // ~1.5 kH/s arm miner: 1500 H/s × 86400 s of nominal credit per daily share.
+    ShareRec { miner: "m1".to_string(), ts: day * D + 3_600, work: 1_500 * D, overnight: true }
 }
 
 #[test]
 fn season_rewards_loyalty_over_raw_rate() {
     let mut l = Ledger::new();
-    // Miner 1: phone loyalist, every day 1..=30, overnight, modest rate.
+    // Miner 1: arm loyalist, every day 1..=30, overnight, modest rate.
     for day in 1..=30u64 {
-        l.submit(phone_share(day));
+        l.submit(arm_share(day));
     }
-    // Miner 2: desktop warrior, 6 weekend days, 10x the per-share work.
+    // Miner 2: cpu warrior, 6 weekend days, 10x the per-share work.
     for day in [6, 7, 13, 14, 20, 21] {
-        l.submit(ShareRec { miner: "m2".to_string(), ts: day * D + 3_600, work: 50_000_000 * D, overnight: false });
+        l.submit(ShareRec { miner: "m2".to_string(), ts: day * D + 3_600, work: 15_000 * D, overnight: false });
     }
     // Miner 3: comeback — days 1..2, silent 15 days, returns day 18..20.
-    l.submit(ShareRec { miner: "m3".to_string(), ts: D, work: 5_000_000 * D, overnight: false });
-    l.submit(ShareRec { miner: "m3".to_string(), ts: 2 * D, work: 5_000_000 * D, overnight: false });
+    l.submit(ShareRec { miner: "m3".to_string(), ts: D, work: 1_500 * D, overnight: false });
+    l.submit(ShareRec { miner: "m3".to_string(), ts: 2 * D, work: 1_500 * D, overnight: false });
     for day in 18..=20u64 {
-        l.submit(ShareRec { miner: "m3".to_string(), ts: day * D, work: 5_000_000 * D, overnight: false });
+        l.submit(ShareRec { miner: "m3".to_string(), ts: day * D, work: 1_500 * D, overnight: false });
     }
 
     let now = 30 * D + 7_200;
@@ -42,12 +43,12 @@ fn season_rewards_loyalty_over_raw_rate() {
     let agg = l.aggregate(PPLNS_WINDOW_SECS, now);
     assert_eq!(agg.len(), 1);
 
-    // Loyalist: 30-day streak capped at +300‰, phone class.
+    // Loyalist: 30-day streak capped at +300‰, arm class by rate.
     let loyal = &agg[0];
     assert_eq!((loyal.miner.clone(), loyal.streak_days, loyal.streak_per_mille), ("m1".to_string(), 30, 300));
-    assert_eq!(loyal.class, DeviceClass::Phone);
-    // 3 window shares × 5e6·D × 1.05 overnight × 1.30 streak.
-    let expect_loyal = 3 * 5_000_000 * D * 105 / 100 * 130 / 100;
+    assert_eq!(loyal.class, DeviceFamily::Arm);
+    // 3 window shares × 1500·D × 1.05 overnight × 1.30 streak.
+    let expect_loyal = 3 * 1_500 * D * 105 / 100 * 130 / 100;
     assert_eq!(loyal.eff_work, expect_loyal);
 
     // Season-wide view: lapsed streaks read 0 (gaps far past 48 h).
@@ -56,8 +57,8 @@ fn season_rewards_loyalty_over_raw_rate() {
     assert_eq!(wide[1].streak_days, 0); // warrior, silent since day 21
     assert_eq!(wide[2].streak_days, 0); // comeback miner, silent since day 20
     // The comeback miner's post-return shares still carry the +100‰ boost:
-    // days 1–2 plain (2 × 4.32e11), days 18–20 boosted (3 × 4.32e11 × 1.1).
-    assert_eq!(wide[2].eff_work, 2 * 5_000_000 * D + 3 * 5_000_000 * D * 110 / 100);
+    // days 1–2 plain (2 × 1500·D), days 18–20 boosted (3 × 1500·D × 1.1).
+    assert_eq!(wide[2].eff_work, 2 * 1_500 * D + 3 * 1_500 * D * 110 / 100);
 
     // Jackpot over a season-long window: all three share the bonus, total conserved.
     let pays = l.jackpot_payout(9_000_000, 30 * D, now);
@@ -95,7 +96,7 @@ fn comeback_boost_lands_in_window() {
 fn leaderboard_ranks_and_flags_farm() {
     let mut l = Ledger::new();
     for day in 28..=30u64 {
-        l.submit(phone_share(day)); // miner 1, eff ≈ 3 × 5e6·D × 1.05 × 1.03
+        l.submit(arm_share(day)); // miner 1, eff ≈ 3 × 1500·D × 1.05 × 1.03
         l.submit(ShareRec { miner: "m2".to_string(), ts: day * D, work: 100, overnight: false });
         l.submit(ShareRec {
             miner: "m9".to_string(),
@@ -108,22 +109,21 @@ fn leaderboard_ranks_and_flags_farm() {
     let board = l.leaderboard(PPLNS_WINDOW_SECS, now);
     assert_eq!(board.len(), 3);
     assert_eq!(board[0].miner, "m9");
-    assert_eq!(board[0].class, DeviceClass::Farm);
+    assert_eq!(board[0].class, DeviceFamily::Farm);
     assert_eq!(board[1].miner, "m1");
-    assert_eq!(board[1].class, DeviceClass::Phone);
+    assert_eq!(board[1].class, DeviceFamily::Arm);
     assert_eq!(board[2].miner, "m2");
     // Effective work strictly descends down the board.
     assert!(board[0].eff_work > board[1].eff_work);
     assert!(board[1].eff_work > board[2].eff_work);
 
-    // League pool: farm excluded, phone + small fry split it all.
+    // League pool: farm excluded, arm loyalist + small fry split it all.
     l.credit_league(1_000_000);
     let pays = l.split_league_pool(PPLNS_WINDOW_SECS, now);
-    // Miner 1 holds ~99.9999% of eligible work: takes all but dust math —
-    // miner 2's 309 units earn largest-remainder nothing extra here.
     assert_eq!(pays.iter().map(|(_, p)| p).sum::<u64>(), 1_000_000);
     assert!(pays.iter().all(|(m, _)| m != "m9"));
-    assert_eq!(pays[0], ("m1".to_string(), 1_000_000));
+    assert_eq!(pays[0].0, "m1");
+    assert!(pays[0].1 >= 999_999, "loyalist dominates: {:?}", pays[0]);
     assert_eq!(l.league_balance(), 0);
 }
 
@@ -134,11 +134,11 @@ fn audit_replay_recomputes_identically() {
     let mut a = Ledger::new();
     let mut b = Ledger::new();
     let recs = vec![
-        phone_share(28),
+        arm_share(28),
         ShareRec { miner: "m2".to_string(), ts: 29 * D, work: 700, overnight: true },
-        phone_share(29),
+        arm_share(29),
         ShareRec { miner: "m2".to_string(), ts: 30 * D, work: 700, overnight: false },
-        phone_share(30),
+        arm_share(30),
     ];
     for r in &recs {
         a.submit(r.clone());

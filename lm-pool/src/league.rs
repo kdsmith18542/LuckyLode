@@ -1,62 +1,103 @@
-//! Device-class leagues (doc 03 §3.3): phones race phones, not servers.
+//! Device-family leagues (doc 03 §3.3): phones race phones, not servers.
 //!
-//! Classification is pool-side from each miner's observed share rate over a
-//! trailing window, with self-declared classes policed statistically (doc 03
-//! §3.6 — attestation and clustering live in the pool server, not here).
-//! Thresholds are pool policy, frozen here so reference pools agree:
+//! The league is the miner's *declared* device family, policed by its
+//! observed rate (doc 03 §3.6 — self-declared + statistically policed).
+//! The declaration rides in the miner agent string on both wires (the V1
+//! subscribe agent; V2 `SetupConnection.vendor` carries the configured
+//! agent verbatim and the server prints `v2 <vendor> <device>`); the pool
+//! reads the family back out of it. Anything hashing at farm scale lands
+//! in the farm league whatever it claims, and a claim the rate
+//! contradicts falls back to the rate-implied family — claims only ever
+//! get corrected *up*: a slow desktop stays a desktop, a "phone" at
+//! 50 kH/s does not.
 //!
-//! - 📱 Phone: sustained < 10 MH/s
-//! - 🖥️ MiniPC/SBC: 10–60 MH/s
-//! - 💻 Laptop/desktop: 60–500 MH/s
-//! - 🏭 Farm: above 500 MH/s — still paid normally, but ineligible for
-//!   league prizes (doc 03: farms go elsewhere).
+//! Rate reality (measured LuckyHash, 2026-10-18): emulator/phone-class
+//! CPUs ~0.02–2 kH/s, desktop CPUs ~3–10 kH/s, GTX 1080 ~15–21 kH/s.
+//! The ceilings below are fraud bounds (generous on purpose: no honest
+//! miner may trip one), not performance targets.
 
-/// Phone league ceiling in hashes/second (exclusive).
-pub const PHONE_MAX_HPS: u64 = 10_000_000;
-/// MiniPC/SBC league ceiling in hashes/second (exclusive).
-pub const MINI_MAX_HPS: u64 = 60_000_000;
-/// League eligibility ceiling: above this is farm territory (no prizes).
-pub const FARM_MIN_HPS: u64 = 500_000_000;
+/// A phone/ARM claim hashing above this is not a phone.
+pub const ARM_CEIL_HPS: u64 = 10_000;
+/// A CPU claim hashing above this is not a CPU miner.
+pub const CPU_CEIL_HPS: u64 = 100_000;
+/// Farm scale: at or above this is farm territory whatever the miner
+/// claims (doc 03: farms go elsewhere).
+pub const FARM_MIN_HPS: u64 = 500_000;
 
-/// A miner's league for one payout/season, from observed rate.
+/// A miner's league: its declared device family, unless the observed
+/// rate contradicts the claim.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub enum DeviceClass {
-    Phone,
-    MiniPc,
-    Desktop,
+pub enum DeviceFamily {
+    Arm,
+    Cpu,
+    Gpu,
     Farm,
 }
 
-impl DeviceClass {
+impl DeviceFamily {
     /// Eligible for league prizes and seasonal status (farms are paid, not feted).
     #[must_use]
     pub fn prize_eligible(self) -> bool {
-        !matches!(self, DeviceClass::Farm)
+        !matches!(self, DeviceFamily::Farm)
     }
 
     /// Stable wire name (dashboard/API JSON).
     #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
-            DeviceClass::Phone => "phone",
-            DeviceClass::MiniPc => "minipc",
-            DeviceClass::Desktop => "desktop",
-            DeviceClass::Farm => "farm",
+            DeviceFamily::Arm => "arm",
+            DeviceFamily::Cpu => "cpu",
+            DeviceFamily::Gpu => "gpu",
+            DeviceFamily::Farm => "farm",
         }
     }
 }
 
-/// Classify an observed sustained rate (hashes/second, trailing window).
+/// Read the declared family out of a miner agent string. Both wires end
+/// up in the same shape (`lm-miner/0.2 opencl`, `lm-miner-mobile/0.1
+/// android`, `v2 lm-miner cpu`, `lucky-lode-wallet/0.1 cpu`), so one
+/// parser serves both. `None` = the miner declared nothing usable.
+/// Checked arm-first: a V2 phone agent contains both `android` and the
+/// backend device (`cpu`).
 #[must_use]
-pub fn classify(hps: u64) -> DeviceClass {
-    if hps < PHONE_MAX_HPS {
-        DeviceClass::Phone
-    } else if hps < MINI_MAX_HPS {
-        DeviceClass::MiniPc
-    } else if hps < FARM_MIN_HPS {
-        DeviceClass::Desktop
+pub fn family_of(agent: &str) -> Option<DeviceFamily> {
+    let a = agent.to_ascii_lowercase();
+    if a.contains("android") || a.contains("mobile") || a.contains("arm") {
+        Some(DeviceFamily::Arm)
+    } else if a.contains("opencl") || a.contains("gpu") {
+        Some(DeviceFamily::Gpu)
+    } else if a.contains("cpu") {
+        Some(DeviceFamily::Cpu)
     } else {
-        DeviceClass::Farm
+        None
+    }
+}
+
+/// Resolve the league for one miner: the claim stands unless the
+/// trailing rate contradicts it.
+#[must_use]
+pub fn league_for(claimed: Option<DeviceFamily>, hps: u64) -> DeviceFamily {
+    if hps >= FARM_MIN_HPS {
+        return DeviceFamily::Farm;
+    }
+    match claimed {
+        Some(DeviceFamily::Arm) if hps <= ARM_CEIL_HPS => DeviceFamily::Arm,
+        Some(DeviceFamily::Cpu) if hps <= CPU_CEIL_HPS => DeviceFamily::Cpu,
+        Some(DeviceFamily::Gpu) => DeviceFamily::Gpu,
+        _ => rate_fallback(hps),
+    }
+}
+
+/// Rate-implied family for miners that declared nothing (or declared
+/// something the rate contradicts). The fraud ceilings double as the
+/// boundaries, so the fallback can never disagree with the police rule.
+fn rate_fallback(hps: u64) -> DeviceFamily {
+    if hps <= ARM_CEIL_HPS {
+        DeviceFamily::Arm
+    } else if hps <= CPU_CEIL_HPS {
+        DeviceFamily::Cpu
+    } else {
+        DeviceFamily::Gpu
     }
 }
 
@@ -65,30 +106,65 @@ mod tests {
     use super::*;
 
     #[test]
-    fn boundaries_match_doc_classes() {
-        assert_eq!(classify(0), DeviceClass::Phone);
-        assert_eq!(classify(9_999_999), DeviceClass::Phone);
-        assert_eq!(classify(10_000_000), DeviceClass::MiniPc);
-        assert_eq!(classify(60_000_000 - 1), DeviceClass::MiniPc);
-        assert_eq!(classify(60_000_000), DeviceClass::Desktop);
-        assert_eq!(classify(500_000_000 - 1), DeviceClass::Desktop);
-        assert_eq!(classify(500_000_000), DeviceClass::Farm);
-        assert_eq!(classify(u64::MAX), DeviceClass::Farm);
+    fn family_parses_both_wires_arm_first() {
+        assert_eq!(family_of("lm-miner-mobile/0.1 android"), Some(DeviceFamily::Arm));
+        // V2 phone agents carry the backend device too — android wins.
+        assert_eq!(
+            family_of("v2 lm-miner-mobile/0.1 android cpu"),
+            Some(DeviceFamily::Arm)
+        );
+        assert_eq!(family_of("lm-miner/0.2 cpu"), Some(DeviceFamily::Cpu));
+        assert_eq!(family_of("v2 lm-miner cpu"), Some(DeviceFamily::Cpu));
+        assert_eq!(family_of("lm-miner/0.2 opencl"), Some(DeviceFamily::Gpu));
+        assert_eq!(
+            family_of("lucky-lode-wallet/0.1 opencl"),
+            Some(DeviceFamily::Gpu)
+        );
+        assert_eq!(family_of("lucky-lode-wallet/0.1"), None);
+        assert_eq!(family_of(""), None);
+    }
+
+    #[test]
+    fn claims_stand_but_the_farm_bar_overrides_everything() {
+        // Honest miners keep their labels at real rates.
+        assert_eq!(league_for(Some(DeviceFamily::Arm), 1_500), DeviceFamily::Arm);
+        assert_eq!(league_for(Some(DeviceFamily::Cpu), 8_000), DeviceFamily::Cpu);
+        assert_eq!(league_for(Some(DeviceFamily::Gpu), 21_000), DeviceFamily::Gpu);
+        // A farm cannot hide in a small league behind any label.
+        for claimed in [None, Some(DeviceFamily::Arm), Some(DeviceFamily::Cpu), Some(DeviceFamily::Gpu)] {
+            assert_eq!(league_for(claimed, 500_000), DeviceFamily::Farm);
+            assert_eq!(league_for(claimed, u64::MAX), DeviceFamily::Farm);
+        }
+    }
+
+    #[test]
+    fn contradicted_claims_fall_back_to_rate() {
+        // A "phone" at 50 kH/s is not a phone; a "cpu" at 200 kH/s is
+        // not a CPU miner. Slow miners keep their (harmless) labels.
+        assert_eq!(league_for(Some(DeviceFamily::Arm), 50_000), DeviceFamily::Cpu);
+        assert_eq!(league_for(Some(DeviceFamily::Cpu), 200_000), DeviceFamily::Gpu);
+        assert_eq!(league_for(Some(DeviceFamily::Gpu), 500), DeviceFamily::Gpu);
+        assert_eq!(league_for(Some(DeviceFamily::Cpu), 500), DeviceFamily::Cpu);
+        // Unlabeled miners get the rate-implied family.
+        assert_eq!(league_for(None, 0), DeviceFamily::Arm);
+        assert_eq!(league_for(None, 9_000), DeviceFamily::Arm);
+        assert_eq!(league_for(None, 15_000), DeviceFamily::Cpu);
+        assert_eq!(league_for(None, 499_999), DeviceFamily::Gpu);
     }
 
     #[test]
     fn only_farms_miss_prizes() {
-        assert!(DeviceClass::Phone.prize_eligible());
-        assert!(DeviceClass::MiniPc.prize_eligible());
-        assert!(DeviceClass::Desktop.prize_eligible());
-        assert!(!DeviceClass::Farm.prize_eligible());
+        assert!(DeviceFamily::Arm.prize_eligible());
+        assert!(DeviceFamily::Cpu.prize_eligible());
+        assert!(DeviceFamily::Gpu.prize_eligible());
+        assert!(!DeviceFamily::Farm.prize_eligible());
     }
 
     #[test]
     fn wire_names_are_stable() {
-        assert_eq!(DeviceClass::Phone.as_str(), "phone");
-        assert_eq!(DeviceClass::MiniPc.as_str(), "minipc");
-        assert_eq!(DeviceClass::Desktop.as_str(), "desktop");
-        assert_eq!(DeviceClass::Farm.as_str(), "farm");
+        assert_eq!(DeviceFamily::Arm.as_str(), "arm");
+        assert_eq!(DeviceFamily::Cpu.as_str(), "cpu");
+        assert_eq!(DeviceFamily::Gpu.as_str(), "gpu");
+        assert_eq!(DeviceFamily::Farm.as_str(), "farm");
     }
 }

@@ -23,7 +23,7 @@
 //! PPLNS window); comeback state replays the full ordered stream so windows
 //! never cut a 7-day boost mid-flight.
 
-use crate::league::{classify, DeviceClass};
+use crate::league::{league_for, DeviceFamily};
 use crate::streak::{
     best_streak, current_streak, day_index, streak_bonus_per_mille, Comeback, DAY_SECS,
     OVERNIGHT_PERMILLE,
@@ -75,31 +75,40 @@ pub struct MinerAgg {
     pub days_active: u32,
     pub streak_days: u32,
     pub streak_per_mille: u64,
-    pub class: DeviceClass,
+    /// Sustained trailing-24h rate (hashes/second) — the fraud-police
+    /// input for league resolution.
+    pub hps: u64,
+    /// Rate-implied family (the pool server re-resolves the display
+    /// league with the miner's declared agent via
+    /// [`crate::league::league_for`]).
+    pub class: DeviceFamily,
 }
 
 /// One seasonal leaderboard row, ranked by effective work.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BoardEntry {
     pub miner: String,
-    pub class: DeviceClass,
+    pub class: DeviceFamily,
     pub eff_work: u64,
     pub days_active: u32,
     pub streak_days: u32,
+    /// Sustained trailing-24h rate (hashes/second) — the fraud-police
+    /// input for league resolution.
+    pub hps: u64,
 }
 
-/// Rank a leaderboard within each device class (doc 03 §3.3: phones
+/// Rank a leaderboard within each device family (doc 03 §3.3: phones
 /// race phones). Ranks are 1-based positions in the board's own order
-/// (effective work desc, miner id asc); classes come back in league
-/// ladder order — Phone, MiniPc, Desktop, Farm. Every class is present
-/// even when empty, so callers can render a stable section.
+/// (effective work desc, miner id asc); families come back in league
+/// ladder order — Arm, Cpu, Gpu, Farm. Every family is present even
+/// when empty, so callers can render a stable section.
 #[must_use]
-pub fn rank_by_class(board: Vec<BoardEntry>) -> Vec<(DeviceClass, Vec<(u32, BoardEntry)>)> {
-    const LADDER: [DeviceClass; 4] = [
-        DeviceClass::Phone,
-        DeviceClass::MiniPc,
-        DeviceClass::Desktop,
-        DeviceClass::Farm,
+pub fn rank_by_class(board: Vec<BoardEntry>) -> Vec<(DeviceFamily, Vec<(u32, BoardEntry)>)> {
+    const LADDER: [DeviceFamily; 4] = [
+        DeviceFamily::Arm,
+        DeviceFamily::Cpu,
+        DeviceFamily::Gpu,
+        DeviceFamily::Farm,
     ];
     LADDER
         .iter()
@@ -285,8 +294,10 @@ impl Ledger {
             window_days.sort_unstable();
             window_days.dedup();
             let eff_work = (e.eff_sum * (1000 + streak_pm) as u128 / 1000).min(u64::MAX as u128) as u64;
-            // Sustained trailing-24h rate; a silent day classifies as Phone
-            // (harmless: class only gates prizes, and payouts ignore class).
+            // Sustained trailing-24h rate. The ledger resolves the
+            // rate-implied family only; the pool server re-resolves the
+            // display league with the miner's declared agent
+            // (league_for): labels decide, this rate polices.
             let hps = e.class_work / CLASS_WINDOW_SECS.max(1);
             out.push(MinerAgg {
                 miner,
@@ -295,7 +306,8 @@ impl Ledger {
                 days_active: window_days.len() as u32,
                 streak_days,
                 streak_per_mille: streak_pm,
-                class: classify(hps),
+                hps,
+                class: league_for(None, hps),
             });
         }
         out.sort_by(|a, b| a.miner.cmp(&b.miner));
@@ -327,8 +339,10 @@ impl Ledger {
     }
 
     /// Seasonal board over a window: effective work desc, miner id asc.
-    /// Farm-class rows are included but flagged via [`DeviceClass`] — callers
-    /// filter prizes with [`DeviceClass::prize_eligible`].
+    /// Farm-class rows are included but flagged via [`DeviceFamily`] —
+    /// callers filter prizes with [`DeviceFamily::prize_eligible`]. The
+    /// pool server re-resolves each row's league with the miner's
+    /// declared agent before display.
     pub fn leaderboard(&self, window_secs: u64, now_ts: u64) -> Vec<BoardEntry> {
         let mut rows: Vec<BoardEntry> = self
             .aggregate(window_secs, now_ts)
@@ -339,6 +353,7 @@ impl Ledger {
                 eff_work: a.eff_work,
                 days_active: a.days_active,
                 streak_days: a.streak_days,
+                hps: a.hps,
             })
             .collect();
         rows.sort_by(|a, b| b.eff_work.cmp(&a.eff_work).then(a.miner.cmp(&b.miner)));
@@ -545,7 +560,7 @@ mod tests {
         assert_eq!(pays, vec![("m1".to_string(), 1000)]);
         let board = l.leaderboard(3 * D, 9 * D + 200);
         assert_eq!(board[0].miner, "m9"); // still ranked…
-        assert_eq!(board[0].class, DeviceClass::Farm); // …but flagged
+        assert_eq!(board[0].class, DeviceFamily::Farm); // …but flagged
     }
 
 
@@ -648,35 +663,36 @@ mod tests {
 
     #[test]
     fn rank_by_class_numbers_within_their_league() {
-        let entry = |miner: &str, class: DeviceClass, work: u64| BoardEntry {
+        let entry = |miner: &str, class: DeviceFamily, work: u64| BoardEntry {
             miner: miner.to_string(),
             class,
             eff_work: work,
             days_active: 1,
             streak_days: 0,
+            hps: 1,
         };
         let board = vec![
-            entry("p1", DeviceClass::Phone, 100),
-            entry("d1", DeviceClass::Desktop, 400),
-            entry("p2", DeviceClass::Phone, 50),
-            entry("f1", DeviceClass::Farm, 999),
-            entry("m1", DeviceClass::MiniPc, 10),
+            entry("a1", DeviceFamily::Arm, 100),
+            entry("g1", DeviceFamily::Gpu, 400),
+            entry("a2", DeviceFamily::Arm, 50),
+            entry("f1", DeviceFamily::Farm, 999),
+            entry("c1", DeviceFamily::Cpu, 10),
         ];
         let ranked = rank_by_class(board);
-        // Ladder order, every class present.
+        // Ladder order, every family present.
         assert_eq!(ranked.len(), 4);
-        assert_eq!(ranked[0].0, DeviceClass::Phone);
-        assert_eq!(ranked[1].0, DeviceClass::MiniPc);
-        assert_eq!(ranked[2].0, DeviceClass::Desktop);
-        assert_eq!(ranked[3].0, DeviceClass::Farm);
-        // Ranks are per-class, 1-based, in the board's own order.
-        let phones = &ranked[0].1;
-        assert_eq!(phones.len(), 2);
-        assert_eq!((phones[0].0, phones[0].1.miner.as_str()), (1, "p1"));
-        assert_eq!((phones[1].0, phones[1].1.miner.as_str()), (2, "p2"));
-        assert_eq!((ranked[1].1[0].0, ranked[1].1[0].1.miner.as_str()), (1, "m1"));
+        assert_eq!(ranked[0].0, DeviceFamily::Arm);
+        assert_eq!(ranked[1].0, DeviceFamily::Cpu);
+        assert_eq!(ranked[2].0, DeviceFamily::Gpu);
+        assert_eq!(ranked[3].0, DeviceFamily::Farm);
+        // Ranks are per-family, 1-based, in the board's own order.
+        let arms = &ranked[0].1;
+        assert_eq!(arms.len(), 2);
+        assert_eq!((arms[0].0, arms[0].1.miner.as_str()), (1, "a1"));
+        assert_eq!((arms[1].0, arms[1].1.miner.as_str()), (2, "a2"));
+        assert_eq!((ranked[1].1[0].0, ranked[1].1[0].1.miner.as_str()), (1, "c1"));
         assert_eq!((ranked[3].1[0].0, ranked[3].1[0].1.miner.as_str()), (1, "f1"));
-        // Empty classes stay present so callers render stable sections.
+        // Empty families stay present so callers render stable sections.
         assert!(rank_by_class(Vec::new())[2].1.is_empty());
     }
 }

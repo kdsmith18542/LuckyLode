@@ -44,13 +44,32 @@ commits a coinbase.
 > Pool dashboards celebrate draws loudly — spectacle is specified in
 > doc 06 §6.4.
 
-## 3.3 Device-class leagues (pool-side first, consensus only if forced)
+## 3.3 Device-family leagues (pool-side first, consensus only if forced)
 
-Classes (self-declared + statistically policed, see §3.6):
+Leagues are by **declared device family, policed by observed rate**
+(self-declared + statistically policed, see §3.6). When a miner
+connects it declares its family in the agent string (V1 subscribe
+agent; V2 `SetupConnection.vendor` carries the configured agent
+verbatim): `android`/`mobile` → arm (phones), `opencl`/`gpu` →
+discrete GPUs, `cpu` → CPUs. The pool reads the label and checks it
+against the miner's trailing-24h rate:
 
-- 📱 **Phone league** (< ~10 MH/s sustained)
-- 🖥️ **MiniPC/SBC league** (~10–60 MH/s)
-- 💻 **Laptop/desktop league** (> 60 MH/s, capped — farms go elsewhere)
+- 📱 **arm league** — phones, SBCs, anything ARM. Claims above
+  ~10 kH/s are not phones.
+- 🖥️ **cpu league** — laptops, desktops, servers mining on CPU.
+  Claims above ~100 kH/s are not CPU miners.
+- 🎮 **gpu league** — discrete GPUs, any hash rate below farm scale.
+- 🏭 **farm league** — anything at or above ~500 kH/s, whatever it
+  claims. Farms are paid, not feted.
+
+Labels only ever get corrected *up* (a slow desktop stays a desktop;
+a "phone" at 50 kH/s does not), unlabeled miners fall back to the
+rate-implied family, and the arm-league prize tier is attestation-gated
+(§3.6) once prizes exist. Rate bands are fraud bounds, not targets —
+generous on purpose, retuned against measured LuckyHash rates
+(phone-class CPUs ~0.02–2 kH/s, desktop CPUs ~3–10 kH/s, GTX 1080
+~15–21 kH/s; the old 10/60/500 MH/s bands assumed rates ~1000× above
+reality and made every real miner a "phone").
 
 Each league has its own seasonal leaderboard (shares + uptime + streaks),
 its own prize pool (sponsored from treasury/dev fund + pool fee slice), and
