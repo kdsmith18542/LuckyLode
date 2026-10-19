@@ -48,6 +48,14 @@ pub struct Config {
     /// stake from the node wallet, -regtest for throwaway chains).
     #[serde(default = "default_node_args")]
     pub node_args: String,
+    /// Desktop notifications for mining/payout/draw events (Settings →
+    /// Wallet). On by default; the UI dedupes repeat events per key.
+    #[serde(default = "default_true")]
+    pub notifications: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 fn default_stratum() -> String {
@@ -87,6 +95,7 @@ impl Default for Config {
             node_bin: String::new(),
             node_datadir: String::new(),
             node_args: default_node_args(),
+            notifications: true,
         }
     }
 }

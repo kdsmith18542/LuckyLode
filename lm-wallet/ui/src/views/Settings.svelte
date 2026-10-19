@@ -274,6 +274,7 @@
         node_bin: cfg.node_bin ?? "",
         node_datadir: cfg.node_datadir ?? "",
         node_args: cfg.node_args ?? "-testnet",
+        notifications: cfg.notifications !== false,
       });
       saved = "saved";
       setTimeout(() => (saved = ""), 1500);
@@ -345,6 +346,10 @@
       {/if}
       <button class="btn" onclick={rescan}>Rescan chain</button>
       <button class="btn" onclick={lockNow}>Lock now</button>
+      <label class="row" style="align-items:center;gap:8px;margin-top:10px">
+        <input type="checkbox" bind:checked={cfg.notifications} style="width:auto" />
+        <span class="muted">desktop notifications (block found · payout received · draw won)</span>
+      </label>
     </div>
     {#if reveal}
       <div class="card" style="margin-top:10px;border-color:var(--red)">

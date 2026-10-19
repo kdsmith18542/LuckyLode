@@ -1,5 +1,6 @@
 <script lang="ts">
   import * as api from "../lib/api";
+  import { notifyOnce } from "../lib/notify";
   let data = $state<any>(null);
   let svc = $state<any>(null);
   let addr = $state("");
@@ -14,6 +15,15 @@
     } catch (e) {
       err = String(e);
     }
+    // Draw-won alert: our node id (registered from this app) is the winner.
+    try {
+      const ids: string[] = JSON.parse(localStorage.getItem("ll-local-luckynodes") ?? "[]");
+      for (const d of ((data?.recent_draws ?? []) as any[])) {
+        if (d?.winner && ids.includes(d.winner)) {
+          notifyOnce(`draw-win-${d.epoch}`, "Luckynode Draw won", `your node won epoch ${d.epoch} (${api.coinU(d.budget ?? 0)})`);
+        }
+      }
+    } catch { /* advisory only */ }
   }
   $effect(() => {
     load();

@@ -1,5 +1,6 @@
 <script lang="ts">
   import * as api from "../lib/api";
+  import { notifyOnce, seenBlockMax, balanceDelta } from "../lib/notify";
   let bal = $state<any>(null);
   let txs = $state<any[]>([]);
   let pool = $state<any>(null);
@@ -11,6 +12,7 @@
   let loading = $state(true);
   let inFlight = $state(false);
   let showAll = $state(false);
+  let miningWorker = $state("");
 
   async function load() {
     if (inFlight) return; // one coordinator beats five racing scans
@@ -33,6 +35,30 @@
     } catch {
       stake = null;
     }
+    if (!miningWorker) {
+      try {
+        miningWorker = String((await api.getConfig() as any)?.mining_worker ?? "");
+      } catch { /* worker match skipped until config loads */ }
+    }
+    // Desktop alerts (best-effort, deduped per event; backend toggle gates).
+    try {
+      const b = Number(bal?.balance ?? NaN);
+      if (Number.isFinite(b) && b > 0) {
+        const delta = balanceDelta(b);
+        if (delta > 0) notifyOnce(`payout-${b}`, "Payout received", `+${api.coin(delta)} ${api.ticker()} (balance ${api.coin(b)})`);
+      }
+      const blocks = (pool?.last_blocks ?? []) as any[];
+      if (miningWorker && blocks.length > 0) {
+        const top = Math.max(...blocks.map((x: any) => Number(x?.height ?? 0) || 0));
+        if (seenBlockMax(top)) {
+          const mine = blocks.find((x: any) => Number(x?.height ?? 0) === top && ((x?.finder_name ?? x?.finder) === miningWorker));
+          if (mine) {
+            const bonus = Number(mine?.bonus ?? 0);
+            notifyOnce(`block-${top}`, "Block found", `your worker found block ${top}${bonus > 0 ? ` (+${api.coin(bonus)} bonus)` : ""}`);
+          }
+        }
+      }
+    } catch { /* advisory only */ }
   }
   $effect(() => {
     load();

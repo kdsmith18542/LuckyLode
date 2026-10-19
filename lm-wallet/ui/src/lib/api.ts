@@ -67,6 +67,7 @@ export const setConfig = (c: {
   rpc_user: string;
   rpc_pass: string;
   pool_url: string;
+  notifications?: boolean;
 }) => invoke<void>("set_config", c);
 export const setMiningConfig = (pool_stratum: string, mining_worker: string) =>
   invoke<void>("set_mining_config", { pool_stratum, mining_worker });
@@ -86,6 +87,9 @@ export const minerGpus = () => invoke<Json>("miner_gpus");
 export const minerStop = () => invoke<void>("miner_stop");
 export const minerStatus = () => invoke<Json>("miner_status");
 export const minerLog = () => invoke<string[]>("miner_log");
+/** Desktop notification (Settings → Wallet toggle gates it backend-side). */
+export const notify = (title: string, body: string) =>
+  invoke<Json>("notify", { title, body });
 
 /** Chain-aware ticker (no hardcoded LKYL).
  * Set once per refresh from node_status.chain; defaults to tLKYL (safe). */

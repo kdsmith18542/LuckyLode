@@ -43,6 +43,7 @@ pub struct PendingSend {
 
 fn main() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_notification::init())
         .setup(|app| {
             let dir = app
                 .path()
@@ -113,6 +114,7 @@ fn main() {
             commands::miner_status,
             commands::miner_log,
             commands::miner_gpus,
+            commands::notify,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Lucky Lode Wallet");

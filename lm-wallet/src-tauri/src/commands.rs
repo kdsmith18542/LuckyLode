@@ -1218,6 +1218,7 @@ pub fn set_config(
     node_bin: Option<String>,
     node_datadir: Option<String>,
     node_args: Option<String>,
+    notifications: Option<bool>,
 ) -> Result<(), String> {
     let mut cfg = state.cfg.lock().expect("cfg");
     cfg.rpc_url = rpc_url;
@@ -1234,6 +1235,9 @@ pub fn set_config(
     }
     if let Some(v) = node_args {
         cfg.node_args = v;
+    }
+    if let Some(v) = notifications {
+        cfg.notifications = v;
     }
     cfg.save(&state.cfg_path)
 }
@@ -1343,6 +1347,35 @@ pub fn miner_log(state: State<'_, AppState>) -> Result<Vec<String>, String> {
         .as_ref()
         .map(|m| m.log.lock().expect("miner log").iter().cloned().collect())
         .unwrap_or_default())
+}
+
+/// Fire-and-forget desktop notification (M4): the UI detects events
+/// (block found, payout received, draw won) on its existing polls and
+/// calls here. Respects the Settings → Wallet toggle; the UI dedupes
+/// repeat events per key so the backend stays stateless.
+#[tauri::command(async)]
+pub fn notify(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    title: String,
+    body: String,
+) -> Result<serde_json::Value, String> {
+    if !state.cfg.lock().expect("cfg").notifications {
+        return Ok(serde_json::json!({"ok": false, "skipped": "disabled"}));
+    }
+    let title: String = title.chars().take(80).collect();
+    let body: String = body.chars().take(240).collect();
+    if title.trim().is_empty() {
+        return Err("missing title".to_string());
+    }
+    use tauri_plugin_notification::NotificationExt;
+    app.notification()
+        .builder()
+        .title(title)
+        .body(body)
+        .show()
+        .map_err(|e| e.to_string())?;
+    Ok(serde_json::json!({"ok": true}))
 }
 
 #[cfg(test)]
