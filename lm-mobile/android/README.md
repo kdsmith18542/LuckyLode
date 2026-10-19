@@ -58,14 +58,21 @@ cp target/x86_64-linux-android/release/liblm_mobile.so app/src/main/jniLibs/x86_
 2. Build and sign (from this directory):
 
 ```sh
-gradle :app:testDebugUnitTest :app:assembleDebug
+gradle :app:testDebugUnitTest :app:assembleRelease
 $ANDROID_HOME/build-tools/34.0.0/apksigner sign \
-  --ks <signing keystore> --out lucky-lode-miner.apk \
-  app/build/outputs/apk/debug/app-debug.apk
+  --ks ../../internal/keystores/luckylode-miner.keystore \
+  --out ~/lucky-lode-miner-<version>.apk \
+  app/build/outputs/apk/release/app-release-unsigned.apk
 ```
 
 The signing keystore is the app's identity — updates must be signed
-with the same key. It lives off-repo (the repo is public).
+with the same key. It lives off-repo (`internal/keystores/`, gitignored;
+the password is recorded in `internal/keystores/README.md`).
+**Re-keyed 2026-10-18:** the original placeholder keystore's password
+was never recorded and is unrecoverable; the current keystore (SHA-256
+`BD:6F:FA:73…`) replaces it. Installs signed with the old key must be
+uninstalled before installing the new APK. Current release artifact:
+`~/lucky-lode-miner-0.2.0.apk` (V2 wire, rank tile, attestation).
 
 ## Test on the emulator
 
