@@ -26,6 +26,18 @@ pub struct SyncReport {
     pub tip: u64,
 }
 
+/// One mirrored league-board row (pool snapshot → `league_boards`).
+struct LeagueBoardRow {
+    class: String,
+    rank: i64,
+    miner: String,
+    name: String,
+    eff_work: i64,
+    days: i64,
+    streak: i64,
+    attested: i64,
+}
+
 /// Minimal HTTP GET (std only) → parsed JSON. The explorer reads the
 /// pool's dashboard API for game events; everything else is node RPC.
 fn http_get_json(url: &str) -> Result<serde_json::Value, String> {
@@ -82,10 +94,16 @@ fn schema(db: &Connection) -> rusqlite::Result<()> {
          CREATE TABLE IF NOT EXISTS game_blocks(
            height INTEGER PRIMARY KEY, bonus INTEGER NOT NULL,
            pot INTEGER NOT NULL, league INTEGER NOT NULL, finder TEXT NOT NULL);
-         CREATE TABLE IF NOT EXISTS draws(
-           epoch INTEGER PRIMARY KEY, height INTEGER NOT NULL, seed TEXT NOT NULL,
-           winner TEXT NOT NULL, budget INTEGER NOT NULL, txid TEXT NOT NULL,
-           cosigns INTEGER NOT NULL, time INTEGER NOT NULL);",
+          CREATE TABLE IF NOT EXISTS draws(
+            epoch INTEGER PRIMARY KEY, height INTEGER NOT NULL, seed TEXT NOT NULL,
+            winner TEXT NOT NULL, budget INTEGER NOT NULL, txid TEXT NOT NULL,
+            cosigns INTEGER NOT NULL, time INTEGER NOT NULL);
+          CREATE TABLE IF NOT EXISTS league_boards(
+            class TEXT NOT NULL, rank INTEGER NOT NULL, miner TEXT NOT NULL,
+            name TEXT NOT NULL, eff_work INTEGER NOT NULL, days INTEGER NOT NULL,
+            streak INTEGER NOT NULL, attested INTEGER NOT NULL DEFAULT 0,
+            synced_at INTEGER NOT NULL,
+            PRIMARY KEY(class, rank));",
     )
 }
 
@@ -360,6 +378,57 @@ impl Indexer {
                     )
                     .map_err(|e| format!("draw {epoch}: {e}"))?;
                 n += 1;
+            }
+        }
+        // Seasonal league boards (doc 03 §3.3: phones race phones). The
+        // pool's `league.boards` is a point-in-time snapshot, so the table
+        // is replaced wholesale on each well-formed non-empty fetch (a
+        // missing/empty fetch leaves the last boards in place).
+        if let Some(boards) = v.get("league").and_then(|l| l.get("boards")).and_then(|b| b.as_array()) {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs() as i64)
+                .unwrap_or(0);
+            let mut rows: Vec<LeagueBoardRow> = Vec::new();
+            for b in boards.iter().take(8) {
+                let class = b.get("class").and_then(|c| c.as_str()).unwrap_or("");
+                if class.is_empty() {
+                    continue;
+                }
+                let entries = b.get("entries").and_then(|e| e.as_array()).cloned().unwrap_or_default();
+                for e in entries.iter().take(500) {
+                    let rank = e.get("rank").and_then(|r| r.as_i64()).unwrap_or(0);
+                    if rank <= 0 {
+                        continue;
+                    }
+                    let miner = e.get("miner").and_then(|m| m.as_str()).unwrap_or("").to_string();
+                    let name = e.get("name").and_then(|x| x.as_str()).unwrap_or(&miner).to_string();
+                    let eff = e.get("eff_work").and_then(|x| x.as_i64()).unwrap_or(0);
+                    let days = e.get("days_active").and_then(|x| x.as_i64()).unwrap_or(0);
+                    let streak = e.get("streak").and_then(|x| x.as_i64()).unwrap_or(0);
+                    let attested = e.get("attested").and_then(|x| x.as_bool()).unwrap_or(false) as i64;
+                    rows.push(LeagueBoardRow { class: class.to_string(), rank, miner, name, eff_work: eff, days, streak, attested });
+                }
+            }
+            if !rows.is_empty() {
+                let tx = self.db.transaction().map_err(|e| format!("league snapshot: {e}"))?;
+                tx.execute("DELETE FROM league_boards", []).map_err(|e| format!("league snapshot: {e}"))?;
+                {
+                    let mut ins = tx
+                        .prepare(
+                            "INSERT INTO league_boards(class, rank, miner, name, eff_work, days, streak, attested, synced_at)
+                             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                        )
+                        .map_err(|e| format!("league snapshot: {e}"))?;
+                    for r in &rows {
+                        ins.execute(params![
+                            r.class, r.rank, r.miner, r.name, r.eff_work, r.days, r.streak, r.attested, now
+                        ])
+                        .map_err(|e| format!("league snapshot: {e}"))?;
+                    }
+                }
+                tx.commit().map_err(|e| format!("league snapshot: {e}"))?;
+                n += rows.len() as u64;
             }
         }
         Ok(n)
@@ -651,6 +720,43 @@ impl Indexer {
             "staking_supply": coins(mining.get("stakingsupply")),
         }))
     }
+
+    /// Seasonal league boards as last synced from the pool (ladder order:
+    /// phone, cpu, gpu, farm; ranks ascending within each class). Empty
+    /// before the first pool sync or while the pool sends nothing.
+    pub fn league_boards(&self) -> Result<Vec<serde_json::Value>, String> {
+        const LADDER: [&str; 4] = ["phone", "cpu", "gpu", "farm"];
+        let mut st = self
+            .db
+            .prepare(
+                "SELECT rank, miner, name, eff_work, days, streak, attested, synced_at
+                 FROM league_boards WHERE class = ?1 ORDER BY rank LIMIT 100",
+            )
+            .map_err(|e| format!("league boards: {e}"))?;
+        let mut out = Vec::new();
+        for class in LADDER {
+            let entries = st
+                .query_map([class], |r| {
+                    Ok(serde_json::json!({
+                        "rank": r.get::<_, i64>(0)?, "miner": r.get::<_, String>(1)?,
+                        "name": r.get::<_, String>(2)?, "eff_work": r.get::<_, i64>(3)?,
+                        "days": r.get::<_, i64>(4)?, "streak": r.get::<_, i64>(5)?,
+                        "attested": r.get::<_, i64>(6)? != 0,
+                        "synced_at": r.get::<_, i64>(7)?,
+                    }))
+                })
+                .map_err(|e| format!("league boards: {e}"))?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| format!("league boards: {e}"))?;
+            out.push(serde_json::json!({
+                "class": class,
+                "size": entries.len(),
+                "entries": entries,
+                "synced_at": entries.first().and_then(|e| e.get("synced_at")).cloned().unwrap_or(serde_json::Value::Null),
+            }));
+        }
+        Ok(out)
+    }
 }
 
 #[cfg(test)]
@@ -705,6 +811,37 @@ mod tests {
         assert_eq!(draws[0]["epoch"], 2);
         assert_eq!(draws[0]["cosigns"], 1);
         assert_eq!(draws[0]["budget"], 2857);
+        let _ = std::fs::remove_file(&dir);
+    }
+
+    #[test]
+    fn league_boards_roundtrip_in_ladder_order() {
+        let rpc = RpcClient::new("127.0.0.1:1", "u", "p");
+        let dir = std::env::temp_dir().join("explorer-league-test.db");
+        let _ = std::fs::remove_file(&dir);
+        let idx = Indexer::open(dir.to_str().expect("path"), rpc).expect("open");
+        // Empty before the first pool sync.
+        let boards = idx.league_boards().expect("boards");
+        assert_eq!(boards.len(), 4);
+        assert!(boards.iter().all(|b| b["entries"].as_array().map(|e| e.is_empty()).unwrap_or(false)));
+        idx.db
+            .execute_batch(
+                "INSERT INTO league_boards(class, rank, miner, name, eff_work, days, streak, attested, synced_at)
+                 VALUES ('gpu', 1, 'g1', 'g1', 400, 3, 2, 0, 7),
+                        ('phone', 2, 'a2', 'addr-a2', 500, 5, 5, 1, 7),
+                        ('phone', 1, 'a1', 'a1', 900, 6, 6, 0, 7);",
+            )
+            .expect("fixture");
+        let boards = idx.league_boards().expect("boards");
+        // Ladder order: phone first even though gpu was inserted first.
+        assert_eq!(boards[0]["class"], "phone");
+        assert_eq!(boards[0]["size"], 2);
+        assert_eq!(boards[0]["entries"][0]["miner"], "a1");
+        assert_eq!(boards[0]["entries"][1]["attested"], true);
+        assert_eq!(boards[1]["class"], "cpu");
+        assert!(boards[1]["entries"].as_array().map(|e| e.is_empty()).unwrap_or(false));
+        assert_eq!(boards[2]["class"], "gpu");
+        assert_eq!(boards[2]["entries"][0]["streak"], 2);
         let _ = std::fs::remove_file(&dir);
     }
 }

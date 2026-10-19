@@ -1,11 +1,13 @@
 //! Read-only HTTP UI + JSON API over the index. std only (mirrors the
-//! pool dashboard's server): one thread per connection, `Connection:
+//! pool's dashboard server): one thread per connection, `Connection:
 //! close`. Routes:
 //!   /                      home (tip, recent blocks, search)
 //!   /block/<height|hash>   block page        /api/block/<height|hash>
 //!   /tx/<txid>             tx page           /api/tx/<txid>
 //!   /address/<addr>        address page      /api/address/<addr>
-//!   /search?q=             smart redirect    /api/tip  /api/stats
+//!   /game                  jackpot/pot/draws (pool-reported)
+//!   /league                season league boards (pool-reported)
+//!   /search?q=             smart redirect    /api/tip  /api/stats  /api/league
 
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
@@ -17,7 +19,7 @@ const CSS: &str = "body{background:#0d1117;color:#e6edf3;font:14px ui-monospace,
 
 fn page(title: &str, body: String) -> String {
     format!(
-        "<!doctype html><html><head><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>{title} — Lucky Lode explorer</title><style>{CSS}</style></head><body><h1><a href=/ style=\"color:#ffd166;text-decoration:none\">Lucky Lode explorer</a></h1><div class=dim style=\"margin:-4px 0 12px;font-size:13px\"><a href=/>blocks</a> · <a href=/game>game</a></div>{body}</body></html>"
+        "<!doctype html><html><head><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>{title} — Lucky Lode explorer</title><style>{CSS}</style></head><body><h1><a href=/ style=\"color:#ffd166;text-decoration:none\">Lucky Lode explorer</a></h1><div class=dim style=\"margin:-4px 0 12px;font-size:13px\"><a href=/>blocks</a> · <a href=/game>game</a> · <a href=/league>leagues</a></div>{body}</body></html>"
     )
 }
 
@@ -220,8 +222,55 @@ fn game_page(idx: &Indexer) -> String {
     )
 }
 
-fn block_page(idx: &Indexer, b: &serde_json::Value) -> String {
-    let h = b["height"].as_i64().unwrap_or(0);
+/// Seasonal league boards (doc 03 §3.3: phones race phones), as last
+/// synced from the pool's dashboard API. Snapshot data, not consensus —
+/// the pool is the board authority; the explorer mirrors it.
+fn league_page(idx: &Indexer) -> String {
+    let boards = idx.league_boards().unwrap_or_default();
+    let mut sections = String::new();
+    for b in &boards {
+        let class = esc(b["class"].as_str().unwrap_or(""));
+        let entries = b["entries"].as_array().cloned().unwrap_or_default();
+        let rows = if entries.is_empty() {
+            "<tr><td colspan=5 class=dim>no ranked workers this season</td></tr>".to_string()
+        } else {
+            entries
+                .iter()
+                .map(|e| {
+                    format!(
+                        "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}d</td><td>{}</td></tr>",
+                        e["rank"].as_i64().unwrap_or(0),
+                        esc(e["name"].as_str().unwrap_or("")),
+                        e["eff_work"].as_i64().unwrap_or(0),
+                        e["days"].as_i64().unwrap_or(0),
+                        if e["streak"].as_i64().unwrap_or(0) > 0 {
+                            format!("{}d", e["streak"].as_i64().unwrap_or(0))
+                        } else {
+                            "<span class=dim>–</span>".to_string()
+                        },
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("")
+        };
+        sections += &format!(
+            "<h2>{class} <span class=dim>· {size} ranked</span></h2><table><tr><th>rank</th><th>worker</th><th>eff. work</th><th>days</th><th>streak</th></tr>{rows}</table>",
+            size = entries.len(),
+        );
+    }
+    if sections.is_empty() {
+        sections = "<p class=dim>no league data yet — the explorer mirrors the pool boards on its next pool sync.</p>".to_string();
+    }
+    page(
+        "leagues",
+        format!(
+            "{}<div class=card>Seasonal boards by device family (30-day effective work). Phones race phones; farms are paid, not feted. Snapshot mirrored from the official pool.</div>{sections}",
+            search_box(),
+        ),
+    )
+}
+
+fn block_page(idx: &Indexer, b: &serde_json::Value) -> String {    let h = b["height"].as_i64().unwrap_or(0);
     let txs = idx.block_txs(h).unwrap_or_default();
     let mut rows = String::new();
     for t in &txs {
@@ -404,12 +453,20 @@ fn handle(idx: &Indexer, method: &str, path: &str) -> String {
         });
         return json_resp(&out);
     }
+    if route == "/api/league" {
+        return json_resp(&serde_json::json!({
+            "boards": idx.league_boards().unwrap_or_default(),
+        }));
+    }
     // HTML routes
     if route == "/" {
         return html_resp(&home(idx));
     }
     if route == "/game" {
         return html_resp(&game_page(idx));
+    }
+    if route == "/league" {
+        return html_resp(&league_page(idx));
     }
     if let Some(key) = route.strip_prefix("/block/") {
         return match resolve_block(idx, key) {

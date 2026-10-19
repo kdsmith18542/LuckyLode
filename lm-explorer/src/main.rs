@@ -20,11 +20,11 @@ use lm_stratum::rpc::RpcClient;
 const USAGE: &str = "usage:
   explorer --node-rpc HOST:PORT --rpc-user U --rpc-pass P --bind HOST:PORT --db PATH [--pool-api URL] [--resync] [--sync-interval SECS]
 
-indexes the node's chain into SQLite (./explorer.db style path) and serves
-a read-only UI + JSON API: /block/<height|hash> /tx/<txid> /address/<addr>
-/game /search?q= /api/tip /api/stats /api/game. Reorg-safe (rolls back to
-the fork point). Game events (jackpot/pot/league per block, Luckynode
-Draws) come from the pool's dashboard API (best-effort).
+  indexes the node's chain into SQLite (./explorer.db style path) and serves
+  a read-only UI + JSON API: /block/<height|hash> /tx/<txid> /address/<addr>
+  /game /league /search?q= /api/tip /api/stats /api/game /api/league. Reorg-safe (rolls back to
+  the fork point). Game events (jackpot/pot/league per block, Luckynode
+  Draws) and the seasonal league boards come from the pool's dashboard API (best-effort).
 defaults: bind=127.0.0.1:8888; sync-interval=5s; pool-api=http://127.0.0.1:8081.";
 
 fn arg_value(args: &[String], i: &mut usize, flag: &str) -> Result<String, String> {
