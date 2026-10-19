@@ -1,12 +1,17 @@
 //! Testnet faucet: drip small amounts to miners' addresses (runbook §5).
 //!
-//! Serves a minimal form at `/` and `GET /api/drip?address=ADDR`. Each
+//! Serves a branded form at `/` and `GET /api/drip?address=ADDR`. Each
 //! address may drip once per `--per-address-secs` (default 24 h). Amounts
 //! come from the node wallet via `sendtoaddress`, so run it against a
 //! funded testnet wallet — never mainnet, never with real value.
 //!
 //! Rate-limit state persists to `--state-file` (atomic save per drip) so
 //! restarts don't reset limits.
+//!
+//! The page uses RELATIVE paths only (`api/drip`, `../explorer/…`) so it
+//! works behind any reverse-proxy prefix (`/faucet/`) as well as on the
+//! raw port — absolute `/api/drip` broke the live form with a 404
+//! (nginx proxies /faucet/ without a rewrite filter).
 
 use lm_stratum::rpc::RpcClient;
 use std::collections::HashMap;
@@ -25,6 +30,81 @@ defaults: rpc-user=u, rpc-pass=p, amount=1.0, per-address-secs=86400.
 Testnet only. The wallet is funded from the consensus faucet reserve
 (internal/20): the pool's --claim-faucet tops it up from per-block
 coinbase claims, so no manual funding is needed while the reserve lasts.";
+
+/// Branded faucet page (same palette as the pool/explorer dashboards).
+/// Relative paths only — works under the `/faucet/` reverse proxy and on
+/// the raw port. `__AMOUNT__` is replaced with the configured drip size.
+const PAGE: &str = r#"<!doctype html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Lucky Lode faucet — testnet</title>
+<style>
+:root{--bg:#0d1117;--card:#161b22;--line:#30363d;--fg:#e6edf3;--dim:#8b949e;--green:#7ee787;--gold:#ffd166;--red:#f85149}
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--fg);font:14px ui-monospace,SFMono-Regular,Menlo,monospace;margin:0 auto;padding:24px;max-width:720px}
+header{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin-bottom:16px}
+h1{font-size:20px;color:var(--gold);margin:0}
+.badge{border:1px solid var(--line);border-radius:999px;padding:2px 10px;font-size:12px;color:var(--dim);text-decoration:none}
+a.badge:hover{color:var(--gold);border-color:var(--gold)}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px;margin:12px 0}
+.warn{border-color:var(--gold)}
+label{display:block;color:var(--dim);font-size:12px;text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px}
+input{width:100%;padding:10px;background:var(--bg);color:var(--fg);border:1px solid var(--line);border-radius:6px;font:inherit}
+button{padding:10px 18px;background:var(--card);color:var(--gold);border:1px solid var(--gold);border-radius:6px;font:inherit;cursor:pointer;margin-top:10px}
+button:disabled{opacity:.5;cursor:default}
+a{color:var(--green)}
+.ok{color:var(--green)}.err{color:var(--red)}.dim{color:var(--dim)}
+#out{margin-top:12px;font-size:13px;overflow-wrap:anywhere}
+code{background:#0b0f14;border:1px solid var(--line);border-radius:6px;padding:1px 5px;font-size:13px}
+footer{color:var(--dim);font-size:12px;margin-top:22px;line-height:1.7}
+</style></head><body>
+<header>
+  <h1>Lucky Lode faucet</h1>
+  <span class="badge" style="color:var(--gold);border-color:var(--gold)">TESTNET</span>
+  <a class="badge" href="https://luckylode.cc/">luckylode.cc</a>
+  <a class="badge" href="../pool/">pool</a>
+  <a class="badge" href="../explorer/">explorer</a>
+</header>
+<div class="card warn">
+  <b>Testnet coins only — no value, the chain may restart.</b><br>
+  <span class="dim">Drips <b>__AMOUNT__ tLKYL</b> to your address, once per address per day.
+  Funded by the consensus faucet reserve — never by hand.</span>
+</div>
+<div class="card">
+  <label for="a">your testnet address</label>
+  <form id="f" action="api/drip" method="get">
+    <input id="a" name="address" placeholder="m… — from the wallet app or `luckyd getnewaddress`" spellcheck="false" autocomplete="off">
+    <button id="go" type="submit">Drip</button>
+  </form>
+  <div id="out"></div>
+</div>
+<footer>
+  A pool worker address works too — drip to the same address you mine with.<br>
+  API: <code>GET api/drip?address=ADDR</code> &rarr; JSON <code>{ok,amount,txid}</code>; 429 while rate-limited.<br>
+  Lucky Lode &middot; <a href="https://luckylode.cc/">luckylode.cc</a> &middot; <a href="https://github.com/kdsmith18542/LuckyLode">github</a>
+</footer>
+<script>
+const f=document.getElementById('f'),inp=document.getElementById('a'),go=document.getElementById('go'),out=document.getElementById('out');
+f.addEventListener('submit',async e=>{
+  e.preventDefault();
+  const a=inp.value.trim();
+  if(!a){out.innerHTML='<span class="err">enter an address</span>';return;}
+  go.disabled=true;out.innerHTML='<span class="dim">dripping…</span>';
+  try{
+    const r=await fetch('api/drip?address='+encodeURIComponent(a),{cache:'no-store'});
+    const j=await r.json();
+    if(j.ok){
+      out.innerHTML='<span class="ok">sent '+j.amount+' tLKYL</span> · tx <a href="../explorer/tx/'+j.txid+'">'+j.txid.slice(0,24)+'…</a>';
+    }else if(j.retry_in_secs){
+      const h=Math.floor(j.retry_in_secs/3600),m=Math.floor((j.retry_in_secs%3600)/60);
+      out.innerHTML='<span class="err">already dripped to this address — next drip in '+h+'h '+m+'m</span>';
+    }else{
+      out.innerHTML='<span class="err">'+(j.error||'request failed')+'</span>';
+    }
+  }catch(err){out.innerHTML='<span class="err">request failed: '+err+'</span>';}
+  go.disabled=false;
+});
+</script>
+</body></html>"#;
 
 fn now() -> u64 {
     SystemTime::now()
@@ -136,12 +216,17 @@ fn handle(mut stream: TcpStream, ctx: &Ctx) {
     let path = line.split_whitespace().nth(1).unwrap_or("/");
 
     if path == "/" || path.starts_with("/?") {
-        let body = "<!doctype html><html><head><meta charset=utf-8><title>Lucky Lode testnet faucet</title></head>\
-            <body><h1>Lucky Lode testnet faucet</h1>\
-            <p>Testnet coins only — no value. One drip per address per day.</p>\
-            <form method=get action=/api/drip><input name=address size=40 placeholder=t-address>\
-            <button>Drip</button></form></body></html>";
-        respond(&mut stream, "200 OK", "text/html", body);
+        let amount = if ctx.amount.fract() == 0.0 {
+            format!("{}", ctx.amount as i64)
+        } else {
+            format!("{}", ctx.amount)
+        };
+        respond(
+            &mut stream,
+            "200 OK",
+            "text/html; charset=utf-8",
+            &PAGE.replace("__AMOUNT__", &amount),
+        );
         return;
     }
 

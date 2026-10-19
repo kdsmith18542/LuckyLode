@@ -81,6 +81,7 @@ footer{margin-top:26px;color:var(--dim);font-size:12px;line-height:1.5}
   <button data-tab="miner">My miner</button>
   <a class="badge" href="https://luckylode.cc/" target="_blank" rel="noopener">luckylode.cc</a>
   <a class="badge" href="https://luckylode.cc/explorer/" target="_blank" rel="noopener">explorer</a>
+  <a class="badge" href="https://luckylode.cc/faucet/" target="_blank" rel="noopener">faucet</a>
 </nav>
 <section id="tab-dashboard" class="active">
 <div class="grid" id="cards"></div>
