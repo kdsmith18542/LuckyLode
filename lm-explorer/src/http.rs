@@ -19,9 +19,11 @@ use crate::index::Indexer;
 
 const CSS: &str = "body{background:#0d1117;color:#e6edf3;font:14px ui-monospace,Menlo,monospace;margin:0 auto;padding:24px;max-width:960px}h1{font-size:20px;color:#ffd166}a{color:#7ee787}table{border-collapse:collapse;width:100%;margin:12px 0}td,th{border:1px solid #30363d;padding:6px 10px;text-align:left;font-size:13px}.dim{color:#8b949e}.pos{color:#7ee787}.card{background:#161b22;border:1px solid #30363d;border-radius:10px;padding:12px;margin:12px 0}input{width:70%;padding:8px;background:#0d1117;color:#e6edf3;border:1px solid #30363d;border-radius:6px}button{padding:8px 14px;background:#161b22;color:#ffd166;border:1px solid #ffd166;border-radius:6px}svg.chart{width:100%;height:auto;display:block}";
 
-fn page(title: &str, body: String) -> String {
+fn page(_title: &str, body: String) -> String {
+    // Tab shows the brand only (per-page titles removed); _title is kept
+    // so call sites still label what they render.
     format!(
-        "<!doctype html><html><head><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>{title}</title><style>{CSS}</style></head><body><h1><a href=/ style=\"color:#ffd166;text-decoration:none\">Lucky Lode explorer</a></h1><div class=dim style=\"margin:-4px 0 12px;font-size:13px\"><a href=/>blocks</a> · <a href=/charts>charts</a> · <a href=/market>market</a> · <a href=/game>game</a> · <a href=/league>leagues</a> · <a href=/mempool>mempool</a> · <a href=/richlist>rich</a></div>{body}</body></html>"
+        "<!doctype html><html><head><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Lucky Lode explorer</title><style>{CSS}</style></head><body><h1><a href=/ style=\"color:#ffd166;text-decoration:none\">Lucky Lode explorer</a></h1><div class=dim style=\"margin:-4px 0 12px;font-size:13px\"><a href=/>blocks</a> · <a href=/charts>charts</a> · <a href=/market>market</a> · <a href=/game>game</a> · <a href=/league>leagues</a> · <a href=/mempool>mempool</a> · <a href=/richlist>rich</a></div>{body}</body></html>"
     )
 }
 
