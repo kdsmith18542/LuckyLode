@@ -1705,6 +1705,8 @@ impl Indexer {
             "potdivisor": ji.get("potdivisor").and_then(|v| v.as_i64()).unwrap_or(1000),
             "jackpotdivisor": ji.get("jackpotdivisor").and_then(|v| v.as_i64()).unwrap_or(100),
             "potdrought": ji.get("potdrought").and_then(|v| v.as_i64()).unwrap_or(4320),
+            "faucet": ji.get("faucet").and_then(|v| v.as_i64()).unwrap_or(0),
+            "dev": ji.get("dev").and_then(|v| v.as_i64()).unwrap_or(0),
         }))
     }
 

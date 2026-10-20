@@ -263,6 +263,8 @@ fn game_page(idx: &Indexer) -> String {
     let jd = state.get("jackpotdivisor").and_then(|v| v.as_i64()).unwrap_or(100);
     let pd = state.get("potdivisor").and_then(|v| v.as_i64()).unwrap_or(1000);
     let dl = state.get("potdrought").and_then(|v| v.as_i64()).unwrap_or(4320);
+    let faucet = state.get("faucet").and_then(|v| v.as_i64()).unwrap_or(0);
+    let dev = state.get("dev").and_then(|v| v.as_i64()).unwrap_or(0);
     let blocks = idx.game_blocks_recent(100).unwrap_or_default();
 
     let mut hits = String::new();
@@ -322,12 +324,14 @@ fn game_page(idx: &Indexer) -> String {
     page(
         "game",
         format!(
-            "{}<div class=card>jackpot reserve <b>{}</b> · pot <b>{}</b> · pot drought <b>{}/{}</b> · odds (PoW finds, pre-committed per height): jackpot 1-in-{} blocks,             pot 1-in-{} &mdash; forced splash after {} dry blocks max</div><h2>Luckynode Draws</h2><table><tr><th>epoch</th><th>height</th><th>winner</th><th>budget</th><th>cosigns</th><th>txid</th><th>seed (epoch-start block)</th></tr>{draws}</table><h2>Jackpot hits</h2><table><tr><th>height</th><th>finder</th><th>bonus</th><th>league inflow</th></tr>{hits}</table><h2>Pot splashes</h2><table><tr><th>height</th><th>finder</th><th>splash</th></tr>{splashes}</table>",
+            "{}<div class=card>jackpot reserve <b>{}</b> · pot <b>{}</b> · pot drought <b>{}/{}</b> · faucet reserve <b>{}</b> · dev reserve <b>{}</b> · odds (PoW finds, pre-committed per height): jackpot 1-in-{} blocks,             pot 1-in-{} &mdash; forced splash after {} dry blocks max</div><h2>Luckynode Draws</h2><table><tr><th>epoch</th><th>height</th><th>winner</th><th>budget</th><th>cosigns</th><th>txid</th><th>seed (epoch-start block)</th></tr>{draws}</table><h2>Jackpot hits</h2><table><tr><th>height</th><th>finder</th><th>bonus</th><th>league inflow</th></tr>{hits}</table><h2>Pot splashes</h2><table><tr><th>height</th><th>finder</th><th>splash</th></tr>{splashes}</table>",
             search_box(),
             coins(reserve),
             coins(pot),
             drought,
             dl,
+            coins(faucet),
+            coins(dev),
             jd,
             pd,
             dl,

@@ -220,8 +220,11 @@ async function tick(){
   add('shares', j.pool.shares); add('rejects', j.pool.rejects);
   add('blocks found', j.pool.blocks); add('league pool', coin(j.pool.league_pool));
   if(j.jackpot){add('jackpot reserve', coin(j.jackpot.reserve)); add('lucky pot', coin(j.jackpot.pot)); add('pot drought', j.jackpot.drought+' / '+(j.jackpot.potdrought||4320)+' blocks');}
-  if(j.jackpot&&j.jackpot.faucet!==undefined)add('faucet reserve', coin(j.jackpot.faucet));
-  if(j.jackpot&&j.jackpot.dev!==undefined)add('dev reserve', coin(j.jackpot.dev));
+  // Faucet/dev reserves and stake supply are NOT pool cards: this page is the
+  // miners' view (hashrate, payouts, winnable game layer). Treasury numbers
+  // live on the faucet page (faucet reserve) and the explorer game page
+  // (dev reserve); stake supply lives on the explorer home. All three stay
+  // in /api/stats for tooling.
   const NET=(j.network&&j.network.ticker)?j.network:{ticker:'tLKYL',name:'testnet',prefixes:'m, n, 2'};
   TICK=NET.ticker;
   const setT=(id,v)=>{const e=document.getElementById(id);if(e)e.textContent=v;};
@@ -234,7 +237,7 @@ async function tick(){
   setT('gs-worthless',NET.name==='mainnet'
     ? 'Mainnet coins are real value.'
     : 'Testnet coins have no value — this is the public burn-in.');
-  if(j.staking){add('stake supply', coin(j.staking.staking_supply ?? 0));}
+  // (no stake-supply card — see the note above the jackpot cards)
   document.getElementById('cards').innerHTML=c.join('');
   document.getElementById('mode').textContent=j.mode||'';
   document.getElementById('payoutmode').textContent=j.payout

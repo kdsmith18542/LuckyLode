@@ -67,7 +67,7 @@ footer{color:var(--dim);font-size:12px;margin-top:22px;line-height:1.7}
 <div class="card warn">
   <b>Testnet coins only — no value, the chain may restart.</b><br>
   <span class="dim">Drips <b>__AMOUNT__ tLKYL</b> to your address, once per address per day.
-  Funded by the consensus faucet reserve — never by hand.</span>
+  Funded by the consensus faucet reserve (<b>__RESERVE__ tLKYL</b> left) — never by hand.</span>
 </div>
 <div class="card">
   <label for="a">your testnet address</label>
@@ -221,11 +221,24 @@ fn handle(mut stream: TcpStream, ctx: &Ctx) {
         } else {
             format!("{}", ctx.amount)
         };
+        // Live faucet reserve (best-effort: the page renders regardless).
+        let reserve = ctx
+            .rpc
+            .call("getjackpotinfo", serde_json::json!([]))
+            .ok()
+            .and_then(|v| v.get("faucet").and_then(|s| s.as_i64()))
+            .map(|sats| {
+                let s = format!("{:.8}", sats as f64 / 100_000_000.0);
+                s.trim_end_matches('0').trim_end_matches('.').to_string()
+            })
+            .unwrap_or_else(|| "–".to_string());
         respond(
             &mut stream,
             "200 OK",
             "text/html; charset=utf-8",
-            &PAGE.replace("__AMOUNT__", &amount),
+            &PAGE
+                .replace("__AMOUNT__", &amount)
+                .replace("__RESERVE__", &reserve),
         );
         return;
     }
