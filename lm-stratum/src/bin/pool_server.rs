@@ -518,6 +518,13 @@ fn stats_json<P: TemplateProvider + 'static>(
             "window_secs": lm_pool::ledger::SEASON_WINDOW_SECS,
             "window_days": lm_pool::ledger::SEASON_WINDOW_SECS / 86_400,
             "boards": league_boards_json(&boards, &names_map, &attestations, now, 20),
+            // Per-height inflow credited, including staker/peer finds the
+            // pool did not mine (the explorer's per-block game view).
+            "credits": server
+                .league_credits()
+                .into_iter()
+                .map(|(height, amount)| serde_json::json!({"height": height, "amount": amount}))
+                .collect::<Vec<_>>(),
         },
     });
     if let Some((addr, user, pass)) = node {
@@ -1354,6 +1361,11 @@ struct PoolState {
     /// the retained block history is complete).
     #[serde(default)]
     credited_total: u64,
+    /// Per-height league inflow actually credited (height, sats),
+    /// including staker/peer finds that never enter the block history.
+    /// `default` so older state files still load.
+    #[serde(default)]
+    league_credits: Vec<(u64, u64)>,
     /// In-flight faucet claims (height, amount) — unmatured coinbase
     /// outputs the wallet cannot see yet. Survives restarts so a reboot
     /// does not re-claim a full drip on the next template.
@@ -1411,6 +1423,7 @@ fn load_state<P: TemplateProvider + 'static>(
             server.restore_shares(st.shares);
             server.restore_league(st.league_pool);
             server.restore_credited(resolve_credited_total(st.credited_total, &st.blocks));
+            server.restore_league_credits(&st.league_credits);
             let unmatured = st.faucet_unmatured.len();
             server.restore_faucet_unmatured(st.faucet_unmatured);
             let settings = st.payout_settings.len();
@@ -1493,6 +1506,7 @@ fn save_state<P: TemplateProvider + 'static>(
         attestations: server.attestations(),
         league_pool: server.league_balance(),
         credited_total: server.credited_total(),
+        league_credits: server.league_credits(),
         faucet_unmatured: server.faucet_unmatured(),
         agents: server.agents(),
         shares: server.shares_snapshot(),
@@ -3782,6 +3796,7 @@ mod tests {
             attestations: lm_stratum::server::Attestations::new(),
             league_pool: 0,
             credited_total: 9_999_999,
+            league_credits: Vec::new(),
             faucet_unmatured: Vec::new(),
             agents: Vec::new(),
             shares: lm_pool::ledger::Ledger::new(),
@@ -3821,6 +3836,7 @@ mod tests {
             attestations: lm_stratum::server::Attestations::new(),
             league_pool: 260_317,
             credited_total: 1_234_567,
+            league_credits: vec![(290u64, 1_841_270u64)],
             faucet_unmatured: vec![(12u64, 1_000u64)],
             agents: vec![("w1".to_string(), "lm-miner/0.2 cpu".to_string())],
             shares: lm_pool::ledger::Ledger::new(),
@@ -3830,6 +3846,7 @@ mod tests {
         let back: PoolState = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(back.league_pool, 260_317);
         assert_eq!(back.credited_total, 1_234_567);
+        assert_eq!(back.league_credits, vec![(290u64, 1_841_270u64)]);
         assert_eq!(back.faucet_unmatured, vec![(12u64, 1_000u64)]);
         assert_eq!(back.agents, vec![("w1".to_string(), "lm-miner/0.2 cpu".to_string())]);
         // Old state files (pre-league_pool / pre-attestations /
@@ -3856,6 +3873,7 @@ mod tests {
             attestations: lm_stratum::server::Attestations::new(),
             league_pool: 0,
             credited_total: 0,
+            league_credits: Vec::new(),
             faucet_unmatured: Vec::new(),
             agents: Vec::new(),
             shares: led,
@@ -3881,6 +3899,7 @@ mod tests {
             attestations: lm_stratum::server::Attestations::new(),
             league_pool: 0,
             credited_total: 9_999,
+            league_credits: Vec::new(),
             faucet_unmatured: vec![(7u64, 500u64)],
             agents: Vec::new(),
             shares: lm_pool::ledger::Ledger::new(),

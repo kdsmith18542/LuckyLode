@@ -69,6 +69,11 @@ pub struct BlockRecord {
 /// OOM the pool; the cap is deep enough for every UI window).
 pub const BLOCK_HISTORY_CAP: usize = 1000;
 
+/// Retained per-height league-credit entries (the explorer polls the
+/// recent window; older entries age out of the feed but the league
+/// balance itself is unaffected).
+pub const LEAGUE_CREDIT_LOG_CAP: usize = 256;
+
 /// Pool counters.
 #[derive(Debug, Clone, Default)]
 pub struct Stats {
@@ -142,6 +147,12 @@ struct Shared<P> {
     /// Credit-once gate: the accept thread and the refresh thread race on
     /// our own finds, and exactly one of them may credit a height.
     league_credited: Mutex<HashSet<u64>>,
+    /// Per-height league inflow actually credited (height → sats).
+    /// Persisted with the state file: staker/peer-found blocks never
+    /// appear in the pool's block history, so this log is the only
+    /// durable record of their game-fund inflow (the explorer mirrors
+    /// it into its per-block game view). Bounded to the recent window.
+    league_credit_log: Mutex<BTreeMap<u64, u64>>,
     /// Highest tip height reconciled for external league credit (0 =
     /// uninitialized; first tick starts from the live tip, no backfill —
     /// same restart rule as the draw loop's epoch init).
@@ -453,6 +464,15 @@ fn credit_league_once<P>(shared: &Shared<P>, height: u64, amount: u64, source: &
         .lock()
         .expect("ledger")
         .credit_league(amount);
+    if amount > 0 {
+        let mut log = shared.league_credit_log.lock().expect("league credit log");
+        log.insert(height, amount);
+        // Keep the persisted log bounded (the explorer only needs the
+        // recent window; league money itself lives in `league_pool`).
+        while log.len() > LEAGUE_CREDIT_LOG_CAP {
+            log.pop_first();
+        }
+    }
     eprintln!("pool: league +{amount} @height {height} ({source})");
     true
 }
@@ -1517,6 +1537,27 @@ impl<P: TemplateProvider + 'static> RunningServer<P> {
         self.restore_names(&[(id, addr.to_string())]);
     }
 
+    /// Per-height league inflow this pool has credited (height, amount),
+    /// ascending. Covers blocks the pool did NOT mine (staker/peer
+    /// finds) — those never enter the block history. Persisted across
+    /// restarts; bounded to the recent window.
+    pub fn league_credits(&self) -> Vec<(u64, u64)> {
+        self.shared
+            .league_credit_log
+            .lock()
+            .expect("league credit log")
+            .iter()
+            .map(|(h, a)| (*h, *a))
+            .collect()
+    }
+
+    /// Restore the persisted per-height league credits (state-file load).
+    pub fn restore_league_credits(&self, credits: &[(u64, u64)]) {
+        let mut log = self.shared.league_credit_log.lock().expect("league credit log");
+        log.clear();
+        log.extend(credits.iter().copied());
+    }
+
     /// Signal shutdown and wait for the accept loop (connection threads exit
     /// on their next 100 ms tick) and the refresh loop.
     pub fn stop(mut self) {
@@ -1615,6 +1656,7 @@ pub fn spawn_server<P: TemplateProvider + 'static>(
         dedupe: Mutex::new(Dedupe::default()),
         tip_overflow: Mutex::new(BTreeMap::new()),
         league_credited: Mutex::new(HashSet::new()),
+        league_credit_log: Mutex::new(BTreeMap::new()),
         league_tip: Mutex::new(0),
         workers: Mutex::new(WorkerStats::default()),
         balances: Mutex::new(PayoutLedger::default()),
@@ -2202,5 +2244,24 @@ mod league_tests {
         p.set_league(876_192);
         let t = p.current();
         assert_eq!((t.height, t.league), (1, 876_192));
+    }
+
+    /// League credits are exposed per height for the explorer, including
+    /// heights the pool did not mine (staker/peer finds). Zero-amount
+    /// credits (no overflow that height) are not logged.
+    #[test]
+    fn league_credits_log_credited_heights_and_survives_restore() {
+        let provider = crate::provider::MockProvider::new([0xffu8; 32], [0xffu8; 32], 1_000_000, 0);
+        let server = spawn_server(provider, "127.0.0.1:0", None, None, None).expect("spawn");
+        assert!(credit_league_once(&server.shared, 10, 500, "tip"));
+        assert!(credit_league_once(&server.shared, 11, 750, "tip"));
+        assert!(credit_league_once(&server.shared, 12, 0, "tip"));
+        // Credit-once: a second attempt for the same height is a no-op.
+        assert!(!credit_league_once(&server.shared, 10, 500, "tip"));
+        assert_eq!(server.league_credits(), vec![(10, 500), (11, 750)]);
+        // Restore path (state-file load) replaces the log wholesale.
+        server.restore_league_credits(&[(290, 1_841_270)]);
+        assert_eq!(server.league_credits(), vec![(290, 1_841_270)]);
+        server.stop();
     }
 }

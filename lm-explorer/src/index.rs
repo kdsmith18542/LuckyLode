@@ -672,6 +672,24 @@ impl Indexer {
                 n += 1;
             }
         }
+        // Per-height league inflow the pool credited. This covers blocks
+        // the pool did NOT mine (staker/peer finds): they never appear in
+        // `last_blocks`, but their overflow still moved money. Upsert
+        // league only — never clobber bonus/pot/finder already recorded
+        // from a pool-found block.
+        if let Some(credits) = v.get("league").and_then(|l| l.get("credits")).and_then(|c| c.as_array()) {
+            let rows: Vec<(i64, i64)> = credits
+                .iter()
+                .filter_map(|c| {
+                    Some((
+                        c.get("height")?.as_i64()?,
+                        c.get("amount")?.as_i64()?,
+                    ))
+                })
+                .filter(|(h, a)| *h >= 0 && *a > 0)
+                .collect();
+            n += self.apply_league_credits(&rows)?;
+        }
         if let Some(draws) = v
             .get("luckynode")
             .and_then(|l| l.get("recent_draws"))
@@ -1037,6 +1055,25 @@ impl Indexer {
                 "league": league, "finder": finder,
             })
         }))
+    }
+
+    /// Apply per-height league inflow from the pool (including blocks it
+    /// did not mine). Insert-or-update league only, so a pool-found
+    /// block's bonus/pot/finder stay intact. Returns rows touched.
+    fn apply_league_credits(&mut self, credits: &[(i64, i64)]) -> Result<u64, String> {
+        let mut n = 0u64;
+        for (height, amount) in credits {
+            self.db
+                .execute(
+                    "INSERT INTO game_blocks(height, bonus, pot, league, finder)
+                     VALUES (?1, 0, 0, ?2, 'external')
+                     ON CONFLICT(height) DO UPDATE SET league=excluded.league",
+                    params![height, amount],
+                )
+                .map_err(|e| format!("league credit {height}: {e}"))?;
+            n += 1;
+        }
+        Ok(n)
     }
 
     /// Recent game blocks (newest first): every row the pool reported.
@@ -1932,6 +1969,40 @@ mod tests {
         assert!(m["market_cap"].is_null());
         // The supply curve is present for the chart.
         assert_eq!(m["supply_curve"].as_array().map(|c| c.len()), Some(1));
+        let _ = std::fs::remove_file(&dir);
+    }
+
+    #[test]
+    fn league_credits_cover_external_finds_without_clobbering_rewards() {
+        // A staker/peer-found block never appears in the pool's
+        // `last_blocks`, so its league inflow is only visible through the
+        // `league.credits` feed. Applying it must create the row (so the
+        // block's inflow shows) and must not disturb bonus/pot/finder on
+        // a block the pool DID mine.
+        let rpc = RpcClient::new("127.0.0.1:1", "u", "p");
+        let dir = std::env::temp_dir().join("explorer-league-credit-test.db");
+        let _ = std::fs::remove_file(&dir);
+        let mut idx = Indexer::open(dir.to_str().expect("path"), rpc).expect("open");
+        idx.db
+            .execute_batch(
+                "INSERT INTO game_blocks(height, bonus, pot, league, finder)
+                 VALUES (7, 111, 22, 0, 'poolminer');",
+            )
+            .expect("fixture");
+        let n = idx
+            .apply_league_credits(&[(7, 555), (290, 1_841_270)])
+            .expect("apply");
+        assert_eq!(n, 2);
+        // Pool-found row: league updated, rewards preserved.
+        let g7 = idx.game_block(7).expect("g7").expect("row");
+        assert_eq!((g7["league"].as_i64(), g7["bonus"].as_i64(), g7["pot"].as_i64()), (Some(555), Some(111), Some(22)));
+        assert_eq!(g7["finder"], "poolminer");
+        // External-find row: created with league only.
+        let g290 = idx.game_block(290).expect("g290").expect("row");
+        assert_eq!(g290["league"], 1_841_270);
+        assert_eq!((g290["bonus"].as_i64(), g290["pot"].as_i64()), (Some(0), Some(0)));
+        // New rows identify themselves as non-pool finds.
+        assert_eq!(g290["finder"], "external");
         let _ = std::fs::remove_file(&dir);
     }
 
