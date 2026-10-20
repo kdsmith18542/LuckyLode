@@ -76,10 +76,7 @@ export const setConfig = (c: {
   notifications?: boolean;
 }) => invoke<void>("set_config", c);
 export const setMiningConfig = (pool_stratum: string, mining_worker: string) =>
-  invoke<void>("set_mining_config", {
-    poolStratum: pool_stratum,
-    miningWorker: mining_worker,
-  });
+  invoke<void>("set_mining_config", { pool_stratum, mining_worker });
 export const minerStart = (p: {
   pool: string;
   worker: string;
