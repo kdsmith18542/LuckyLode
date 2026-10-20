@@ -171,7 +171,15 @@ pub fn node_start(state: State<'_, AppState>) -> Result<serde_json::Value, Strin
     // Wait for RPC (rebuilds the client from current settings each poll).
     let rpc = node::client(&state)?;
     match node_proc::wait_for_rpc(&rpc, &datadir, std::time::Duration::from_secs(180)) {
-        Ok(height) => Ok(json!({"pid": pid, "height": height, "node_bin": bin, "auto_bin": auto_bin, "datadir": datadir})),
+        Ok(height) => {
+            // Fresh process forgot its locks: re-arm tripwires (best-effort).
+            if let Ok(locked) = luckynode_lock_bonds_inner(&state) {
+                if !locked.is_empty() {
+                    eprintln!("node_start: re-locked bond coins {locked:?}");
+                }
+            }
+            Ok(json!({"pid": pid, "height": height, "node_bin": bin, "auto_bin": auto_bin, "datadir": datadir}))
+        }
         Err(e) => {
             // Never leave a deaf child behind: kill, reap, clear.
             let mut slot = state.node_proc.lock().expect("node proc");
@@ -1188,6 +1196,13 @@ pub fn luckynode_service_start(
     let addr_secret = address_key(&seed, net, &address, recv_next, change_next)?;
     let svc = luckynode::start(url, id.clone(), address, key, addr_secret, bond_utxo);
     services.insert(id, svc);
+    drop(services);
+    // Service (re)start re-registers bare: re-arm locks (best-effort).
+    if let Ok(locked) = luckynode_lock_bonds_inner(&state) {
+        if !locked.is_empty() {
+            eprintln!("service_start: re-locked bond coins {locked:?}");
+        }
+    }
     Ok(json!({ "running": true }))
 }
 
@@ -1209,6 +1224,39 @@ pub fn luckynode_service_status(state: State<'_, AppState>) -> Result<serde_json
     let services = state.services.lock().expect("services");
     let ids: Vec<&String> = services.keys().collect();
     Ok(json!({ "running": ids }))
+}
+
+/// Re-lock every locally-registered designated bond coin in the connected
+/// node (`lockunspent`). Locks die with the node process, so this runs
+/// after node/service (re)starts and on demand from the Luckynodes view.
+/// Loopback nodes only — never fire wallet writes at a shared node.
+#[tauri::command(async)]
+pub fn luckynode_lock_bonds(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
+    let locked = luckynode_lock_bonds_inner(&state)?;
+    Ok(json!({ "locked": locked }))
+}
+
+fn luckynode_lock_bonds_inner(state: &AppState) -> Result<Vec<String>, String> {
+    let (pool_url, dir, rpc_url) = {
+        let cfg = state.cfg.lock().expect("cfg");
+        (
+            cfg.pool_url.clone(),
+            state
+                .cfg_path
+                .parent()
+                .ok_or("no config dir")?
+                .to_path_buf(),
+            cfg.rpc_url.clone(),
+        )
+    };
+    if !is_loopback_host(&node_host(&rpc_url)) {
+        return Err(
+            "bond locking targets your own node — switch Settings → Node to \"this computer\" first"
+                .to_string(),
+        );
+    }
+    let rpc = node::client(state)?;
+    luckynode::lock_local_bonds(&pool_url, &rpc, &dir)
 }
 
 #[tauri::command]

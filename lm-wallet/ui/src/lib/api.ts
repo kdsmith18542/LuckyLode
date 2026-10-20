@@ -56,6 +56,7 @@ export const serviceStart = (id: string, address: string, bondUtxo?: string | nu
   invoke<Json>("luckynode_service_start", { id, address, bondUtxo: bondUtxo ?? null });
 export const serviceStop = (id: string) => invoke<Json>("luckynode_service_stop", { id });
 export const serviceStatus = () => invoke<Json>("luckynode_service_status");
+export const lockBonds = () => invoke<Json>("luckynode_lock_bonds");
 export const getConfig = () => invoke<Json>("get_config");
 export const testRpc = () => invoke<Json>("test_rpc");
 export const protectAddress = (address: string) =>

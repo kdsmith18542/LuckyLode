@@ -282,6 +282,18 @@ fn now_secs() -> u64 {
         .unwrap_or(0)
 }
 
+/// Parse a locked-collateral reference ("txid:vout"), shared by
+/// registration input and any client that re-arms a lock from it.
+pub fn parse_bond_utxo(s: &str) -> Result<(String, u32), String> {
+    let (txid, vout) = s.split_once(':').ok_or("bond_utxo must be txid:vout")?;
+    if txid.len() != 64
+        || !txid.chars().all(|c| c.is_ascii_hexdigit())
+        || vout.parse::<u32>().is_err()
+    {
+        return Err("bond_utxo must be txid:vout (64 hex + index)".to_string());
+    }
+    Ok((txid.to_string(), vout.parse::<u32>().map_err(|e| e.to_string())?))
+}
 /// Registration body proving the registrar controls the payout address:
 /// the address's key signs a canonical, timestamped message (the pool
 /// verifies via the node's `verifymessage`). Shared by the wallet's embedded
@@ -307,13 +319,7 @@ pub fn register_body(
         "ts": ts,
     });
     if let Some(utxo) = bond_utxo {
-        let (txid, vout) = utxo.split_once(':').ok_or("bond_utxo must be txid:vout")?;
-        if txid.len() != 64
-            || !txid.chars().all(|c| c.is_ascii_hexdigit())
-            || vout.parse::<u32>().is_err()
-        {
-            return Err("bond_utxo must be txid:vout (64 hex + index)".to_string());
-        }
+        parse_bond_utxo(utxo)?;
         body["bond_utxo"] = serde_json::Value::String(utxo.to_string());
     }
     Ok(body)
@@ -331,6 +337,15 @@ mod tests {
         assert_eq!(tenure_weight_millis(TIER_2_SECS - 1), 1500);
         assert_eq!(tenure_weight_millis(TIER_2_SECS), 2000);
         assert_eq!(tenure_weight_millis(u64::MAX), 2000);
+    }
+
+    #[test]
+    fn bond_utxo_parses_and_rejects_shapes() {
+        let (t, v) = parse_bond_utxo(&("ab".repeat(32) + ":3")).expect("valid");
+        assert_eq!((t.len(), v), (64, 3));
+        assert!(parse_bond_utxo("nope").is_err());
+        assert!(parse_bond_utxo("ab:3").is_err());
+        assert!(parse_bond_utxo(&("ab".repeat(32) + ":x")).is_err());
     }
 
     #[test]

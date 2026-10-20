@@ -139,3 +139,67 @@ pub fn start(
         bond_utxo: bond_for_svc,
     }
 }
+
+/// Lock every locally-registered designated bond coin in the connected
+/// node (`lockunspent`): neither the node minter nor a manual send may
+/// spend tripwire coins. Locks are session-only — the node forgets them
+/// on restart — so callers re-arm after (re)starts. Local ids come from
+/// the app-dir key files; designations from the pool rows. Returns the
+/// locked "txid:vout" list (empty = nothing designated).
+pub fn lock_local_bonds(
+    pool_url: &str,
+    rpc: &lm_stratum::rpc::RpcClient,
+    dir: &std::path::Path,
+) -> Result<Vec<String>, String> {
+    let mut ids = Vec::new();
+    let entries = std::fs::read_dir(dir).map_err(|e| format!("app dir: {e}"))?;
+    for e in entries.flatten() {
+        let name = e.file_name().to_str().unwrap_or("").to_string();
+        if !name.starts_with("luckynode-") || !name.ends_with(".key") {
+            continue;
+        }
+        let data = std::fs::read(e.path()).unwrap_or_default();
+        if data.len() != 32 {
+            continue;
+        }
+        let mut k = [0u8; 32];
+        k.copy_from_slice(&data);
+        use ed25519_dalek::SigningKey;
+        ids.push(notarize::hex(
+            &SigningKey::from_bytes(&k).verifying_key().to_bytes(),
+        ));
+    }
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let body =
+        crate::pool::get(pool_url, "api/luckynodes").map_err(|e| format!("pool: {e}"))?;
+    let v: serde_json::Value =
+        serde_json::from_str(&body).map_err(|e| format!("pool json: {e}"))?;
+    let mut outs = Vec::new();
+    let mut locked = Vec::new();
+    for n in v
+        .get("nodes")
+        .and_then(|x| x.as_array())
+        .cloned()
+        .unwrap_or_default()
+    {
+        let id = n.get("id").and_then(|x| x.as_str()).unwrap_or("");
+        let u = n
+            .get("bond_utxo")
+            .and_then(|x| x.as_str())
+            .unwrap_or("");
+        if u.is_empty() || !ids.iter().any(|i| i == id) {
+            continue;
+        }
+        let (txid, vout) = lm_luckynode::parse_bond_utxo(u)?;
+        outs.push(serde_json::json!({"txid": txid, "vout": vout}));
+        locked.push(u.to_string());
+    }
+    if outs.is_empty() {
+        return Ok(Vec::new());
+    }
+    rpc.call("lockunspent", serde_json::json!([false, outs]))
+        .map_err(|e| format!("lockunspent: {e}"))?;
+    Ok(locked)
+}

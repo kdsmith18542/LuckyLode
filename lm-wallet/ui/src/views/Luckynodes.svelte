@@ -77,6 +77,20 @@
       err = String(e);
     }
   }
+  async function relock() {
+    msg = "";
+    err = "";
+    try {
+      const r: any = await api.lockBonds();
+      const locked: string[] = r.locked ?? [];
+      msg = locked.length
+        ? `re-locked ${locked.length} bond coin${locked.length === 1 ? "" : "s"} in the node`
+        : "no designated bond coins to lock";
+      await load();
+    } catch (e) {
+      err = String(e);
+    }
+  }
 
   const nodes = $derived<any[]>(data?.nodes ?? []);
   const draws = $derived<any[]>(data?.recent_draws ?? []);
@@ -143,6 +157,8 @@
   the local service runs only while this app is open — closing the wallet stops heartbeats
   (the node goes idle and sits out draws until you start it again). For 24/7 participation run
   the standalone <span class="addr">luckynode</span> daemon on an always-on machine instead.
+  Bond locks live in the node and die with it: restarts re-arm automatically,
+  or press <button class="btn" onclick={relock}>re-lock bond coins</button> any time.
 </div>
 
 <h2>Register a luckynode</h2>
