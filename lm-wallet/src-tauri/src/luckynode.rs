@@ -11,6 +11,9 @@ pub struct Service {
     pub stop: Arc<AtomicBool>,
     /// Payout-address key (proves ownership at each registration).
     pub addr_secret: [u8; 32],
+    /// Locked bond collateral, re-sent on every registration so the lock
+    /// survives even a pool state wipe.
+    pub bond_utxo: Option<String>,
 }
 
 fn now_secs() -> u64 {
@@ -53,11 +56,14 @@ pub fn start(
     address: String,
     key: [u8; 32],
     addr_secret: [u8; 32],
+    bond_utxo: Option<String>,
 ) -> Service {
     let stop = Arc::new(AtomicBool::new(false));
     let stop_thread = Arc::clone(&stop);
+    let bond_first = bond_utxo.clone();
+    let bond_for_svc = bond_utxo.clone();
     std::thread::spawn(move || {
-        let reg = match lm_luckynode::register_body(&id, &address, &addr_secret) {
+        let reg = match lm_luckynode::register_body(&id, &address, &addr_secret, bond_first.as_deref()) {
             Ok(b) => b,
             Err(e) => {
                 eprintln!("luckynode {id}: register sign failed: {e}");
@@ -81,7 +87,7 @@ pub fn start(
                         Err(e) => {
                             eprintln!("luckynode {id}: heartbeat: {e}");
                             if e.contains("unknown node") {
-                                let reg = match lm_luckynode::register_body(&id, &address, &addr_secret) {
+                                let reg = match lm_luckynode::register_body(&id, &address, &addr_secret, bond_utxo.as_deref()) {
                                     Ok(b) => b,
                                     Err(e) => {
                                         eprintln!("luckynode {id}: register sign failed: {e}");
@@ -130,5 +136,6 @@ pub fn start(
     Service {
         stop,
         addr_secret,
+        bond_utxo: bond_for_svc,
     }
 }

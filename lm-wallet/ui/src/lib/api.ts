@@ -44,10 +44,10 @@ export const emission = () => invoke<Json>("emission_info");
 export const nextDraw = () => invoke<Json>("next_draw");
 export const luckynodes = () => invoke<Json>("luckynodes");
 export const poolStats = () => invoke<Json>("pool_stats");
-export const luckynodeRegister = (address: string) =>
-  invoke<Json>("luckynode_register", { address });
-export const serviceStart = (id: string, address: string) =>
-  invoke<Json>("luckynode_service_start", { id, address });
+export const luckynodeRegister = (address: string, bondUtxo?: string) =>
+  invoke<Json>("luckynode_register", { address, bond_utxo: bondUtxo ?? null });
+export const serviceStart = (id: string, address: string, bondUtxo?: string | null) =>
+  invoke<Json>("luckynode_service_start", { id, address, bond_utxo: bondUtxo ?? null });
 export const serviceStop = (id: string) => invoke<Json>("luckynode_service_stop", { id });
 export const serviceStatus = () => invoke<Json>("luckynode_service_status");
 export const getConfig = () => invoke<Json>("get_config");

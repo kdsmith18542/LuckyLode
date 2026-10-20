@@ -1050,10 +1050,13 @@ pub fn pool_stats(state: State<'_, AppState>) -> Result<serde_json::Value, Strin
 /// The payout address MUST be one this wallet controls: registration signs a
 /// canonical message with the address's key, and the pool proves ownership
 /// via the node's `verifymessage` (Sybil control: no key, no node).
+/// `bond_utxo` ("txid:vout", optional) designates the locked collateral —
+/// the mainnet form. Without it the bond is a plain balance check.
 #[tauri::command(async)]
 pub fn luckynode_register(
     state: State<'_, AppState>,
     address: String,
+    bond_utxo: Option<String>,
 ) -> Result<serde_json::Value, String> {
     if !lm_pool::payout::valid_payout_address(&address) {
         return Err(format!("'{address}' is not a valid payout address"));
@@ -1083,7 +1086,7 @@ pub fn luckynode_register(
         wallet::network_of(&rpc)?
     };
     let addr_secret = address_key(&seed, net, &address, recv_next, change_next)?;
-    let reg = lm_luckynode::register_body(&id, &address, &addr_secret)?;
+    let reg = lm_luckynode::register_body(&id, &address, &addr_secret, bond_utxo.as_deref())?;
     let body = pool::post(
         &url,
         "api/luckynode/register",
@@ -1128,11 +1131,14 @@ fn address_key(
 }
 
 /// Start the embedded heartbeat/cosign service for a node id.
+/// `bond_utxo` is re-sent on (re-)registration so the lock survives even a
+/// pool state wipe; the pool also keeps it across bare re-registers.
 #[tauri::command]
 pub fn luckynode_service_start(
     state: State<'_, AppState>,
     id: String,
     address: String,
+    bond_utxo: Option<String>,
 ) -> Result<serde_json::Value, String> {
     let url = state.cfg.lock().expect("cfg").pool_url.clone();
     let dir = state
@@ -1164,7 +1170,7 @@ pub fn luckynode_service_start(
         wallet::network_of(&rpc)?
     };
     let addr_secret = address_key(&seed, net, &address, recv_next, change_next)?;
-    let svc = luckynode::start(url, id.clone(), address, key, addr_secret);
+    let svc = luckynode::start(url, id.clone(), address, key, addr_secret, bond_utxo);
     services.insert(id, svc);
     Ok(json!({ "running": true }))
 }

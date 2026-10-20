@@ -286,22 +286,37 @@ fn now_secs() -> u64 {
 /// the address's key signs a canonical, timestamped message (the pool
 /// verifies via the node's `verifymessage`). Shared by the wallet's embedded
 /// service and the CLI daemon so the format never drifts.
+/// `bond_utxo` is the optional locked collateral ("txid:vout"): when
+/// present the pool evicts the node the moment that output is spent.
+/// Shape-checked here so typos fail fast instead of pool-side.
 pub fn register_body(
     id: &str,
     address: &str,
     payout_secret: &[u8; 32],
+    bond_utxo: Option<&str>,
 ) -> Result<serde_json::Value, String> {
     let ts = now_secs();
     let msg = format!("luckynode-register:v1:{id}:{address}:{ts}");
     let sig = lm_keys::sign_message(payout_secret, &msg)?;
-    Ok(serde_json::json!({
+    let mut body = serde_json::json!({
         "id": id,
         "address": address,
         "pubkey": id,
         "msg": msg,
         "sig": sig,
         "ts": ts,
-    }))
+    });
+    if let Some(utxo) = bond_utxo {
+        let (txid, vout) = utxo.split_once(':').ok_or("bond_utxo must be txid:vout")?;
+        if txid.len() != 64
+            || !txid.chars().all(|c| c.is_ascii_hexdigit())
+            || vout.parse::<u32>().is_err()
+        {
+            return Err("bond_utxo must be txid:vout (64 hex + index)".to_string());
+        }
+        body["bond_utxo"] = serde_json::Value::String(utxo.to_string());
+    }
+    Ok(body)
 }
 
 #[cfg(test)]
@@ -316,6 +331,26 @@ mod tests {
         assert_eq!(tenure_weight_millis(TIER_2_SECS - 1), 1500);
         assert_eq!(tenure_weight_millis(TIER_2_SECS), 2000);
         assert_eq!(tenure_weight_millis(u64::MAX), 2000);
+    }
+
+    #[test]
+    fn register_body_carries_optional_bond_utxo() {
+        let secret = [7u8; 32];
+        let bare = register_body("id1", "mAddr", &secret, None).expect("bare");
+        assert!(bare.get("bond_utxo").is_none());
+        assert_eq!(bare.get("id").and_then(|v| v.as_str()), Some("id1"));
+        let utxo = "ab".repeat(32) + ":3";
+        let locked =
+            register_body("id1", "mAddr", &secret, Some(&utxo)).expect("locked");
+        assert_eq!(
+            locked.get("bond_utxo").and_then(|v| v.as_str()),
+            Some(utxo.as_str())
+        );
+        // Junk shapes fail fast, before any pool round-trip.
+        assert!(register_body("id1", "mAddr", &secret, Some("nope")).is_err());
+        assert!(register_body("id1", "mAddr", &secret, Some("ab:3")).is_err());
+        let bad_vout = "ab".repeat(32) + ":x";
+        assert!(register_body("id1", "mAddr", &secret, Some(&bad_vout)).is_err());
     }
 
     #[test]

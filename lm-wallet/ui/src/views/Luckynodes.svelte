@@ -4,8 +4,19 @@
   let data = $state<any>(null);
   let svc = $state<any>(null);
   let addr = $state("");
+  let bondUtxo = $state("");
   let msg = $state("");
   let err = $state("");
+  // Locked collateral per local node id (survives pool wipes: Start
+  // re-sends it; the pool also keeps it across bare re-registers).
+  const bondKey = "ll-local-bond-utxo";
+  const storedBonds = (): Record<string, string> => {
+    try {
+      return JSON.parse(localStorage.getItem(bondKey) ?? "{}");
+    } catch {
+      return {};
+    }
+  };
 
   async function load() {
     try {
@@ -35,10 +46,15 @@
     msg = "";
     err = "";
     try {
-      const r: any = await api.luckynodeRegister(addr.trim());
+      const r: any = await api.luckynodeRegister(addr.trim(), bondUtxo.trim() || undefined);
       const ids = new Set(localIds);
       ids.add(r.id);
       localIds = [...ids];
+      if (bondUtxo.trim()) {
+        const m = storedBonds();
+        m[r.id] = bondUtxo.trim();
+        localStorage.setItem(bondKey, JSON.stringify(m));
+      }
       msg = `registered ${api.short(r.id, 16)} — key stored at ${r.key_path}`;
       await load();
     } catch (e) {
@@ -47,7 +63,7 @@
   }
   async function start(n: any) {
     try {
-      await api.serviceStart(n.id, n.address);
+      await api.serviceStart(n.id, n.address, n.bond_utxo ?? storedBonds()[n.id] ?? null);
       await load();
     } catch (e) {
       err = String(e);
@@ -97,7 +113,7 @@
       <tr>
         <td>{api.short(n.id, 10)}</td>
         <td class="muted">{api.short(n.address, 10)}</td>
-        <td><span class="pill" class:ok={n.bond_ok} class:bad={!n.bond_ok}>{n.bond_ok ? "bonded" : "under"}</span></td>
+        <td><span class="pill" class:ok={n.bond_ok} class:bad={!n.bond_ok}>{n.bond_ok ? "bonded" : "under"}</span>{#if n.bond_utxo} <span class="pill" title="locked collateral {n.bond_utxo} — spending it evicts this node">locked</span>{/if}</td>
         <td><span class="pill" class:ok={data.active?.includes(n.id)} class:off={!data.active?.includes(n.id)}>{data.active?.includes(n.id) ? "yes" : "idle"}</span></td>
         <td title="days since first heartbeat">{n.tenure_secs < 172800 ? Math.max(1, Math.round(n.tenure_secs / 3600)) + "h" : days(n.tenure_secs) + "d"}</td>
         <td class="muted" title="draw odds multiplier from tenure">{weight(n.weight_millis)}</td>
@@ -133,6 +149,8 @@
 <div class="card" style="max-width:640px">
   <label for="addr">payout address (holds the bond)</label>
   <input id="addr" bind:value={addr} placeholder="L… / m… / n…" spellcheck="false" />
+  <label for="bondutxo" style="margin-top:10px">locked bond UTXO, optional (txid:vout — mainnet form: spending it evicts the node)</label>
+  <input id="bondutxo" bind:value={bondUtxo} placeholder="64-hex txid : output index" spellcheck="false" />
   <div class="row" style="margin-top:12px">
   <button class="btn primary" disabled={!addr} onclick={register}>Generate key + register</button>
   <span class="muted">ed25519 identity stored 0600 in the app dir; the wallet can run the service for you — registration proves this wallet owns the payout address (no key, no node)</span>
@@ -154,7 +172,7 @@
         <td class="muted">{api.short(d.txid, 12)}</td>
       </tr>
     {/each}
-    {#if draws.length === 0}<tr><td colspan="6" class="muted">no draws yet — one fires every 2,880 blocks</td></tr>{/if}
+    {#if draws.length === 0}<tr><td colspan="6" class="muted">no draws yet — one fires every {data?.config?.epoch ?? "–"} blocks</td></tr>{/if}
   </tbody>
 </table>
 {#if err}<div class="err">{err}</div>{/if}

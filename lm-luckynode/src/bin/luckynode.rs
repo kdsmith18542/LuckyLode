@@ -4,8 +4,11 @@
 //! usage:
 //!   luckynode --pool HOST:PORT --address ADDR --key-file PATH
 //!             [--payout-key-hex HEX | --payout-key-file PATH]
+//!             [--bond-utxo TXID:VOUT]
 //!             [--heartbeat-interval SECS] [--register-only] [--once]
 //! The payout key secret may also come from LUCKYNODE_PAYOUT_KEY (env).
+//! --bond-utxo designates the locked bond collateral (mainnet form);
+//! without it the bond is a plain address-balance check.
 //!
 //! The key file holds 32 raw ed25519 secret bytes (created with mode 0600
 //! if missing, from /dev/urandom). The node id is the hex pubkey.
@@ -19,7 +22,7 @@ use lm_luckynode::register_body;
 
 fn usage() -> ! {
     eprintln!(
-        "usage:\n  luckynode --pool HOST:PORT --address ADDR --key-file PATH [--payout-key-hex HEX | --payout-key-file PATH | LUCKYNODE_PAYOUT_KEY env] [--heartbeat-interval SECS] [--register-only] [--once]"
+        "usage:\n  luckynode --pool HOST:PORT --address ADDR --key-file PATH [--payout-key-hex HEX | --payout-key-file PATH | LUCKYNODE_PAYOUT_KEY env] [--bond-utxo TXID:VOUT] [--heartbeat-interval SECS] [--register-only] [--once]"
     );
     std::process::exit(2);
 }
@@ -87,6 +90,7 @@ fn main() {
     let mut address = String::new();
     let mut key_file = String::new();
     let mut payout_key_hex = String::new();
+    let mut bond_utxo = String::new();
     let mut interval: u64 = 60;
     let mut register_only = false;
     let mut once = false;
@@ -125,8 +129,11 @@ fn main() {
                     .trim()
                     .to_string();
             }
-            "--heartbeat-interval" => {
+            "--bond-utxo" => {
                 i += 1;
+                bond_utxo = args.get(i).unwrap_or_else(|| usage()).clone();
+            }
+            "--heartbeat-interval" => {                i += 1;
                 interval = args
                     .get(i)
                     .unwrap_or_else(|| usage())
@@ -183,8 +190,16 @@ fn main() {
         }
     };
     println!("luckynode {id} -> pool {pool} (payout {address})");
+    // Locked collateral, mainnet form: sent on every registration (first
+    // designate and later re-registers alike — the pool keeps it across
+    // bare re-registers, but resending survives even a pool state wipe).
+    let bond_opt = if bond_utxo.is_empty() {
+        None
+    } else {
+        Some(bond_utxo.as_str())
+    };
 
-    let reg = match register_body(&id, &address, &payout_secret) {
+    let reg = match register_body(&id, &address, &payout_secret, bond_opt) {
         Ok(b) => b,
         Err(e) => {
             eprintln!("luckynode: register sign failed: {e}");
@@ -219,7 +234,7 @@ fn main() {
                 eprintln!("luckynode: heartbeat failed: {e}");
                 // Pool restarted (registry wiped): re-register, then retry.
                 if e.contains("unknown node") {
-                    match register_body(&id, &address, &payout_secret) {
+                    match register_body(&id, &address, &payout_secret, bond_opt) {
                         Ok(reg) => match http(&pool, "POST", "/api/luckynode/register", Some(&reg.to_string())) {
                             Ok(b) => println!("re-register: {b}"),
                             Err(e) => eprintln!("luckynode: re-register failed: {e}"),

@@ -2247,15 +2247,16 @@ fn luckynode_list(ctx: &HttpCtx) -> String {
         .registry
         .all_nodes()
         .iter()
-        .map(|n| {
-            serde_json::json!({
-                "id": n.id, "address": n.address,
-                "heartbeats": n.heartbeats, "last_heartbeat": n.last_heartbeat,
-                "bond_ok": n.bond_ok,
-                "tenure_secs": core.registry.tenure_secs(n, now),
-                "weight_millis": lm_luckynode::tenure_weight_millis(core.registry.tenure_secs(n, now)),
+            .map(|n| {
+                serde_json::json!({
+                    "id": n.id, "address": n.address,
+                    "heartbeats": n.heartbeats, "last_heartbeat": n.last_heartbeat,
+                    "bond_ok": n.bond_ok,
+                    "bond_utxo": n.bond_utxo.as_ref().map(|(t, v)| format!("{t}:{v}")),
+                    "tenure_secs": core.registry.tenure_secs(n, now),
+                    "weight_millis": lm_luckynode::tenure_weight_millis(core.registry.tenure_secs(n, now)),
+                })
             })
-        })
         .collect();
     let active: Vec<String> = core
         .registry
