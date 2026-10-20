@@ -48,8 +48,12 @@ NAV = (
     '<a href="Wallet.html">wallet</a>'
     '<a href="Pool-Mining.html">pool</a>'
     '<a href="Staking.html">staking</a>'
+    '<a href="Luckynodes.html">luckynodes</a>'
+    '<a href="Faucet.html">faucet</a>'
     '<a href="Game-Layer.html">game</a>'
+    '<a href="Android-Miner.html">android</a>'
     '<a href="FAQ.html">faq</a>'
+    '<a href="Testnet-Rules.html">rules</a>'
     '<a href="https://luckylode.cc/">luckylode.cc</a></nav>'
 )
 
