@@ -136,7 +136,10 @@ issuance. Executable spec: `lm-rewards/src/pot.rs`; consensus:
   **0–69 → 10%** of the pot; **70–94 → 25%**; **95–99 → 50%**. Floor 10%,
   never the whole pot.
 - **Pity timer:** after **4,320 event-less blocks** (~3 days at 60 s) the
-  next block takes the 10% floor, so the pot can't sit dead. Rationale
+  next block takes the 10% floor, so the pot can't sit dead. Only pot
+  events reset the counter — a jackpot win on a dry run leaves the
+  drought counting (live-proven: block 643 paid a jackpot bonus while
+  the drought kept counting toward the next pot event). Rationale
   for a scheduled-looking payout: the pot's inflow is a fixed levy
   fraction and its outflow is a fixed tier fraction of the *balance*,
   so a forced 10% grab is bounded — it cannot drain the fund, only
