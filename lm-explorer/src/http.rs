@@ -21,7 +21,7 @@ const CSS: &str = "body{background:#0d1117;color:#e6edf3;font:14px ui-monospace,
 
 fn page(title: &str, body: String) -> String {
     format!(
-        "<!doctype html><html><head><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>{title} — Lucky Lode explorer</title><style>{CSS}</style></head><body><h1><a href=/ style=\"color:#ffd166;text-decoration:none\">Lucky Lode explorer</a></h1><div class=dim style=\"margin:-4px 0 12px;font-size:13px\"><a href=/>blocks</a> · <a href=/charts>charts</a> · <a href=/market>market</a> · <a href=/game>game</a> · <a href=/league>leagues</a> · <a href=/mempool>mempool</a> · <a href=/richlist>rich</a></div>{body}</body></html>"
+        "<!doctype html><html><head><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>{title} - Lucky Lode explorer</title><style>{CSS}</style></head><body><h1><a href=/ style=\"color:#ffd166;text-decoration:none\">Lucky Lode explorer</a></h1><div class=dim style=\"margin:-4px 0 12px;font-size:13px\"><a href=/>blocks</a> · <a href=/charts>charts</a> · <a href=/market>market</a> · <a href=/game>game</a> · <a href=/league>leagues</a> · <a href=/mempool>mempool</a> · <a href=/richlist>rich</a></div>{body}</body></html>"
     )
 }
 
