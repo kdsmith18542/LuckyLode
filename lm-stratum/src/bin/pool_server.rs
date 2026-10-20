@@ -92,7 +92,7 @@ footer{margin-top:26px;color:var(--dim);font-size:12px;line-height:1.5}
 <h2>League boards <span style="text-transform:none">(season = 30 days, effective work; declared device family, policed by rate)</span></h2>
 <div id="league"><span style="color:var(--dim)">no ranked workers yet</span></div>
 <h2>Blocks</h2>
-<table><thead><tr><th>height</th><th>finder</th><th>block reward</th><th>jackpot bonus</th><th>pot splash</th><th>league inflow</th><th>faucet</th><th>dev</th><th>pplns payouts</th></tr></thead><tbody id="blocks"></tbody></table>
+<table><thead><tr><th>height</th><th>finder</th><th>block reward</th><th>jackpot bonus</th><th>pot splash</th><th>league inflow</th><th>pplns payouts</th></tr></thead><tbody id="blocks"></tbody></table>
 <h2>Balances due</h2>
 <table><thead><tr><th>worker</th><th>owed</th><th>paid</th></tr></thead><tbody id="balances"></tbody></table><div class="muted" id="balances-foot"></div>
 <h2>Payouts</h2>
@@ -257,8 +257,8 @@ async function tick(){
       `<table><thead><tr><th>rank</th><th>worker</th><th>eff. work</th><th>days</th><th>streak</th><th>device attest</th></tr></thead><tbody>${rows}</tbody></table>`;
   }).join('')||'<span style="color:var(--dim)">no ranked workers yet</span>';
   document.getElementById('blocks').innerHTML=(j.last_blocks||[]).map(b=>
-    `<tr><td>${esc(b.height)}</td><td>${esc(b.finder_name||b.finder)}</td><td>${coin(b.value)}</td><td>${b.bonus>0?coin(b.bonus):'–'}</td><td>${b.pot>0?coin(b.pot):'–'}</td><td>${b.league_overflow>0?coin(b.league_overflow):'–'}</td><td>${b.faucet>0?coin(b.faucet):'–'}</td><td>${b.dev>0?coin(b.dev):'–'}</td><td>${b.pplns_total>0?coin(b.pplns_total)+' ('+esc(b.pplns_count)+')':'–'}</td></tr>`).join('')
-    || '<tr><td colspan="9">no blocks yet</td></tr>';
+    `<tr><td>${esc(b.height)}</td><td>${esc(b.finder_name||b.finder)}</td><td>${coin(b.value)}</td><td>${b.bonus>0?coin(b.bonus):'–'}</td><td>${b.pot>0?coin(b.pot):'–'}</td><td>${b.league_overflow>0?coin(b.league_overflow):'–'}</td><td>${b.pplns_total>0?coin(b.pplns_total)+' ('+esc(b.pplns_count)+')':'–'}</td></tr>`).join('')
+    || '<tr><td colspan="7">no blocks yet</td></tr>';
   document.getElementById('balances').innerHTML=(j.balances||[]).map(b=>
     `<tr><td>${esc(b.name||b.miner)}</td><td>${coin(b.owed)}</td><td>${coin(b.paid)}</td></tr>`).join('')
     || '<tr><td colspan="3">nothing due</td></tr>';
