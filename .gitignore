@@ -52,3 +52,4 @@ lm-mobile/android/app/build/
 lm-mobile/android/.gradle/
 lm-mobile/android/build/
 lm-mobile/android/app/src/main/jniLibs/*/
+wiki/dist/
