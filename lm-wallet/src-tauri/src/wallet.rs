@@ -548,7 +548,11 @@ pub fn scan(
                 txid_display: txid,
                 vout: u64_field(u, "outputIndex").unwrap_or(0) as u32,
                 value: u64_field(u, "satoshis").unwrap_or(0),
-                script_hex: d.script_hex.clone(),
+                // Chain truth, not the derived template: guarded (StakeGuard
+                // CC) outputs decode to our address in the index but carry a
+                // nonstandard script — signing P2PKH-style for them builds a
+                // tx the mempool rejects ("nonstandard transaction input").
+                script_hex: str_field(u, "script").unwrap_or_else(|| d.script_hex.clone()),
                 address: addr,
                 change: d.change,
                 index: d.index,
@@ -662,6 +666,26 @@ pub struct Balances {
     pub unconfirmed: i64,
     pub immature: u64,
     pub txcount: usize,
+    /// Mature but relay-unspendable (StakeGuard-guarded PoS rewards):
+    /// consensus-valid, stakeable, but no wallet path can send them —
+    /// shown separately so "balance" never promises them for sends.
+    pub guarded: u64,
+}
+
+/// Relay policy (`AreInputsStandard`) only spends P2PKH/P2PK prevouts.
+/// Anything else (notably StakeGuard CC reward outputs, which decode to
+/// our address in the index) must be excluded from normal sends or the
+/// node rejects the whole tx with "nonstandard transaction input".
+pub fn is_relay_spendable(script_hex: &str) -> bool {
+    // ASCII first: the byte slices below are only safe on hex text.
+    if !script_hex.chars().all(|c| c.is_ascii_hexdigit()) {
+        return false;
+    }
+    let s = script_hex;
+    let is_p2pkh = s.len() == 50 && s.starts_with("76a914") && s.ends_with("88ac");
+    let is_p2pk = (s.len() == 70 && s.starts_with("21") && s.ends_with("ac"))
+        || (s.len() == 134 && s.starts_with("41") && s.ends_with("ac"));
+    is_p2pkh || is_p2pk
 }
 
 /// Split the scan into the Overview cards. `tip` = current chain height.
@@ -669,9 +693,12 @@ pub fn balances_of(scan: &ScanResult, tip: u64) -> Balances {
     let _ = tip;
     let mut available = 0u64;
     let mut immature = 0u64;
+    let mut guarded = 0u64;
     for u in &scan.utxos {
         if u.coinbase && u.confirmations < COINBASE_MATURITY {
             immature += u.value;
+        } else if !is_relay_spendable(&u.script_hex) {
+            guarded += u.value;
         } else {
             available += u.value;
         }
@@ -681,6 +708,7 @@ pub fn balances_of(scan: &ScanResult, tip: u64) -> Balances {
         unconfirmed: scan.mempool_net,
         immature,
         txcount: scan.txids.len(),
+        guarded,
     }
 }
 
@@ -1021,8 +1049,10 @@ pub fn spend_epoch(rpc: &RpcClient) -> lm_keys::sign::Epoch {
 }
 
 /// Build (local keys) and sign a payment — no network touch.
-/// Only mature confirmed UTXOs fund it (coinbases need 100 conf);
-/// unconfirmed change is never chained in v1.
+/// Only mature confirmed relay-spendable UTXOs fund it (coinbases need
+/// 100 conf; StakeGuard-guarded rewards are excluded — the mempool
+/// rejects any tx spending them); unconfirmed change is never chained
+/// in v1.
 #[allow(clippy::too_many_arguments)]
 pub fn prepare_payment(
     seed: &[u8; 64],
@@ -1035,10 +1065,15 @@ pub fn prepare_payment(
 ) -> Result<SendDraft, String> {
     let dest_script = dest_script(dest_addr, net)?;
     let mut spend = Vec::new();
+    let mut skipped_guarded = 0u64;
     for u in utxos {
         let mature = (!u.coinbase && u.confirmations >= 1)
             || (u.coinbase && u.confirmations >= COINBASE_MATURITY);
         if !mature {
+            continue;
+        }
+        if !is_relay_spendable(&u.script_hex) {
+            skipped_guarded += u.value;
             continue;
         }
         let secret = *hd::external_key(seed, net, 0, u.change, u.index)?.secret();
@@ -1051,6 +1086,12 @@ pub fn prepare_payment(
         });
     }
     if spend.is_empty() {
+        if skipped_guarded > 0 {
+            return Err(format!(
+                "no relay-spendable confirmed funds ({:.8} locked in stake-guarded rewards; coinbases mature after 100 blocks)",
+                skipped_guarded as f64 / 100_000_000.0
+            ));
+        }
         return Err("no spendable confirmed funds (coinbases mature after 100 blocks)".to_string());
     }
     let change_key = hd::external_key(seed, net, 0, 1, change_next)?;
@@ -1319,13 +1360,22 @@ mod tests {
 
     #[test]
     fn balances_split_maturity() {
+        // Real P2PKH template; the guarded entry mirrors a StakeGuard CC
+        // reward output (decodes to our address, relay-unspendable).
+        const P2PKH: &str =
+            "76a914abababababababababababababababababababab88ac";
+        const GUARDED: &str = "2ea22c80207a4029b3230f7943957f81f24a9f438e20a0ede2779bcb12be228be5ab07debd81031210008203000401cc4c90";
+        assert!(is_relay_spendable(P2PKH));
+        assert!(!is_relay_spendable(GUARDED));
+        assert!(!is_relay_spendable("s"));
+        assert!(!is_relay_spendable(""));
         let scan = ScanResult {
             utxos: vec![
                 ScannedUtxo {
                     txid_display: "a".into(),
                     vout: 0,
                     value: 1000,
-                    script_hex: "s".into(),
+                    script_hex: P2PKH.into(),
                     address: "a".into(),
                     change: 0,
                     index: 0,
@@ -1336,7 +1386,7 @@ mod tests {
                     txid_display: "b".into(),
                     vout: 0,
                     value: 2000,
-                    script_hex: "s".into(),
+                    script_hex: P2PKH.into(),
                     address: "b".into(),
                     change: 0,
                     index: 1,
@@ -1347,20 +1397,71 @@ mod tests {
                     txid_display: "c".into(),
                     vout: 0,
                     value: 4000,
-                    script_hex: "s".into(),
+                    script_hex: P2PKH.into(),
                     address: "c".into(),
                     change: 0,
                     index: 2,
                     coinbase: true,
                     confirmations: 100,
                 },
+                ScannedUtxo {
+                    txid_display: "g".into(),
+                    vout: 0,
+                    value: 7000,
+                    script_hex: GUARDED.into(),
+                    address: "g".into(),
+                    change: 0,
+                    index: 3,
+                    coinbase: false,
+                    confirmations: 200,
+                },
             ],
             mempool_net: -500,
-            txids: vec!["a".into(), "b".into(), "c".into()],
+            txids: vec!["a".into(), "b".into(), "c".into(), "g".into()],
             tip: 200,
         };
         let b = balances_of(&scan, 1000);
-        assert_eq!((b.available, b.immature, b.unconfirmed, b.txcount), (5000, 2000, -500, 3));
+        assert_eq!(
+            (b.available, b.immature, b.guarded, b.unconfirmed, b.txcount),
+            (5000, 2000, 7000, -500, 4)
+        );
+    }
+
+    /// Stake-guarded (nonstandard-script) UTXOs never fund a normal send:
+    /// the mempool rejects the whole tx otherwise ("nonstandard
+    /// transaction input"). Mixed sets fund from P2PKH only; guarded-only
+    /// sets fail with the guarded message, not a bare maturity error.
+    #[test]
+    fn prepare_payment_skips_stake_guarded_utxos() {
+        const P2PKH: &str =
+            "76a914abababababababababababababababababababab88ac";
+        const GUARDED: &str = "2ea22c80207a4029b3230f7943957f81f24a9f438e20a0ede2779bcb12be228be5ab07debd81031210008203000401cc4c90";
+        let seed = [9u8; 64];
+        let mk = |txid: &str, value: u64, script: &str| ScannedUtxo {
+            txid_display: txid.into(),
+            vout: 0,
+            value,
+            script_hex: script.into(),
+            address: "mX".into(),
+            change: 0,
+            index: 0,
+            coinbase: false,
+            confirmations: 50,
+        };
+        let dest = "mvSvTtvD9H9fkgi8MGDyLALgRaR2LhnWFM";
+        let epoch = lm_keys::sign::Epoch::Sprout;
+        // Mixed: 600k P2PKH + 100M guarded funds a 500k send with ~100k
+        // change — the guarded giant is untouched.
+        let mixed = vec![mk(&"aa".repeat(32), 600_000, P2PKH), mk(&"bb".repeat(32), 100_000_000, GUARDED)];
+        let d = prepare_payment(&seed, Network::Testnet, &mixed, dest, 500_000, 0, epoch)
+            .unwrap_or_else(|e| panic!("mixed funds: {e}"));
+        assert!(d.change < 200_000, "change {} uses guarded funds", d.change);
+        // Guarded-only: honest error naming the lock.
+        let only = vec![mk(&"bb".repeat(32), 100_000_000, GUARDED)];
+        match prepare_payment(&seed, Network::Testnet, &only, dest, 1_000, 0, epoch) {
+            Ok(_) => panic!("guarded-only must not fund"),
+            Err(e) => assert!(e.contains("stake-guarded"), "error was: {e}"),
+        }
     }
 
     /// Activity decoding against canned chains (no node needed).

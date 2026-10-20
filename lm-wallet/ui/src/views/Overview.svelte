@@ -171,11 +171,14 @@
     <div class="card"><div class="k">unconfirmed</div><div class="v muted">loading…</div></div>
   </div>
 {:else}
-<div class="grid">
+ <div class="grid">
   <div class="card"><div class="k">available</div><div class="v">{api.coinU(bal?.balance)}</div></div>
   <div class="card"><div class="k">immature</div><div class="v gold">{api.coinU(bal?.immature)}</div></div>
   <div class="card"><div class="k">unconfirmed</div><div class="v">{api.coinU(bal?.unconfirmed)}</div></div>
-</div>
+  {#if (bal?.guarded ?? 0) > 0}
+  <div class="card"><div class="k">stake-guarded</div><div class="v gold" title="PoS rewards in StakeGuard outputs: consensus-valid and still staking, but no wallet can send them yet">{api.coinU(bal?.guarded)}</div></div>
+  {/if}
+ </div>
 {/if}
 
 <h2>Node staking — setup</h2>

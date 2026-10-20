@@ -578,8 +578,10 @@ fn utxo_maxes(utxos: &[wallet::ScannedUtxo]) -> (Option<u32>, Option<u32>) {
     (rmax, cmax)
 }
 
-/// Wallet balances (available / immature / unconfirmed) — OUR addresses
-/// only, summed from our UTXO set. Base units (sats), like before.
+/// Wallet balances (available / immature / unconfirmed / guarded) — OUR
+/// addresses only, summed from our UTXO set. Base units (sats), like
+/// before. `guarded` = stake-guarded PoS rewards: consensus-valid but
+/// relay-unspendable, so they are reported apart, never inside balance.
 #[tauri::command(async)]
 pub fn wallet_balances(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
     let c = wctx(&state)?;
@@ -594,6 +596,7 @@ pub fn wallet_balances(state: State<'_, AppState>) -> Result<serde_json::Value, 
         "balance": b.available,
         "unconfirmed": b.unconfirmed,
         "immature": b.immature,
+        "guarded": b.guarded,
         "staking_outputs": 0,
         "staking_balance": 0,
         "txcount": b.txcount,
