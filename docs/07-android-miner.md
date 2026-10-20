@@ -54,8 +54,10 @@ rejected at construction.
 - **Battery honesty**: show projected drain (typical phone ~15 Wh pack at
   ~5 W mining ≈ 3 h from full) and default to charge-only. Never promise
   free energy.
-- **Attestation hook**: Play Integrity verdict plumbing for phone-league
-  entry (doc 03 §3.6) — verdict only, no identity, opt-in per league.
+- **Attestation hook**: opt-in self label for phone-league entry
+  (doc 03 §3.6) — verdict only, no identity. No Play Integrity path:
+  miners are banned from the Play Store, so distribution is
+  sideload-only permanently and no Play verdict can ever arrive.
 
 ## 7.5 iOS companion (no on-device mining — store ban, doc 04 §4.5)
 

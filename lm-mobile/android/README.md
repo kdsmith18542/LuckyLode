@@ -132,10 +132,10 @@ at stake.
 - [x] Attestation hook (doc 03 §3.6 / doc 07 §7.4), testnet form:
       opt-in advanced checkbox posts a self-labeled verdict
       (`{worker, provider:"self", detail}`) to the pool's `/api/attest`;
-      the dashboard/app decorate attested workers. **A real Play
-      Integrity verifier (GCP project + cert registration) replaces the
-      stub at mainnet — the pool-side endpoint and storage are already
-      verdict-shaped.**
+      the dashboard/app decorate attested workers. This self label is the
+      terminal form — miners are banned from the Play Store, so there is
+      no Play Integrity upgrade path; the pool-side endpoint and storage
+      stay verdict-shaped in case a non-Play device check ever exists.
 - [ ] Streak/league-rank tiles for *offline* workers: rows age out of
       the pool's worker stats when idle, so a stopped miner shows "no
       active streak" until it reconnects (ledger rollup still has it).

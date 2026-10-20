@@ -110,9 +110,11 @@ whole pool, which defeats the "phones race phones" point.
 Hard truth: **a server can pretend to be 100 phones.** No protocol fully
 prevents league spoofing. Mitigations, layered:
 
-1. **Android attestation (pool-side):** Play Integrity verdicts prove
-   genuine Android devices for the phone league. Android-only, but that's
-   where the phones are. (Privacy-preserving: verdict only, no identity.)
+1. **Self-declared devices + statistical policing:** workers declare
+   their family (pool) or attest opt-in "self" (app); trailing-rate bars
+   and contradicted-claim fallback keep labels honest (§3.6 as shipped).
+   No Play Integrity path: miners are banned from the Play Store, so
+   the app is sideload-only and no Play verdict can ever arrive.
 2. **Statistical policing:** hashrate stability fingerprints, share-timing
    analysis, duplicate-IP clustering flag farm-split accounts for review.
 3. **Sub-linear rewards (§3.2):** spoofing gains little by construction.
