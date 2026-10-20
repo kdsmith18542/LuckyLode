@@ -1923,8 +1923,8 @@ fn luckynode_tick<P: TemplateProvider + 'static>(
             let mut snap = shared.league_snapshot.lock().expect("snapshot");
             *snap = server.league_balance();
             println!(
-                "luckynode: live (bond {} epoch {} slice {}bps); next draw at height {}",
-                cfg.bond,
+                "luckynode: live (bond {:.8} coins epoch {} slice {}bps); next draw at height {}",
+                cfg.bond as f64 / 100_000_000.0,
                 cfg.epoch,
                 cfg.slice_bps,
                 (cur_epoch + 1) * cfg.epoch
@@ -2808,6 +2808,17 @@ fn main() -> std::process::ExitCode {
                     eprintln!("error: {e}");
                     std::process::exit(2);
                 });
+                // The flag is BASE UNITS. A sub-coin value is almost always
+                // coins-by-mistake (400 = 400 sats) and silently neuters the
+                // bond gate, so refuse it: 400 LKYL = 40000000000.
+                if luckynode_bond != 0 && luckynode_bond < 100_000_000 {
+                    eprintln!(
+                        "error: --luckynode-bond is in base units; {} is less than one coin.\n\
+                         Use 40000000000 for 400 LKYL (or 0 for no bond).",
+                        luckynode_bond
+                    );
+                    std::process::exit(2);
+                }
             }
             "--network" => {
                 let v = next("network").unwrap_or_else(|e| {
