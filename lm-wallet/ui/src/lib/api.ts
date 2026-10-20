@@ -30,7 +30,10 @@ export const walletUnlock = (password: string) => invoke<Json>("wallet_unlock", 
 export const walletLock = () => invoke<Json>("wallet_lock");
 export const walletMigrate = (password: string) => invoke<Json>("wallet_migrate", { password });
 export const walletChangePassword = (old_password: string, new_password: string) =>
-  invoke<Json>("wallet_change_password", { old_password, new_password });
+  invoke<Json>("wallet_change_password", {
+    oldPassword: old_password,
+    newPassword: new_password,
+  });
 export const walletReveal = () => invoke<Json>("wallet_reveal");
 export const walletRescan = () => invoke<Json>("wallet_rescan");
 export const send = (to: string, amount: string) => invoke<Json>("send", { to, amount });
@@ -44,10 +47,13 @@ export const emission = () => invoke<Json>("emission_info");
 export const nextDraw = () => invoke<Json>("next_draw");
 export const luckynodes = () => invoke<Json>("luckynodes");
 export const poolStats = () => invoke<Json>("pool_stats");
+// Tauri v2 lower-camelCases Rust command args (bond_utxo -> bondUtxo) and a
+// missing Option silently deserializes as None — snake_case here would drop
+// the value with no error.
 export const luckynodeRegister = (address: string, bondUtxo?: string) =>
-  invoke<Json>("luckynode_register", { address, bond_utxo: bondUtxo ?? null });
+  invoke<Json>("luckynode_register", { address, bondUtxo: bondUtxo ?? null });
 export const serviceStart = (id: string, address: string, bondUtxo?: string | null) =>
-  invoke<Json>("luckynode_service_start", { id, address, bond_utxo: bondUtxo ?? null });
+  invoke<Json>("luckynode_service_start", { id, address, bondUtxo: bondUtxo ?? null });
 export const serviceStop = (id: string) => invoke<Json>("luckynode_service_stop", { id });
 export const serviceStatus = () => invoke<Json>("luckynode_service_status");
 export const getConfig = () => invoke<Json>("get_config");
@@ -70,7 +76,10 @@ export const setConfig = (c: {
   notifications?: boolean;
 }) => invoke<void>("set_config", c);
 export const setMiningConfig = (pool_stratum: string, mining_worker: string) =>
-  invoke<void>("set_mining_config", { pool_stratum, mining_worker });
+  invoke<void>("set_mining_config", {
+    poolStratum: pool_stratum,
+    miningWorker: mining_worker,
+  });
 export const minerStart = (p: {
   pool: string;
   worker: string;

@@ -1095,6 +1095,19 @@ pub fn luckynode_register(
         "api/luckynode/register",
         &serde_json::to_string(&reg).map_err(|e| format!("json: {e}"))?,
     )?;
+    // Never let a requested lock silently vanish pool-side (JSON keys are
+    // easy to get wrong, and an absent optional arg is undetectable here).
+    if let Some(utxo) = bond_utxo.as_deref() {
+        let acked = serde_json::from_str::<serde_json::Value>(&body)
+            .ok()
+            .and_then(|v| v.get("bond_locked").and_then(|b| b.as_bool()))
+            .unwrap_or(false);
+        if !acked {
+            return Err(format!(
+                "pool accepted the registration but did not lock bond {utxo} (response: {body})"
+            ));
+        }
+    }
     // Bond lock: this payout address now holds a draw-eligible bond — Send
     // must not touch it (release in Settings → Wallet).
     {
