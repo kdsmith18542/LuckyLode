@@ -179,8 +179,7 @@ fn home(idx: &mut Indexer) -> String {
     }
     let stake = idx.staking_state().unwrap_or(serde_json::json!({}));
     let stake_card = format!(
-        "<div class=card>node staking <b>{}</b> · stake supply <b>{}</b> · PoS share last 20: <b>{}%</b> (target ~50%)</div>",
-        if stake.get("staking_on").and_then(|v| v.as_bool()).unwrap_or(false) { "on" } else { "off" },
+        "<div class=card>stake supply <b>{}</b> · PoS share last 20: <b>{}%</b> (target ~50%)</div>",
         coins(stake.get("staking_supply").and_then(|v| v.as_i64()).unwrap_or(0)),
         if h >= 0 { pos_count * 100 / 20 } else { 0 },
     );

@@ -234,7 +234,7 @@ async function tick(){
   setT('gs-worthless',NET.name==='mainnet'
     ? 'Mainnet coins are real value.'
     : 'Testnet coins have no value — this is the public burn-in.');
-  if(j.staking){add('node staking', j.staking.staking_on ? 'on' : 'off'); add('stake supply', coin(j.staking.staking_supply ?? 0));}
+  if(j.staking){add('stake supply', coin(j.staking.staking_supply ?? 0));}
   document.getElementById('cards').innerHTML=c.join('');
   document.getElementById('mode').textContent=j.mode||'';
   document.getElementById('payoutmode').textContent=j.payout
