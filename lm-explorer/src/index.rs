@@ -879,20 +879,20 @@ impl Indexer {
         }
         let mut st = self
             .db
-            .prepare("SELECT n, address, value, spent_by IS NOT NULL FROM outs WHERE txid = ?1 ORDER BY n")
+            .prepare("SELECT n, address, value, spent_by IS NOT NULL, spent_by FROM outs WHERE txid = ?1 ORDER BY n")
             .map_err(|e| format!("tx out: {e}"))?;
         let outs = st
             .query_map([txid], |r| {
-                Ok((r.get::<_, i64>(0)?, r.get::<_, Option<String>>(1)?, r.get::<_, i64>(2)?, r.get::<_, bool>(3)?))
+                Ok((r.get::<_, i64>(0)?, r.get::<_, Option<String>>(1)?, r.get::<_, i64>(2)?, r.get::<_, bool>(3)?, r.get::<_, Option<String>>(4)?))
             })
             .map_err(|e| format!("tx out: {e}"))?;
         let mut out_list = Vec::new();
         let mut out_total = 0i64;
         for o in outs {
-            let (n, addr, value, spent): (i64, Option<String>, i64, bool) =
+            let (n, addr, value, spent, spent_by): (i64, Option<String>, i64, bool, Option<String>) =
                 o.map_err(|e| format!("tx out: {e}"))?;
             out_total += value;
-            out_list.push(serde_json::json!({"n": n, "address": addr, "value": value, "spent": spent}));
+            out_list.push(serde_json::json!({"n": n, "address": addr, "value": value, "spent": spent, "spent_by": spent_by}));
         }
         let tip = self.height().unwrap_or(height);
         // Exact size + fee rate when captured at index time.
@@ -1891,6 +1891,12 @@ mod tests {
         assert_eq!(a["txcount"], 2); // cb0 received + spend1 spent
         assert_eq!(a["first_seen"], 0);
         assert!(a["unconfirmed"].is_null());
+        // Tx view carries the forward spend edge (powers "spent →" links).
+        let cb0 = idx.tx("cb0").expect("tx").expect("row");
+        assert_eq!(cb0["vout"][0]["spent_by"], "spend1");
+        let spend1 = idx.tx("spend1").expect("tx").expect("row");
+        assert!(spend1["vout"][0]["spent_by"].is_null());
+        assert!(spend1["vout"][1]["spent_by"].is_null());
         let _ = std::fs::remove_file(&dir);
     }
 

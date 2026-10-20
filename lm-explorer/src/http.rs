@@ -129,6 +129,17 @@ fn link_addr(a: &Option<String>) -> String {
     }
 }
 
+/// Finder/winner/worker names are sometimes real addresses and sometimes
+/// labels ("external", worker names). Link the former, dim the latter.
+fn addr_or_text(s: &str) -> String {
+    let shaped = (26..=35).contains(&s.len()) && s.chars().all(|c| c.is_ascii_alphanumeric());
+    if shaped {
+        format!("<a href=/address/{s}>{s}</a>")
+    } else {
+        format!("<span class=dim>{}</span>", esc(s))
+    }
+}
+
 fn search_box() -> String {
     "<form action=/search><input name=q placeholder=\"height, block hash, txid or address\"><button>Go</button></form>".to_string()
 }
@@ -222,7 +233,7 @@ fn home(idx: &mut Indexer) -> String {
         format!(
             "{}<div class=card>height <b>{}</b> · hash <span class=dim>{}</span> · supply <b>{}</b> · difficulty {:.2} · minted (PoS) in last 20: <b>{}</b></div>{}{}{}<h2>Recent blocks</h2><table><tr><th>height</th><th>type</th><th>hash</th><th>txs</th><th>block reward</th><th>jackpot bonus</th><th>pot splash</th><th>league inflow</th></tr>{rows}</table><h2>Recent transactions</h2><table><tr><th>txid</th><th>block</th><th>time</th><th>value</th><th>fee</th><th>size</th><th>fee rate (sat/vB)</th></tr>{txrows}</table>",
             search_box(),
-            h,
+            if h >= 0 { link_block(h) } else { "–".to_string() },
             esc(stats.get("hash").and_then(|v| v.as_str()).unwrap_or("")),
             coins(stats.get("supply").and_then(|v| v.as_i64()).unwrap_or(0)),
             stats.get("difficulty").and_then(|v| v.as_f64()).unwrap_or(0.0),
@@ -258,7 +269,7 @@ fn game_page(idx: &Indexer) -> String {
     let mut splashes = String::new();
     for b in &blocks {
         let h = b["height"].as_i64().unwrap_or(0);
-        let finder = esc(b["finder"].as_str().unwrap_or(""));
+        let finder = addr_or_text(b["finder"].as_str().unwrap_or(""));
         if b["bonus"].as_i64().unwrap_or(0) > 0 {
             hits += &format!(
                 "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
@@ -293,12 +304,12 @@ fn game_page(idx: &Indexer) -> String {
             esc(seed)
         };
         let winner = d["winner"].as_str().unwrap_or("");
-        let wshort = format!("{}{}", esc(&winner[..winner.len().min(12)]), if winner.len() > 12 { "…" } else { "" });
+        let wcell = addr_or_text(winner);
         draws += &format!(
-            "<tr><td>{}</td><td>{}</td><td><span class=dim>{}</span></td><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
+            "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
             d["epoch"].as_i64().unwrap_or(0),
             link_block(d["height"].as_i64().unwrap_or(0)),
-            wshort,
+            wcell,
             coins(d["budget"].as_i64().unwrap_or(0)),
             d["cosigns"].as_i64().unwrap_or(0),
             tx_or_note(d["txid"].as_str().unwrap_or("")),
@@ -657,7 +668,7 @@ fn league_page(idx: &Indexer) -> String {
                     format!(
                         "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}d</td><td>{}</td></tr>",
                         e["rank"].as_i64().unwrap_or(0),
-                        esc(e["name"].as_str().unwrap_or("")),
+                        addr_or_text(e["name"].as_str().unwrap_or("")),
                         e["eff_work"].as_i64().unwrap_or(0),
                         e["days"].as_i64().unwrap_or(0),
                         if e["streak"].as_i64().unwrap_or(0) > 0 {
@@ -799,7 +810,7 @@ fn block_page(idx: &Indexer, b: &serde_json::Value) -> String {    let h = b["he
             coins(g["bonus"].as_i64().unwrap_or(0)),
             coins(g["pot"].as_i64().unwrap_or(0)),
             coins(g["league"].as_i64().unwrap_or(0)),
-            esc(g["finder"].as_str().unwrap_or("")),
+            addr_or_text(g["finder"].as_str().unwrap_or("")),
         ),
         None => String::new(),
     };
@@ -841,12 +852,16 @@ fn tx_page(_idx: &Indexer, t: &serde_json::Value) -> String {
     }
     let mut outs = String::new();
     for (n, v) in t["vout"].as_array().cloned().unwrap_or_default().iter().enumerate() {
+        let state = match v.get("spent_by").and_then(|s| s.as_str()) {
+            Some(spender) => format!("<a href=/tx/{spender}>spent →</a>"),
+            None => "unspent".to_string(),
+        };
         outs += &format!(
             "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
             n,
             link_addr(&v["address"].as_str().map(|s| s.to_string())),
             coins(v["value"].as_i64().unwrap_or(0)),
-            if v["spent"].as_bool().unwrap_or(false) { "spent" } else { "unspent" },
+            state,
         );
     }
     page(
