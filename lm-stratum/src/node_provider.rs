@@ -147,9 +147,12 @@ pub struct NodeProvider {
 
 impl NodeProvider {
     /// Connect and fetch the first template; fails fast if the node is
-    /// unreachable or returns something unmappable.
+    /// unreachable or returns something unmappable. Claims default ON
+    /// (jackpot + pot); faucet/dev default OFF here — the pool binary
+    /// enables them via [`with_claim_faucet`](Self::with_claim_faucet) /
+    /// [`with_claim_dev`](Self::with_claim_dev).
     pub fn connect(addr: &str, user: &str, pass: &str) -> Result<Self, String> {
-        Self::connect_with_claims(addr, user, pass, false, false)
+        Self::connect_with_claims(addr, user, pass, true, true)
     }
 
     /// As [`connect`], optionally serving claim templates.
@@ -224,14 +227,15 @@ impl NodeProvider {
     }
 
     /// Claim faucet seed-fund outputs (top-up policy against the node's
-    /// advertised drip). Off by default; the testnet pool enables it.
+    /// advertised drip). The pool binary enables this by default.
     pub fn with_claim_faucet(mut self, on: bool) -> Self {
         self.claim_faucet = on;
         self
     }
 
     /// Claim dev seed-fund outputs on dev-epoch heights (up to the node's
-    /// advertised drip). Off by default; the testnet pool enables it.
+    /// advertised drip). The cadence is consensus (every
+    /// DEV_EPOCH-th block); the pool only decides on/off (binary default on).
     pub fn with_claim_dev(mut self, on: bool) -> Self {
         self.claim_dev = on;
         self

@@ -65,11 +65,15 @@ This is the reference implementation; run it on testnet knowing:
   `--tls-cert/--tls-key` serves stratum over TLS and the miner
   (`--tls [--tls-ca PEM]`) verifies. Still bind the dashboard to
   localhost behind a reverse proxy for public deployments.
-- **Claim modes advertise exact claims.** `--claim-jackpots` /
-  `--claim-pot` splice the node's pre-committed per-height claims into
-  the template (draws are fixed by `SHA256D(parent || height)` before
-  grinding), so every find lands — the old claim-mode withholding
-  economics no longer apply. The node must run the matching build
+- **Claims are automatic.** Jackpot / pot / faucet / dev outputs are
+  spliced from the node's pre-committed per-height advertisements into
+  every template by default (draws are fixed by `SHA256D(parent || height)`
+  before grinding), so every find lands — the old claim-mode withholding
+  economics no longer apply. `--no-claim-jackpots / --no-claim-pot /
+  --no-claim-faucet / --no-claim-dev` opt out; the old `--claim-*` flags
+  are deprecated no-ops. Draw divisors are read from the node
+  (`getjackpotinfo`); `--pot-divisor / --jackpot-divisor` are regtest-only
+  overrides. The node must run the matching build
   (GBT advertises `jackpotbonus`/`potcredited`).
 - **Work-identity dedupe is windowed** (2^16 identities). A replay older
   than the window can pass; accepted as the reference trade-off.

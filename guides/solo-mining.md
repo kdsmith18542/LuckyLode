@@ -45,10 +45,12 @@ reward only):
 
 ```sh
 ./pool_server --node-rpc 127.0.0.1:42253 --rpc-user <U> --rpc-pass <P> \
-  --bind 127.0.0.1:3344 --claim-jackpots --claim-pot \
+  --bind 127.0.0.1:3344 \
   --payout-threshold 0 --payout-interval 60 --payout-exec
 ```
 
+Claims are automatic (jackpot/pot/faucet/dev from the node's
+advertisements — no `--claim-*` flags needed; `--no-claim-*` opts out).
 `--payout-threshold 0 --payout-exec` pays every balance straight through
 (no dust held back). Omit `--payout-exec` for a dry run that only logs.
 
@@ -78,9 +80,9 @@ exposing it. Never expose the node's RPC to the network.
 
 - `unknown job` / stale shares: your node fell behind — check `getblockcount`
   against the explorer, wait for sync.
-- `bad-cb-amount`: template/claim mismatch — make sure `--claim-*` flags
-  match the network rules (testnet uses the same divisor as mainnet; only
-  regtest overrides differ, and all nodes on a regtest chain must match).
+- `bad-cb-amount`: template/claim mismatch — on regtest, `--pot-divisor /
+  --jackpot-divisor` must match the node's `-lucky-*-divisor` overrides
+  (testnet/mainnet read them from the node automatically).
 - Port conflicts: a second `luckyd` silently fails to bind while the old one
   answers — verify with `pgrep -x luckyd` and check the height.
 - Always stop the node gracefully (`stop` via RPC); `kill -9` can lose

@@ -4,8 +4,15 @@
 //! pool-server [--bind HOST:PORT] [--reward R] [--fees F]
 //!             [--pool-target (HEX64|max)] [--net-target (HEX64|max)]
 //! pool-server --node-rpc HOST:PORT [--rpc-user U] [--rpc-pass P] [--bind HOST:PORT]
-//!             [--claim-jackpots] [--claim-pot]
+//!             [--no-claim-jackpots] [--no-claim-pot] [--no-claim-faucet] [--no-claim-dev]
 //! ```
+//!
+//! Node mode claims everything the node advertises by default (jackpot
+//! bonus, pot splash, faucet/dev seed drips) — the exact pre-committed
+//! amounts, every find submittable. The `--claim-*` flags are deprecated
+//! aliases (accepted, no-op); use `--no-claim-*` to opt out. Draw divisors
+//! are read from the node (`getjackpotinfo`); `--pot-divisor` /
+//! `--jackpot-divisor` are regtest-only overrides.
 //!
 //! Mock mode (default) serves an instant-block mock chain (`max`/`max`,
 //! reward 1M) on 127.0.0.1:3333. Node mode talks to a running forked node
@@ -2505,13 +2512,11 @@ fn luckynode_loop<P: TemplateProvider + 'static>(
 
 const USAGE: &str = "usage:
   pool-server [--bind HOST:PORT] [--reward R] [--fees F] [--pool-password PASS] [--pool-target (HEX64|max)] [--net-target (HEX64|max)]
-  pool-server --node-rpc HOST:PORT [--rpc-user U] [--rpc-pass P] [--pool-password PASS] [--bind HOST:PORT] [--claim-jackpots] [--claim-pot]
-  [--claim-faucet] [--claim-dev]   (seed-fund claims, internal/20)
+  pool-server --node-rpc HOST:PORT [--rpc-user U] [--rpc-pass P] [--pool-password PASS] [--bind HOST:PORT]
+  [--no-claim-jackpots] [--no-claim-pot] [--no-claim-faucet] [--no-claim-dev]   (all claims ON by default; these opt out)
   both forms accept [--http HOST:PORT] to serve the live dashboard (/ and /api/stats)
   node mode accepts [--payout-threshold V] [--payout-interval SECS] [--payout-exec]
-  [--claim-pot-tier 10|25|50] [--pot-divisor N] [--jackpot-divisor N]
-  [--claim-pot-pity]   (divisors must match regtest node overrides; pity mode
-  mines normally until the node's drought limit, then submits a floor claim)
+  [--pot-divisor N] [--jackpot-divisor N]   (regtest-only overrides; otherwise read from the node)
   both modes accept [--pool-fee-pp N] (operator cut, per-myriad, default 0)
   and [--dev-fee-addr ADDR --dev-fee-pp N] (dev slice from the operator cut,
   per-myriad; docs/04 section 4.2)
@@ -2533,24 +2538,20 @@ const USAGE: &str = "usage:
   node mode accepts [--luckynode] to run Luckynode draws v1):
   [--luckynode-bond V] [--luckynode-epoch N] [--luckynode-slice-bps BPS]
   [--luckynode-hb-window SECS] [--luckynode-exec] [--luckynode-interval SECS]
-  (bond in base units, default 400 LKYL; epoch in blocks, default 2880;
-  slice default 1000 = 10% of trailing league inflow; draws pay the winner
-  via sendtoaddress when --luckynode-exec, else log only)
+  (bond default 400 LKYL on all chains; epoch default 2880 mainnet, 3 on
+  test+regtest; slice default 1000 = 10% of trailing league inflow; draws pay
+  the winner via sendtoaddress when --luckynode-exec, else log only)
 
 defaults: bind=127.0.0.1:3333; mock mode: reward=1000000, fees=0, both targets=max (instant blocks);
-node mode: jobs from the node's getblocktemplate.
-claims (node mode): --claim-jackpots serves coinbases claiming the advertised
-jackpotbonus (submitted only on jackpot finds); --claim-pot claims the credited
-pot and only submits pot events; --claim-pot-tier 10|25|50 sets the claimed
-band (floor / B+ / C) — higher tiers claim more; draws are pre-committed per
-height, so every find lands either way (nothing is withheld).
-seed funds (node mode, internal/20): --claim-faucet tops up the faucet wallet
+node mode: jobs from the node's getblocktemplate; claims ON by default (exact
+advertised jackpotbonus / pot splash / faucet+dev drips — every find lands).
+seed funds (node mode, internal/20): faucet tops up the faucet wallet
 toward 1,000 tLKYL whenever a template advertises a nonzero faucetdrip (the
 pool reads the wallet balance via listunspent — no addressindex needed);
---claim-dev claims the advertised devdrip on dev-epoch heights (every 100th
-block). Both splice exact pinned-script outputs (node is source of truth);
-unclaimed amounts stay in their reserves. Empty node pins (mainnet until the
-ceremony) disable both legs.
+dev is claimed on dev-epoch heights (every 100th block). Both splice exact
+pinned-script outputs (node is source of truth); unclaimed amounts stay in
+their reserves. Empty node pins (mainnet until the ceremony) disable both
+legs. Pass --no-claim-faucet / --no-claim-dev to opt out.
 payouts (node mode,: balances at/above --payout-threshold
 (base units) are sent from the node wallet every --payout-interval seconds
 (default 60); WITHOUT --payout-exec the loop only logs what it would send.
@@ -2645,19 +2646,22 @@ fn main() -> std::process::ExitCode {
     // Precedence: --rpc-pass / --rpc-pass-file, then the environment
     // (LUCKY_POOL_RPC_PASS), then the public testnet default.
     let mut rpc_pass = std::env::var("LUCKY_POOL_RPC_PASS").unwrap_or_else(|_| "p".to_string());
-    let mut claim_jackpots = false;
-    let mut claim_pot = false;
-    let mut claim_faucet = false;
-    let mut claim_dev = false;
+    // Consensus claims are ON by default (industry norm: bitcoind/ckpool/SV2
+    // bake consensus, flags are ops-only). The node advertises the exact
+    // amounts; `--no-claim-*` opts out. `--claim-*` are deprecated aliases.
+    let mut claim_jackpots = true;
+    let mut claim_pot = true;
+    let mut claim_faucet = true;
+    let mut claim_dev = true;
     let mut http: Option<String> = None;
-    let mut claim_pot_tier = 10u64; // claim the 10% floor by default
-    let mut pot_divisor = 1000u64; // frozen spec; regtest may override
-    let mut jackpot_divisor = 100u64; // frozen spec; regtest may override
-    let mut claim_pot_pity = false; // pity-aware claim mode (regtest proof)
+    let mut claim_pot_tier = 10u64; // obsolete no-op (kept for old scripts)
+    let mut pot_divisor: Option<u64> = None; // None = read from the node
+    let mut jackpot_divisor: Option<u64> = None; // None = read from the node
+    let mut claim_pot_pity = false; // obsolete no-op (kept for old scripts)
     let mut payout_threshold = 0u64;
-    // Chain label for user-facing strings (default testnet; mainnet flips
-    // footer, currency, prefixes and the TLS note via /api/stats).
-    let mut network = "testnet".to_string();
+    // Chain label for user-facing strings. None = ask the node
+    // (`getblockchaininfo.chain`); --network overrides.
+    let mut network: Option<String> = None;
     let mut payout_interval = 60u64;
     let mut payout_exec = false;
     let mut state_file: Option<PathBuf> = None;
@@ -2672,8 +2676,10 @@ fn main() -> std::process::ExitCode {
     let mut v2_authority_key: Option<String> = None;
     let mut v2_cert_validity = 2592000u64; // 30 days
     let mut luckynode = false;
-    let mut luckynode_bond = 40_000_000_000u64; // 400 LKYL (spec ~25xR)
-    let mut luckynode_epoch = 2880u64; // spec ~48h; tests override shorter
+    // None = default (bond 400 LKYL everywhere; epoch 2880 mainnet, 3 on
+    // test+regtest, resolved after the node handshake). Explicit flags win.
+    let mut luckynode_bond: Option<u64> = None;
+    let mut luckynode_epoch: Option<u64> = None;
     let mut luckynode_slice_bps = DEFAULT_LUCKYNODE_SLICE_BPS;
     let mut luckynode_hb_window = 1800u64;
     let mut luckynode_reset_gap = 86400u64;
@@ -2745,27 +2751,53 @@ fn main() -> std::process::ExitCode {
                 })
             }
             "--claim-jackpots" => {
+                // Deprecated alias: claims are on by default since the
+                // pre-committed-draw era. Accepted so old scripts keep
+                // running; use --no-claim-jackpots to opt out.
                 claim_jackpots = true;
                 i += 1; // valueless flag: do not skip the next argument
                 continue;
             }
+            "--no-claim-jackpots" => {
+                claim_jackpots = false;
+                i += 1; // valueless flag: do not skip the next argument
+                continue;
+            }
             "--claim-pot" => {
+                // Deprecated alias, see --claim-jackpots.
                 claim_pot = true;
                 i += 1; // valueless flag: do not skip the next argument
                 continue;
             }
+            "--no-claim-pot" => {
+                claim_pot = false;
+                i += 1; // valueless flag: do not skip the next argument
+                continue;
+            }
             "--claim-faucet" => {
+                // Deprecated alias, see --claim-jackpots.
                 claim_faucet = true;
                 i += 1; // valueless flag: do not skip the next argument
                 continue;
             }
+            "--no-claim-faucet" => {
+                claim_faucet = false;
+                i += 1; // valueless flag: do not skip the next argument
+                continue;
+            }
             "--claim-dev" => {
+                // Deprecated alias, see --claim-jackpots.
                 claim_dev = true;
                 i += 1; // valueless flag: do not skip the next argument
                 continue;
             }
+            "--no-claim-dev" => {
+                claim_dev = false;
+                i += 1; // valueless flag: do not skip the next argument
+                continue;
+            }
             "--jackpot-divisor" => {
-                jackpot_divisor = parse_u64(
+                jackpot_divisor = Some(parse_u64(
                     &next("jackpot-divisor").unwrap_or_else(|e| {
                         eprintln!("error: {e}");
                         std::process::exit(2);
@@ -2775,8 +2807,8 @@ fn main() -> std::process::ExitCode {
                 .unwrap_or_else(|e| {
                     eprintln!("error: {e}");
                     std::process::exit(2);
-                });
-                if jackpot_divisor == 0 {
+                }));
+                if jackpot_divisor == Some(0) {
                     eprintln!("error: --jackpot-divisor must be >= 1");
                     return std::process::ExitCode::from(2);
                 }
@@ -2797,7 +2829,7 @@ fn main() -> std::process::ExitCode {
                 continue;
             }
             "--luckynode-bond" => {
-                luckynode_bond = parse_u64(
+                let v = parse_u64(
                     &next("luckynode-bond").unwrap_or_else(|e| {
                         eprintln!("error: {e}");
                         std::process::exit(2);
@@ -2811,14 +2843,15 @@ fn main() -> std::process::ExitCode {
                 // The flag is BASE UNITS. A sub-coin value is almost always
                 // coins-by-mistake (400 = 400 sats) and silently neuters the
                 // bond gate, so refuse it: 400 LKYL = 40000000000.
-                if luckynode_bond != 0 && luckynode_bond < 100_000_000 {
+                if v != 0 && v < 100_000_000 {
                     eprintln!(
                         "error: --luckynode-bond is in base units; {} is less than one coin.\n\
                          Use 40000000000 for 400 LKYL (or 0 for no bond).",
-                        luckynode_bond
+                        v
                     );
                     std::process::exit(2);
                 }
+                luckynode_bond = Some(v);
             }
             "--network" => {
                 let v = next("network").unwrap_or_else(|e| {
@@ -2829,10 +2862,10 @@ fn main() -> std::process::ExitCode {
                     eprintln!("error: --network must be testnet|mainnet, got '{v}'");
                     std::process::exit(2);
                 }
-                network = v;
+                network = Some(v);
             }
             "--luckynode-epoch" => {
-                luckynode_epoch = parse_u64(
+                let v = parse_u64(
                     &next("luckynode-epoch").unwrap_or_else(|e| {
                         eprintln!("error: {e}");
                         std::process::exit(2);
@@ -2843,10 +2876,11 @@ fn main() -> std::process::ExitCode {
                     eprintln!("error: {e}");
                     std::process::exit(2);
                 });
-                if luckynode_epoch == 0 {
+                if v == 0 {
                     eprintln!("error: --luckynode-epoch must be >= 1");
                     return std::process::ExitCode::from(2);
                 }
+                luckynode_epoch = Some(v);
             }
             "--luckynode-slice-bps" => {
                 luckynode_slice_bps = parse_u64(
@@ -2928,7 +2962,7 @@ fn main() -> std::process::ExitCode {
                 }))
             }
             "--pot-divisor" => {
-                pot_divisor = parse_u64(
+                pot_divisor = Some(parse_u64(
                     &next("pot-divisor").unwrap_or_else(|e| {
                         eprintln!("error: {e}");
                         std::process::exit(2);
@@ -2938,8 +2972,8 @@ fn main() -> std::process::ExitCode {
                 .unwrap_or_else(|e| {
                     eprintln!("error: {e}");
                     std::process::exit(2);
-                });
-                if pot_divisor == 0 {
+                }));
+                if pot_divisor == Some(0) {
                     eprintln!("error: --pot-divisor must be >= 1");
                     return std::process::ExitCode::from(2);
                 }
@@ -3130,6 +3164,79 @@ fn main() -> std::process::ExitCode {
         None => None,
     };
     if let Some(node) = node_rpc {
+        // Auto-discovery (industry norm: consensus baked, node is source of
+        // truth). Divisors default to the node's effective values; explicit
+        // flags are regtest-only overrides. Network defaults to the node's
+        // chain; --network overrides for display only.
+        let probe = RpcClient::new(&node, &rpc_user, &rpc_pass);
+        let jackpot_info = probe.call("getjackpotinfo", serde_json::json!([])).ok();
+        let resolved_pot_divisor = match pot_divisor {
+            Some(v) => {
+                if let Some(node_div) = jackpot_info
+                    .as_ref()
+                    .and_then(|i| i.get("potdivisor"))
+                    .and_then(|v| v.as_u64())
+                {
+                    if node_div != v {
+                        eprintln!(
+                            "warning: --pot-divisor {v} != node effective divisor {node_div}; \
+                             claims will disagree — remove the flag except on regtest"
+                        );
+                    }
+                }
+                v
+            }
+            None => jackpot_info
+                .as_ref()
+                .and_then(|i| i.get("potdivisor"))
+                .and_then(|v| v.as_u64())
+                .unwrap_or(1000),
+        };
+        let resolved_jackpot_divisor = match jackpot_divisor {
+            Some(v) => {
+                if let Some(node_div) = jackpot_info
+                    .as_ref()
+                    .and_then(|i| i.get("jackpotdivisor"))
+                    .and_then(|v| v.as_u64())
+                {
+                    if node_div != v {
+                        eprintln!(
+                            "warning: --jackpot-divisor {v} != node effective {node_div}; \
+                             remove the flag except on regtest"
+                        );
+                    }
+                }
+                v
+            }
+            None => jackpot_info
+                .as_ref()
+                .and_then(|i| i.get("jackpotdivisor"))
+                .and_then(|v| v.as_u64())
+                .unwrap_or(100),
+        };
+        if pot_divisor.is_none() || jackpot_divisor.is_none() {
+            println!(
+                "draw divisors from node: jackpot {} / pot {}",
+                resolved_jackpot_divisor, resolved_pot_divisor
+            );
+        }
+        let node_chain = probe
+            .call("getblockchaininfo", serde_json::json!([]))
+            .ok()
+            .and_then(|i| i.get("chain").and_then(|v| v.as_str()).map(str::to_string));
+        let network_name = match network {
+            Some(v) => v,
+            None => match node_chain.as_deref() {
+                Some("main") => "mainnet".to_string(),
+                _ => "testnet".to_string(),
+            },
+        };
+        // Luckynode bond/epoch unless explicitly flagged (bond 400 LKYL on
+        // all chains — the live testnet runs mainnet-form bond since
+        // 2026-10-20; epoch 2880 ≈48h mainnet, 3 on test+regtest).
+        let is_main = network_name == "mainnet";
+        let resolved_bond = luckynode_bond.unwrap_or(40_000_000_000u64);
+        let resolved_epoch = luckynode_epoch.unwrap_or(if is_main { 2880 } else { 3 });
         let provider = match NodeProvider::connect_with_claims(
             &node,
             &rpc_user,
@@ -3138,8 +3245,8 @@ fn main() -> std::process::ExitCode {
             claim_pot,
         ) {
             Ok(p) => p
-                .with_pot_divisor(pot_divisor)
-                .with_jackpot_divisor(jackpot_divisor)
+                .with_pot_divisor(resolved_pot_divisor)
+                .with_jackpot_divisor(resolved_jackpot_divisor)
                 .with_claim_faucet(claim_faucet)
                 .with_claim_dev(claim_dev),
             Err(e) => {
@@ -3151,32 +3258,6 @@ fn main() -> std::process::ExitCode {
         // templates are built for jackpot/pot heights and EVERY find is
         // submittable. --claim-pot-tier/--claim-pot-pity are obsolete
         // (kept accepted for older scripts; they no longer change claims).
-        // Claim-gate guard: the pool's pot divisor
-        // must equal the node's effective draw divisor. A mismatch either
-        // withholds real events (chain stalls) or submits non-events
-        // (bad-cb-amount rejects) — both silent until now.
-        if claim_pot {
-            let rpc = RpcClient::new(&node, &rpc_user, &rpc_pass);
-            if let Ok(info) = rpc.call("getjackpotinfo", serde_json::json!([])) {
-                match info.get("potdivisor").and_then(|v| v.as_u64()) {
-                    Some(node_div) if node_div != pot_divisor => eprintln!(
-                        "warning: --pot-divisor {pot_divisor} != node effective divisor {node_div}; \
-                         claims will disagree — set both to the same value"
-                    ),
-                    Some(_) => println!("pot divisor {pot_divisor} matches the node"),
-                    None => eprintln!(
-                        "warning: node getjackpotinfo lacks potdivisor; cannot verify --pot-divisor {pot_divisor}"
-                    ),
-                }
-                if let Some(node_div) = info.get("jackpotdivisor").and_then(|v| v.as_u64()) {
-                    if node_div != jackpot_divisor {
-                        eprintln!(
-                            "warning: --jackpot-divisor {jackpot_divisor} != node effective {node_div}"
-                        );
-                    }
-                }
-            }
-        }
         let worker_tokens = match &workers_file {
             Some(path) => match std::fs::read_to_string(path) {
                 Ok(content) => match lm_stratum::server::parse_workers_file(&content) {
@@ -3274,8 +3355,8 @@ fn main() -> std::process::ExitCode {
                 league_snapshot: Mutex::new(0),
                 init_done: Mutex::new(false),
                 cfg: LuckynodeCfg {
-                    bond: luckynode_bond,
-                    epoch: luckynode_epoch,
+                    bond: resolved_bond,
+                    epoch: resolved_epoch,
                     slice_bps: luckynode_slice_bps,
                     hb_window: luckynode_hb_window,
                     reset_gap: luckynode_reset_gap,
@@ -3289,8 +3370,8 @@ fn main() -> std::process::ExitCode {
         if luckynode {
             println!(
                 "luckynode draws on (bond {} epoch {} slice {}bps{})",
-                luckynode_bond,
-                luckynode_epoch,
+                resolved_bond,
+                resolved_epoch,
                 luckynode_slice_bps,
                 if luckynode_exec {
                     ", EXEC: real sendtoaddress"
@@ -3350,7 +3431,7 @@ fn main() -> std::process::ExitCode {
                 threshold: payout_threshold,
                 history: Arc::clone(&history),
                 luckynode: luckynode_shared.clone(),
-                network: network.clone(),
+                network: network_name.clone(),
             };
             std::thread::spawn(move || http_serve(a, srv, ctx));
         }
@@ -3484,7 +3565,7 @@ fn main() -> std::process::ExitCode {
                 threshold: 0,
                 history: Arc::clone(&history),
                 luckynode: None,
-                network: network.clone(),
+                network: network.clone().unwrap_or_else(|| "testnet".to_string()),
             };
             std::thread::spawn(move || http_serve(a, srv, ctx));
         }
