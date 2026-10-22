@@ -140,7 +140,7 @@
   <input id="st" bind:value={cfg.pool_stratum} spellcheck="false" disabled={running} />
   <label class="row" style="align-items:center;gap:8px">
     <input type="checkbox" bind:checked={useTls} disabled={running} style="width:auto" />
-    <span class="muted">use TLS (the official pool serves stratum+TLS on request — needs its TLS hostname)</span>
+    <span class="muted">use TLS (only if the pool serves stratum TLS on this port — the official pool's :3346 is plaintext)</span>
   </label>
   <label for="wk">worker name (is the payout address — the pool pays here; blank = your wallet)</label>
   <div class="row">

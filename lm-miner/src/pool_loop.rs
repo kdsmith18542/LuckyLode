@@ -279,7 +279,20 @@ fn connect_session(
     match client.subscribe(agent) {
         Ok(true) => {}
         Ok(false) => return Err("pool refused subscribe".to_string()),
-        Err(e) => return Err(format!("subscribe failed: {e}")),
+        Err(e) => {
+            // The rustls handshake runs lazily on first I/O, so TLS
+            // pointed at a plaintext port fails HERE — not in
+            // connect_tls — when the server drops the ClientHello bytes
+            // as a garbage line. Name the likely cause instead of
+            // surfacing a bare EOF that reads like a network outage.
+            return Err(if tls.is_some() {
+                format!(
+                    "subscribe failed over TLS: {e} (the pool probably does not serve TLS on this port — the reference pool's public stratum port is plaintext)"
+                )
+            } else {
+                format!("subscribe failed: {e}")
+            });
+        }
     }
     match client.authorize_with(worker, password) {
         Ok(true) => {}
@@ -1117,6 +1130,33 @@ mod tests {
             Outcome::Failed { error } => assert!(error.starts_with("cannot reach pool")),
             other => panic!("expected failure, got {other:?}"),
         }
+    }
+
+    /// TLS pointed at a plaintext port must say so instead of a bare
+    /// EOF: rustls handshakes lazily, so the failure surfaces inside
+    /// subscribe when the server drops the ClientHello bytes. Live-caught
+    /// 2026-10-23 (wallet miner with TLS ticked against the plaintext
+    /// public stratum port).
+    #[test]
+    fn tls_against_plaintext_names_the_cause() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let handle = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("accept");
+            drop(stream); // FIN with no bytes: a plaintext port hearing TLS
+        });
+        let tls = TlsCfg {
+            server_name: Some("localhost".to_string()),
+            insecure: true,
+            ..TlsCfg::default()
+        };
+        let err = match connect_session(addr, "test-agent", "w", "x", Some(&tls)) {
+            Ok(_) => panic!("TLS against a closed port must fail"),
+            Err(e) => e,
+        };
+        assert!(err.contains("over TLS"), "names TLS: {err}");
+        assert!(err.contains("plaintext"), "names plaintext: {err}");
+        handle.join().expect("join");
     }
 
     /// Config validation rejects what the CLI rejects (worker/threads).
