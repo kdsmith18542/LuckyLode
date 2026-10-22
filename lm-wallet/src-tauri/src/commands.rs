@@ -159,6 +159,16 @@ pub fn node_start(state: State<'_, AppState>) -> Result<serde_json::Value, Strin
             }
         }
     }
+    // A node started outside the wallet (or a leftover from a previous
+    // session) still owns the RPC port and the datadir lock; spawning a
+    // second one would fail slowly and confusingly. Name it instead —
+    // the Stop button can shut it down.
+    if let Ok(info) = node::call(&state, "getblockchaininfo", json!([])) {
+        let height = info.get("blocks").and_then(|b| b.as_u64()).unwrap_or(0);
+        return Err(format!(
+            "a node is already running at {url} (height {height}) — stop it first"
+        ));
+    }
     let datadir = node_proc::resolve_datadir(&datadir_cfg)?;
     std::fs::create_dir_all(&datadir).map_err(|e| format!("mkdir {datadir}: {e}"))?;
     let port = node_proc::rpc_port_from_url(&url);
@@ -187,46 +197,83 @@ pub fn node_start(state: State<'_, AppState>) -> Result<serde_json::Value, Strin
     }
 }
 
-/// Stop the node THIS APP started (graceful `stop` RPC, then reap).
-/// Refuses when nothing is managed — your manual node is yours to stop.
+/// Stop the node on this machine (graceful `stop` RPC, then reap).
+/// Managed children take the exact-child path; a node the wallet did not
+/// start (manual, or a leftover from a previous session) is stopped via
+/// the same RPC when it answers on loopback. A remote/shared node is
+/// never touched.
 #[tauri::command(async)]
 pub fn node_stop(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
-    let pid = {
+    let managed_pid = {
         let slot = state.node_proc.lock().expect("node proc");
-        match slot.as_ref() {
-            Some(m) => m.pid,
-            None => return Err("no managed node running (start one, or stop your manual node yourself)".to_string()),
+        slot.as_ref().map(|m| m.pid)
+    };
+    if let Some(pid) = managed_pid {
+        // Ask nicely first (lock released: node::call takes cfg, never the slot).
+        let _ = node::call(&state, "stop", json!([]));
+        let t0 = std::time::Instant::now();
+        loop {
+            let done = {
+                let mut slot = state.node_proc.lock().expect("node proc");
+                match slot.as_mut() {
+                    Some(m) => match m.child.try_wait() {
+                        Ok(None) => false,
+                        _ => {
+                            slot.take();
+                            true
+                        }
+                    },
+                    None => true,
+                }
+            };
+            if done {
+                return Ok(json!({"stopped": true, "pid": pid}));
+            }
+            if t0.elapsed() >= std::time::Duration::from_secs(30) {
+                let mut slot = state.node_proc.lock().expect("node proc");
+                if let Some(mut m) = slot.take() {
+                    let _ = m.child.kill();
+                    let _ = m.child.wait();
+                }
+                return Ok(json!({"stopped": true, "pid": pid, "killed": true}));
+            }
+            std::thread::sleep(std::time::Duration::from_millis(500));
+        }
+    }
+    // Not managed: only a loopback node may be stopped from the wallet
+    // (never the shared/remote node). Snapshot the URL under a scoped
+    // lock — node::call locks cfg itself.
+    let url = {
+        let cfg = state.cfg.lock().expect("cfg");
+        cfg.rpc_url.clone()
+    };
+    let host = node_host(&url);
+    if !is_loopback_host(&host) {
+        return Err(format!(
+            "node stop refuses {host}: only a node on this machine can be stopped from the wallet"
+        ));
+    }
+    let height = match node::call(&state, "getblockcount", json!([])) {
+        Ok(v) => v.as_u64().unwrap_or(0),
+        Err(_) => {
+            return Err("no node answering on the configured RPC — nothing to stop".to_string())
         }
     };
-    // Ask nicely first (lock released: node::call takes cfg, never the slot).
     let _ = node::call(&state, "stop", json!([]));
     let t0 = std::time::Instant::now();
     loop {
-        let done = {
-            let mut slot = state.node_proc.lock().expect("node proc");
-            match slot.as_mut() {
-                Some(m) => match m.child.try_wait() {
-                    Ok(None) => false,
-                    _ => {
-                        slot.take();
-                        true
-                    }
-                },
-                None => true,
-            }
-        };
-        if done {
-            return Ok(json!({"stopped": true, "pid": pid}));
+        if node::call(&state, "getblockcount", json!([])).is_err() {
+            return Ok(json!({
+                "stopped": true,
+                "pid": null,
+                "external": true,
+                "height": height,
+            }));
         }
         if t0.elapsed() >= std::time::Duration::from_secs(30) {
-            let mut slot = state.node_proc.lock().expect("node proc");
-            if let Some(mut m) = slot.take() {
-                let _ = m.child.kill();
-                let _ = m.child.wait();
-            }
-            return Ok(json!({"stopped": true, "pid": pid, "killed": true}));
+            return Err("node did not stop within 30 s (its RPC is still answering)".to_string());
         }
-        std::thread::sleep(std::time::Duration::from_millis(500));
+        std::thread::sleep(std::time::Duration::from_millis(300));
     }
 }
 

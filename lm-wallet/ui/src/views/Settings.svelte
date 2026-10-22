@@ -322,7 +322,11 @@
     err = "";
     try {
       const r: any = await api.nodeStop();
-      nodemsg = r.killed ? `node stopped (forced, pid ${r.pid})` : `node stopped (pid ${r.pid})`;
+      nodemsg = r.external
+        ? "node stopped (it was running outside the wallet)"
+        : r.killed
+          ? `node stopped (forced, pid ${r.pid})`
+          : `node stopped (pid ${r.pid})`;
       await refreshNode();
     } catch (e) {
       nodemsg = "";
@@ -481,6 +485,8 @@
     <div class="row" style="margin-top:10px">
       {#if nodestatus?.managed_running}
         <button class="btn" onclick={stopNode}>Stop node (pid {nodestatus?.managed_pid})</button>
+      {:else if nodestatus?.blocks != null}
+        <button class="btn" onclick={stopNode}>Stop node</button>
       {:else}
         <button class="btn primary" onclick={startNode}>Start node</button>
       {/if}
@@ -488,7 +494,7 @@
       {#if nodestatus}
         <span class="muted">
           {#if nodestatus.managed_running}managed · running{#if nodestatus.blocks != null} · height {nodestatus.blocks}{/if}
-          {:else if nodestatus.blocks != null}a node is answering · height {nodestatus.blocks}
+          {:else if nodestatus.blocks != null}a node is answering · height {nodestatus.blocks} · not managed by the wallet
           {:else}no node answering{/if}
         </span>
       {/if}
