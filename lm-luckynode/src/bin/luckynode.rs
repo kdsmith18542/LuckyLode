@@ -24,10 +24,18 @@ use std::time::Duration;
 use lm_luckynode::identity::{self, EnsureOutcome, NodeRpc};
 use serde_json::Value;
 
+/// Flush stdout (it is block-buffered under redirection; `process::exit`
+/// never flushes). Call before every early exit.
+fn flush_out() {
+    use std::io::Write;
+    let _ = std::io::stdout().flush();
+}
+
 fn usage() -> ! {
     eprintln!(
         "usage:\n  luckynode --node-rpc HOST:PORT --rpc-user U --rpc-pass P --name ln-foo --payout-address ADDR [--epoch N] [--state-file PATH] [--heartbeat-interval SECS] [--register-only] [--once]"
     );
+    flush_out();
     std::process::exit(2);
 }
 
@@ -173,6 +181,7 @@ fn main() {
     }
     if !identity::is_ln_name(&name) {
         eprintln!("luckynode: --name must live in the ln- namespace (got {name:?})");
+        flush_out();
         std::process::exit(2);
     }
     let rpc = Rpc {
@@ -183,6 +192,7 @@ fn main() {
         Ok(v) => v,
         Err(e) => {
             eprintln!("luckynode: {e}");
+            flush_out();
             std::process::exit(1);
         }
     };
@@ -231,6 +241,7 @@ fn main() {
             }
             Err(e) => {
                 eprintln!("luckynode: registration failed: {e}");
+                flush_out();
                 std::process::exit(1);
             }
         }
