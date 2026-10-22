@@ -223,10 +223,14 @@ controller). Registering `ln-<yourname>@` **is** registration:
 - **Winner:** `u64(seed[..8]) % Σweights`, walked id-ascending — the
   exact v1 `draw_winner` math (mirrored in `lm-luckynode`), computed
   over the entrant set as of the boundary's parent state.
-- **Budget:** `floor(trailing-epoch prize inflow × 1000 / 10000)`
-  (10% slice, frozen — v1's `DEFAULT_LUCKYNODE_SLICE_BPS`), capped at
-  the fund balance. Zero inflow → zero budget: self-throttling, no
-  pity timer needed.
+- **Budget:** `floor(trailing-epoch prize inflow × 1000 / 10000)` (10%
+  slice, frozen — v1's `DEFAULT_LUCKYNODE_SLICE_BPS`) **plus a fixed
+  seed release** of `seed / 1000` per epoch (1 LKYL at the 1,000 LKYL
+  seed — the fund's front-load, draining the seed over ~1,000 epochs;
+  a pure inflow-slice budget would recycle organic inflow forever while
+  the seed sat dead), capped at the fund balance. Zero inflow still
+  pays the release; the slice scales with hashrate. No pity timer —
+  the formula self-throttles.
 - **Claim (directed, like the seed funds):** any block in epoch
   `E+1` may carry a coinbase output paying the **winner's registered
   primary-address script**, up to the epoch budget. `ConnectBlock`

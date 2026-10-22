@@ -30,14 +30,27 @@ pub fn trailing_inflow(balance_now: u64, balance_then: u64, claims: u64) -> u64 
     (i128::from(balance_now) - i128::from(balance_then) + i128::from(claims)).max(0) as u64
 }
 
-/// Draw budget: the slice of the trailing inflow, capped at the fund
-/// balance (a draw may only spend what the fund holds). Zero inflow
-/// means zero budget — self-throttling, no pity timer.
+/// Seed release for one epoch: seed / 1000 (1 LKYL at the frozen
+/// seed — the fund's front-load, draining over ~1,000 epochs; without
+/// it a pure inflow-slice budget would recycle organic inflow forever
+/// while the seed sat dead).
+pub const PRIZE_SEED_RELEASE_DIVISOR: u64 = 1_000;
+
+/// Seed release for one epoch (0 when the seed is 0).
 #[must_use]
-pub fn budget(inflow: u64, balance: u64, slice_bps: u64) -> u64 {
-    let slice = (u128::from(inflow) * u128::from(slice_bps) / u128::from(PRIZE_SLICE_DENOM))
-        .min(u128::from(balance));
-    slice as u64
+pub fn seed_release(seed: u64) -> u64 {
+    seed / PRIZE_SEED_RELEASE_DIVISOR
+}
+
+/// Draw budget: the slice of the trailing inflow plus the fixed seed
+/// release, capped at the fund balance (a draw may only spend what the
+/// fund holds). Zero inflow still pays the seed release while organic
+/// inflow scales the budget with hashrate.
+#[must_use]
+pub fn budget(inflow: u64, balance: u64, slice_bps: u64, seed: u64) -> u64 {
+    let slice = u128::from(inflow) * u128::from(slice_bps) / u128::from(PRIZE_SLICE_DENOM);
+    let budget = slice + u128::from(seed_release(seed));
+    budget.min(u128::from(balance)) as u64
 }
 
 /// Deterministic tenure-weighted winner over the entrant set:
@@ -94,13 +107,16 @@ mod tests {
     }
 
     #[test]
-    fn budget_slices_and_caps() {
-        assert_eq!(budget(0, PRIZE_SEED, PRIZE_SLICE_BPS), 0);
-        assert_eq!(budget(1000, PRIZE_SEED, PRIZE_SLICE_BPS), 100);
-        assert_eq!(budget(999, PRIZE_SEED, PRIZE_SLICE_BPS), 99);
-        assert_eq!(budget(100, 5, PRIZE_SLICE_BPS), 5); // capped at balance
-        // Draw 51 live vector: trailing inflow 2,952,381 -> floor 10%.
-        assert_eq!(budget(2_952_381, 2_952_381, PRIZE_SLICE_BPS), 295_238);
+    fn budget_slices_releases_and_caps() {
+        assert_eq!(seed_release(PRIZE_SEED), 100_000_000);
+        assert_eq!(seed_release(0), 0);
+        assert_eq!(budget(0, PRIZE_SEED, PRIZE_SLICE_BPS, 0), 0);
+        assert_eq!(budget(0, PRIZE_SEED, PRIZE_SLICE_BPS, PRIZE_SEED), 100_000_000);
+        assert_eq!(budget(1000, PRIZE_SEED, PRIZE_SLICE_BPS, PRIZE_SEED), 100_000_100);
+        assert_eq!(budget(999, PRIZE_SEED, PRIZE_SLICE_BPS, PRIZE_SEED), 100_000_099);
+        assert_eq!(budget(100, 5, PRIZE_SLICE_BPS, PRIZE_SEED), 5); // capped at balance
+        // Draw 51 live vector (v1 shape, seed 0): inflow 2,952,381 -> floor 10%.
+        assert_eq!(budget(2_952_381, 2_952_381, PRIZE_SLICE_BPS, 0), 295_238);
     }
 
     #[test]
