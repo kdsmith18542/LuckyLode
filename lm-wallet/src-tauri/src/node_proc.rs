@@ -39,6 +39,22 @@ pub fn rpc_port_from_url(url: &str) -> u16 {
         .unwrap_or(DEFAULT_RPC_PORT)
 }
 
+/// True when something is already listening on the loopback RPC port — a
+/// node that is still starting (slow first launch builds the chain
+/// index and answers no RPC yet) or stuck holds the port and the
+/// datadir lock. Spawning a second node then fails obscurely after the
+/// RPC wait, so Start refuses fast with a clear message instead.
+#[must_use]
+pub fn rpc_port_in_use(host: &str, port: u16) -> bool {
+    use std::net::ToSocketAddrs;
+    let Ok(mut addrs) = (host, port).to_socket_addrs() else {
+        return false;
+    };
+    addrs.any(|a| {
+        std::net::TcpStream::connect_timeout(&a, std::time::Duration::from_millis(300)).is_ok()
+    })
+}
+
 /// Per-OS home directory. `HOME` does not exist on Windows (`USERPROFILE`
 /// does) — the old `unwrap_or("/tmp")` fallback silently parked a managed
 /// node's datadir in /tmp on Windows.
@@ -265,6 +281,20 @@ mod tests {
         assert_eq!(rpc_port_from_url("127.0.0.1:9271"), 9271);
         assert_eq!(rpc_port_from_url("https://luckylode.cc/node/"), DEFAULT_RPC_PORT);
         assert_eq!(rpc_port_from_url(""), DEFAULT_RPC_PORT);
+    }
+
+    #[test]
+    fn rpc_port_in_use_detects_a_listener() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+        assert!(rpc_port_in_use("127.0.0.1", port));
+        drop(listener);
+        assert!(!rpc_port_in_use("127.0.0.1", port));
+    }
+
+    #[test]
+    fn rpc_port_in_use_ignores_garbage_hosts() {
+        assert!(!rpc_port_in_use("not a host!!", 42253));
     }
 
     #[test]

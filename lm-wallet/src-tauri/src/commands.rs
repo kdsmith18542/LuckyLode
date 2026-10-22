@@ -165,7 +165,7 @@ pub fn node_start(state: State<'_, AppState>) -> Result<serde_json::Value, Strin
         }
     }
     // A node started outside the wallet (or a leftover from a previous
-    // session) still owns the RPC port and the datadir lock; spawning a
+    // session) still owns the RPC port and the datadir lock: spawning a
     // second one would fail slowly and confusingly. Name it instead —
     // the Stop button can shut it down.
     if let Ok(info) = node::call(&state, "getblockchaininfo", json!([])) {
@@ -174,9 +174,18 @@ pub fn node_start(state: State<'_, AppState>) -> Result<serde_json::Value, Strin
             "a node is already running at {url} (height {height}) — stop it first"
         ));
     }
+    // Still starting (slow first launch builds the chain index and
+    // answers no RPC yet) or stuck with bad credentials: either way the
+    // port and datadir lock are taken, so a second node cannot start.
+    // Refuse fast instead of failing obscurely after the RPC wait.
+    let port = node_proc::rpc_port_from_url(&url);
+    if node_proc::rpc_port_in_use(&host, port) {
+        return Err(format!(
+            "something is already listening on {host}:{port} — the node may still be starting (first launch builds the chain index, minutes: wait, then Refresh status), or the RPC credentials don't match (Settings → Advanced, or unlock the login keyring)"
+        ));
+    }
     let datadir = node_proc::resolve_datadir(&datadir_cfg)?;
     std::fs::create_dir_all(&datadir).map_err(|e| format!("mkdir {datadir}: {e}"))?;
-    let port = node_proc::rpc_port_from_url(&url);
     let args = node_proc::build_args(&datadir, &user, &pass, port, &extra);
     let child = node_proc::spawn(&bin, &args)?;
     let pid = child.id();
