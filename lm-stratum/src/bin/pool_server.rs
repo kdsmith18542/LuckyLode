@@ -148,7 +148,7 @@ footer{margin-top:26px;color:var(--dim);font-size:12px;line-height:1.5}
 <tr><td><code>GET api/worker/&lt;miner&gt;</code></td><td>one worker's public row, alive or idle (streak + league rank + owed/paid survive workerstats age-out; 404 when never seen)</td></tr>
 <tr><td><code>GET api/luckynodes</code></td><td>luckynode registry + draw state</td></tr>
 <tr><td><code>GET api/luckynode/pending</code></td><td>draws/events awaiting cosigns</td></tr>
-<tr><td><code>POST api/luckynode/register</code></td><td>register a luckynode: <code>{id,address,pubkey,msg,sig,ts}</code> (msg must rebuild canonically; sig proves payout-address ownership via node <code>verifymessage</code>)</td></tr>
+<tr><td><code>POST api/luckynode/register</code></td><td>register a luckynode: <code>{id,address,pubkey,msg,sig,idsig,ts[,bond_utxo]}</code> (msg must rebuild canonically; sig proves payout-address ownership via node <code>verifymessage</code>; <code>idsig</code> is the ID-key ed25519 signature over the id/address/bond binding and is required — without it anyone could re-register a live ID and divert its draws)</td></tr>
 <tr><td><code>POST api/luckynode/heartbeat</code></td><td>signed liveness: <code>{id,timestamp,sig}</code></td></tr>
 <tr><td><code>POST api/luckynode/notarize</code></td><td>cosign a draw: <code>{draw_id,id,sig}</code></td></tr>
 <tr><td><code>GET api/miner</code> with <code>Authorization: Bearer &lt;token&gt;</code></td><td>your own row + payout settings (worker-token auth — the token is a header, never a URL)</td></tr>
@@ -1396,6 +1396,20 @@ struct PoolState {
     shares: lm_pool::ledger::Ledger,
 }
 
+/// State-file version. v2 = luckynode registry entries are ID-key-bound
+/// (P1 takeover fix, `register_bound`): v1 files predate the binding, so
+/// their payout mappings are untrusted and dropped on load (both live
+/// nodes re-register automatically on the next heartbeat). Everything
+/// else in v1 files still loads.
+const STATE_VERSION: u32 = 2;
+
+/// Registry entries eligible for restore: only state versions that
+/// postdate ID-bound registration (v2+). Older files' mappings are
+/// untrusted (pre-fix, anyone could re-register any ID).
+fn registry_restorable(version: u32) -> bool {
+    version >= 2
+}
+
 /// Resolve the lifetime credited-coinbase total on state-file load.
 /// Pre-counter files carry 0 with a full block history: seed from the
 /// restored block records (exact while retained history is complete —
@@ -1416,6 +1430,50 @@ fn resolve_credited_total(
 /// fresh pool; a corrupt file warns and starts fresh rather than refusing
 /// to boot — balances are re-derivable from the chain only in theory, so
 /// the warning is loud).
+/// Game identity, derived ONLY from the verified node chain.
+/// `--network` is a display label for the dashboard/API; it must never
+/// change cadence, divisors, or claims.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+enum GameChain {
+    Mainnet,
+    Testnet,
+}
+
+/// Resolve game identity from the node's `getblockchaininfo.chain`.
+/// Fail closed on unknown or unreachable identity: defaulting to
+/// testnet could run a mainnet pool on a 3-block draw epoch (or vice
+/// versa). NOTE: regtest reports chain "main" (upstream label quirk)
+/// and therefore maps to mainnet cadence — the pre-cull default too.
+/// Pass --luckynode-epoch explicitly on regtest.
+fn resolve_game_chain(node_chain: Option<&str>) -> Result<GameChain, String> {
+    match node_chain {
+        Some("main") => Ok(GameChain::Mainnet),
+        Some("test") => Ok(GameChain::Testnet),
+        Some(other) => Err(format!(
+            "unrecognized node chain {other:?}; refusing to guess game parameters"
+        )),
+        None => Err("cannot determine node chain identity (getblockchaininfo failed); refusing to guess game parameters".to_string()),
+    }
+}
+
+/// In-flight faucet claims restored from the state file, read BEFORE the
+/// provider connects — so the FIRST template's top-up math already
+/// accounts for them, instead of waiting for the first refresh (up to
+/// 2 s of miners grinding an over-claimed template). Missing or corrupt
+/// file = empty (fresh pool). `load_state` re-applies the same values
+/// afterwards; the double load is idempotent.
+fn read_unmatured(path: &Option<std::path::PathBuf>) -> Vec<(u64, u64)> {
+    let Some(p) = path else {
+        return Vec::new();
+    };
+    let Ok(raw) = std::fs::read_to_string(p) else {
+        return Vec::new();
+    };
+    serde_json::from_str::<PoolState>(&raw)
+        .map(|st| st.faucet_unmatured)
+        .unwrap_or_default()
+}
+
 fn load_state<P: TemplateProvider + 'static>(
     server: &RunningServer<P>,
     luckynode: Option<&Arc<LuckynodeShared>>,
@@ -1444,15 +1502,27 @@ fn load_state<P: TemplateProvider + 'static>(
             let (owed, paid, fees) = server.payout_totals();
             let (mut draws, mut pend) = (0usize, 0usize);
             let mut lnodes = 0usize;
-            if let Some(ln) = luckynode {
-                let mut core = ln.core.lock().expect("luckynode");
-                draws = st.recent_draws.len();
-                pend = st.pending.len();
-                lnodes = st.luckynodes.len();
-                core.recent_draws = st.recent_draws.into();
-                core.pending = st.pending;
-                core.registry.restore(st.luckynodes);
-            }
+    if let Some(ln) = luckynode {
+        let mut core = ln.core.lock().expect("luckynode");
+        draws = st.recent_draws.len();
+        pend = st.pending.len();
+        core.recent_draws = st.recent_draws.into();
+        core.pending = st.pending;
+        if registry_restorable(st.version) {
+            lnodes = st.luckynodes.len();
+            core.registry.restore(st.luckynodes);
+        } else if !st.luckynodes.is_empty() {
+            // Pre-ID-binding registry: payout mappings are untrusted
+            // (anyone could have re-registered any live ID), so drop them
+            // instead of paying out on them. Both live nodes re-register
+            // automatically on their next heartbeat.
+            eprintln!(
+                "luckynode: dropping {} pre-ID-binding registry entries from state v{} (re-register required)",
+                st.luckynodes.len(),
+                st.version
+            );
+        }
+    }
             println!(
                 "state loaded from {}: {n} blocks, owed {owed}, paid {paid}, fees {fees}, league {} {}{}",
                 path.display(),
@@ -1506,7 +1576,7 @@ fn save_state<P: TemplateProvider + 'static>(
         None => (Vec::new(), Vec::new(), Vec::new()),
     };
     let st = PoolState {
-        version: 1,
+        version: STATE_VERSION,
         ledger: server.ledger_snapshot(),
         names: server.names(),
         blocks: server.blocks(),
@@ -1845,6 +1915,32 @@ fn bond_balance(rpc: &RpcClient, address: &str) -> u64 {
     sum
 }
 
+/// Verify a designated bond UTXO against the live chain: it must be
+/// unspent, pay the registered payout address (exact locking script —
+/// a bare "is unspent" check lets dust or someone else's output stand
+/// in for the bond), and hold at least the full bond. Fail closed on
+/// any mismatch or RPC trouble.
+fn verify_bond_utxo(rpc: &RpcClient, txid: &str, vout: u32, address: &str, bond: u64) -> Result<(), String> {
+    let v = rpc
+        .call("gettxout", serde_json::json!([txid, vout, true]))
+        .map_err(|e| format!("bond UTXO lookup failed: {e}"))?;
+    if v.is_null() {
+        return Err("bond UTXO is spent or unknown (spending it evicts the node)".to_string());
+    }
+    let value_sats = (v.get("value").and_then(|x| x.as_f64()).unwrap_or(0.0) * 100_000_000.0).round() as u64;
+    let script = v
+        .get("scriptPubKey")
+        .and_then(|s| s.get("hex"))
+        .and_then(|x| x.as_str())
+        .unwrap_or("");
+    let expected = lm_pool::payout::payout_script_pubkey(address)
+        .ok_or_else(|| "cannot build locking script for payout address".to_string())?;
+    if !lm_pool::payout::bond_utxo_matches(&expected, script, value_sats, bond) {
+        return Err("bond UTXO must be unspent, pay the registered payout address, and hold the full bond".to_string());
+    }
+    Ok(())
+}
+
 /// One luckynode tick: bond checks, epoch draws, winner payment.
 /// Runs in its own thread (see luckynode_loop), never on a hot path.
 fn luckynode_tick<P: TemplateProvider + 'static>(
@@ -1885,21 +1981,15 @@ fn luckynode_tick<P: TemplateProvider + 'static>(
     };
     let mut verdicts: Vec<(String, bool)> = Vec::with_capacity(checks.len());
     for c in checks {
-        // Bond verdict: funded AND ownership-proven at registration.
+        // Bond verdict: funded AND payout-ownership proven at registration.
         let mut ok = bond_balance(rpc, &c.addr) >= cfg.bond && c.owned;
-        // Locked-collateral check: a designated bond UTXO must still
-        // be unspent — spending it evicts immediately, even if the
+        // Locked-collateral check: a designated bond UTXO must be unspent,
+        // pay the registered address, and hold the full bond. Spending it,
+        // re-pointing it, or underfunding it evicts the node — even if the
         // address balance was topped up elsewhere. gettxout needs no
         // address index, so third-party nodes can bond too.
         if let Some((txid, vout)) = c.bond_utxo {
-            let spent = match rpc.call(
-                "gettxout",
-                serde_json::json!([txid, vout, true]),
-            ) {
-                Ok(v) => v.is_null(),
-                Err(_) => true, // fail closed on RPC trouble
-            };
-            if spent {
+            if verify_bond_utxo(rpc, &txid, vout, &c.addr, cfg.bond).is_err() {
                 ok = false;
             }
         }
@@ -2311,11 +2401,16 @@ fn luckynode_pending(ctx: &HttpCtx) -> String {
     serde_json::json!(list).to_string()
 }
 
-/// POST /api/luckynode/register {id, address, pubkey, msg, sig, ts}: id must
-/// equal the hex pubkey (32 bytes); address must be a payout address the
-/// REGISTRAR controls — proven by a node-verified `verifymessage` signature
-/// over the canonical `luckynode-register:v1:{id}:{address}:{ts}` (freshness
-/// window like heartbeats). No proof → rejected (Sybil control).
+/// POST /api/luckynode/register {id, address, pubkey, msg, sig, idsig, ts, bond_utxo?}:
+/// id must equal the hex pubkey (32 bytes); the payout address must be
+/// proven via node `verifymessage` over the canonical
+/// `luckynode-register:v1:{id}:{address}:{ts}` (Sybil control), AND the
+/// luckynode identity key must sign
+/// `luckynode-idbind:v1:{id}:{address}:{bond_utxo or -}:{ts}` (`idsig`).
+/// The ID signature is required for new AND existing ids: without it,
+/// anyone could re-register a live node's ID under their own address
+/// and divert (or, with an unfunded address, deny) its draws while
+/// keeping its tenure. No ID sig → rejected, no exceptions.
 fn luckynode_register(ctx: &HttpCtx, body: &str) -> (bool, String) {
     let Some(shared) = luckynode_shared(ctx) else {
         return (false, luckynode_disabled());
@@ -2329,6 +2424,7 @@ fn luckynode_register(ctx: &HttpCtx, body: &str) -> (bool, String) {
     let pubkey = v.get("pubkey").and_then(|x| x.as_str()).unwrap_or("");
     let msg = v.get("msg").and_then(|x| x.as_str()).unwrap_or("");
     let sig = v.get("sig").and_then(|x| x.as_str()).unwrap_or("");
+    let idsig = v.get("idsig").and_then(|x| x.as_str()).unwrap_or("");
     let ts = v.get("ts").and_then(|x| x.as_u64()).unwrap_or(0);
     if id.is_empty() || id != pubkey {
         return (false, serde_json::json!({"ok": false, "error": "id must equal the hex pubkey"}).to_string());
@@ -2340,63 +2436,83 @@ fn luckynode_register(ctx: &HttpCtx, body: &str) -> (bool, String) {
     if !lm_pool::payout::valid_payout_address(address) {
         return (false, serde_json::json!({"ok": false, "error": "address is not a payout address"}).to_string());
     }
+    if idsig.is_empty() {
+        return (false, serde_json::json!({"ok": false, "error": "missing idsig: register with the luckynode ID key (see /api docs)"}).to_string());
+    }
+    let bond_utxo: Option<String> =
+        v.get("bond_utxo").and_then(|x| x.as_str()).filter(|s| !s.is_empty()).map(str::to_string);
+    let bond_pair: Option<(String, u32)> = match &bond_utxo {
+        None => None,
+        Some(u) => match u.split_once(':') {
+            Some((txid, vout)) if txid.len() == 64 && vout.parse::<u32>().is_ok() => {
+                Some((txid.to_string(), vout.parse::<u32>().expect("checked")))
+            }
+            _ => return (false, serde_json::json!({"ok": false, "error": "bond_utxo must be txid:vout (64 hex + index)"}).to_string()),
+        },
+    };
     let now = now_secs();
     // Freshness window (anti-replay), same as heartbeats.
     if ts == 0 || now.saturating_sub(ts) > 300 || ts > now + 60 {
         return (false, serde_json::json!({"ok": false, "error": "stale timestamp"}).to_string());
+    }
+    // Identity binding FIRST (no RPC needed): the ID key must cover the
+    // (id, address, bond) triple. Fail closed before touching the node.
+    if !lm_luckynode::verify_idbind(id, address, bond_utxo.as_deref(), ts, idsig) {
+        return (false, serde_json::json!({"ok": false, "error": "identity signature invalid (sign the idbind message with the luckynode ID key)"}).to_string());
     }
     // Canonical message: exact match prevents cross-context replay.
     let expect = format!("luckynode-register:v1:{id}:{address}:{ts}");
     if msg != expect || sig.is_empty() {
         return (false, serde_json::json!({"ok": false, "error": "message mismatch"}).to_string());
     }
-    // Ownership proof via the node (fail closed if RPC unavailable).
-    let owned = match &ctx.node {
-        Some((url, user, pass)) => {
-            let rpc = match RpcClient::from_url(url, user, pass) {
-                Ok(r) => r,
-                Err(e) => return (false, serde_json::json!({"ok": false, "error": format!("node rpc: {e}")}).to_string()),
-            };
-            match rpc.call("verifymessage", serde_json::json!([address, sig, msg])) {
-                Ok(v) => v.as_bool().unwrap_or(false),
-                Err(e) => return (false, serde_json::json!({"ok": false, "error": format!("verifymessage: {e}")}).to_string()),
-            }
-        }
+    let rpc = match &ctx.node {
+        Some((url, user, pass)) => match RpcClient::from_url(url, user, pass) {
+            Ok(r) => r,
+            Err(e) => return (false, serde_json::json!({"ok": false, "error": format!("node rpc: {e}")}).to_string()),
+        },
         None => return (false, serde_json::json!({"ok": false, "error": "pool has no node connection"}).to_string()),
+    };
+    // Ownership proof via the node (fail closed if RPC unavailable).
+    let owned = match rpc.call("verifymessage", serde_json::json!([address, sig, msg])) {
+        Ok(v) => v.as_bool().unwrap_or(false),
+        Err(e) => return (false, serde_json::json!({"ok": false, "error": format!("verifymessage: {e}")}).to_string()),
     };
     if !owned {
         return (false, serde_json::json!({"ok": false, "error": "payout address ownership not proven (sign the registration with the address's key)"}).to_string());
     }
-    shared
+    // Locked-collateral check: the designated UTXO must be unspent, pay
+    // the registered address, and hold the full bond. A bare UTXO check
+    // ("is it unspent") is not enough — without the script+value binding
+    // a dust (or someone else's) output could be marked "locked" while
+    // the real bond stays spendable elsewhere.
+    if let Some((txid, vout)) = &bond_pair {
+        if let Err(e) = verify_bond_utxo(&rpc, txid, *vout, address, shared.cfg.bond) {
+            return (false, serde_json::json!({"ok": false, "error": format!("bond_utxo rejected: {e}")}).to_string());
+        }
+    }
+    let bond_locked = bond_pair.is_some();
+    let is_new = match shared
         .core
         .lock()
         .expect("luckynode")
         .registry
-        .register(id, address, now, true);
-    // Optional designated bond UTXO (locked collateral): "txid:vout".
-    // The pool verifies it is unspent every tick; spending it evicts the
-    // node. Without one, the bond is a plain balance check (testnet).
-    let mut bond_locked = false;
-    if let Some(utxo) = v.get("bond_utxo").and_then(|x| x.as_str()) {
-        if let Some((txid, vout)) = utxo.split_once(':') {
-            if let Ok(vout) = vout.parse::<u32>() {
-            if !txid.is_empty() && txid.len() == 64 {
-                bond_locked = shared
-                    .core
-                    .lock()
-                    .expect("luckynode")
-                    .registry
-                    .designate_bond(id, txid, vout);
-            }
-            }
-        }
-        if !bond_locked {
-            return (false, serde_json::json!({"ok": false, "error": "bond_utxo must be txid:vout (64 hex + index)"}).to_string());
-        }
-    }
+        .register_bound(
+            &lm_luckynode::IdBinding {
+                id,
+                address,
+                bond_utxo: bond_pair,
+                ts,
+                idsig_hex: idsig,
+            },
+            now,
+            true,
+        ) {
+        Ok(fresh) => fresh,
+        Err(e) => return (false, serde_json::json!({"ok": false, "error": e}).to_string()),
+    };
     (
         true,
-        serde_json::json!({"ok": true, "id": id, "bond_pending": true, "bond_locked": bond_locked}).to_string(),
+        serde_json::json!({"ok": true, "id": id, "new": is_new, "bond_pending": true, "bond_locked": bond_locked}).to_string(),
     )
 }
 
@@ -2517,6 +2633,8 @@ const USAGE: &str = "usage:
   both forms accept [--http HOST:PORT] to serve the live dashboard (/ and /api/stats)
   node mode accepts [--payout-threshold V] [--payout-interval SECS] [--payout-exec]
   [--pot-divisor N] [--jackpot-divisor N]   (regtest-only overrides; otherwise read from the node)
+  [--network testnet|mainnet] is a display label only (dashboard/API tickers);
+  game parameters always come from the verified node chain
   both modes accept [--pool-fee-pp N] (operator cut, per-myriad, default 0)
   and [--dev-fee-addr ADDR --dev-fee-pp N] (dev slice from the operator cut,
   per-myriad; docs/04 section 4.2)
@@ -2659,8 +2777,9 @@ fn main() -> std::process::ExitCode {
     let mut jackpot_divisor: Option<u64> = None; // None = read from the node
     let mut claim_pot_pity = false; // obsolete no-op (kept for old scripts)
     let mut payout_threshold = 0u64;
-    // Chain label for user-facing strings. None = ask the node
-    // (`getblockchaininfo.chain`); --network overrides.
+    // Display label for user-facing strings only (dashboard, API
+    // tickers). Game parameters (epoch, divisors, claims) ALWAYS come
+    // from the verified node chain — never from this flag.
     let mut network: Option<String> = None;
     let mut payout_interval = 60u64;
     let mut payout_exec = false;
@@ -3224,31 +3343,43 @@ fn main() -> std::process::ExitCode {
             .call("getblockchaininfo", serde_json::json!([]))
             .ok()
             .and_then(|i| i.get("chain").and_then(|v| v.as_str()).map(str::to_string));
-        let network_name = match network {
+        let game_chain = match resolve_game_chain(node_chain.as_deref()) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("error: {e}");
+                return std::process::ExitCode::from(1);
+            }
+        };
+        // Display label only: flag wins when given, else the node chain.
+        let display_network = match network {
             Some(v) => v,
-            None => match node_chain.as_deref() {
-                Some("main") => "mainnet".to_string(),
-                _ => "testnet".to_string(),
+            None => match game_chain {
+                GameChain::Mainnet => "mainnet".to_string(),
+                GameChain::Testnet => "testnet".to_string(),
             },
         };
         // Luckynode bond/epoch unless explicitly flagged (bond 400 LKYL on
         // all chains — the live testnet runs mainnet-form bond since
-        // 2026-10-20; epoch 2880 ≈48h mainnet, 3 on test+regtest).
-        let is_main = network_name == "mainnet";
+        // 2026-10-20; epoch 2880 ≈48h mainnet, 3 on testnet).
+        let is_main = matches!(game_chain, GameChain::Mainnet);
         let resolved_bond = luckynode_bond.unwrap_or(40_000_000_000u64);
         let resolved_epoch = luckynode_epoch.unwrap_or(if is_main { 2880 } else { 3 });
-        let provider = match NodeProvider::connect_with_claims(
+        let cfg = lm_stratum::node_provider::ProviderConfig::new(
+            claim_jackpots,
+            claim_pot,
+            claim_faucet,
+            claim_dev,
+            resolved_jackpot_divisor,
+            resolved_pot_divisor,
+        )
+        .with_restored_unmatured(read_unmatured(&state_file));
+        let provider = match NodeProvider::connect_with_config(
             &node,
             &rpc_user,
             &rpc_pass,
-            claim_jackpots,
-            claim_pot,
+            cfg,
         ) {
-            Ok(p) => p
-                .with_pot_divisor(resolved_pot_divisor)
-                .with_jackpot_divisor(resolved_jackpot_divisor)
-                .with_claim_faucet(claim_faucet)
-                .with_claim_dev(claim_dev),
+            Ok(p) => p,
             Err(e) => {
                 eprintln!("error: cannot reach node RPC {node}: {e}");
                 return std::process::ExitCode::from(1);
@@ -3431,7 +3562,7 @@ fn main() -> std::process::ExitCode {
                 threshold: payout_threshold,
                 history: Arc::clone(&history),
                 luckynode: luckynode_shared.clone(),
-                network: network_name.clone(),
+                network: display_network.clone(),
             };
             std::thread::spawn(move || http_serve(a, srv, ctx));
         }
@@ -3882,7 +4013,7 @@ mod tests {
         use lm_stratum::server::BlockRecord;
         // A stored counter survives the round trip untouched.
         let st = PoolState {
-            version: 1,
+            version: STATE_VERSION,
             ledger: lm_pool::payout::PayoutLedger::default(),
             names: Vec::new(),
             blocks: Vec::new(),
@@ -3922,7 +4053,7 @@ mod tests {
     #[test]
     fn state_file_roundtrips_league_pool_and_defaults_old_files() {
         let st = PoolState {
-            version: 1,
+            version: STATE_VERSION,
             ledger: lm_pool::payout::PayoutLedger::default(),
             names: Vec::new(),
             blocks: Vec::new(),
@@ -3959,7 +4090,7 @@ mod tests {
         led.submit(lm_pool::ledger::ShareRec { miner: "w1".to_string(), ts: 100, work: 10, overnight: false });
         led.submit(lm_pool::ledger::ShareRec { miner: "w1".to_string(), ts: 100 + 86_400, work: 10, overnight: false });
         let st2 = PoolState {
-            version: 1,
+            version: STATE_VERSION,
             ledger: lm_pool::payout::PayoutLedger::default(),
             names: Vec::new(),
             blocks: Vec::new(),
@@ -3985,7 +4116,7 @@ mod tests {
     #[test]
     fn state_file_roundtrips_attestations() {
         let mut st = PoolState {
-            version: 1,
+            version: STATE_VERSION,
             ledger: lm_pool::payout::PayoutLedger::default(),
             names: Vec::new(),
             blocks: Vec::new(),
@@ -4072,6 +4203,100 @@ mod tests {
         // The per-family cap holds.
         let capped = league_boards_json(&boards, &names, &atts, 200, 1);
         assert_eq!(capped[0]["entries"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn registry_restorable_gates_on_state_version() {
+        // v1 state files predate ID-bound registration: their payout
+        // mappings are untrusted and must be dropped, not restored.
+        assert!(!registry_restorable(0));
+        assert!(!registry_restorable(1));
+        assert!(registry_restorable(2));
+        assert!(registry_restorable(999));
+        assert_eq!(STATE_VERSION, 2, "bump the gate with the format");
+    }
+
+    #[test]
+    fn resolve_game_chain_uses_node_not_flag() {
+        // Game identity comes ONLY from the verified node chain.
+        assert_eq!(resolve_game_chain(Some("main")), Ok(GameChain::Mainnet));
+        assert_eq!(resolve_game_chain(Some("test")), Ok(GameChain::Testnet));
+        assert!(resolve_game_chain(Some("bogus")).is_err());
+        assert!(resolve_game_chain(None).is_err());
+    }
+
+    fn test_luckynode_shared() -> Arc<LuckynodeShared> {
+        Arc::new(LuckynodeShared {
+            core: Mutex::new(LuckynodeCore {
+                registry: lm_luckynode::Registry::new(),
+                pending: Vec::new(),
+                recent_draws: VecDeque::new(),
+            }),
+            last_epoch: Mutex::new(None),
+            league_snapshot: Mutex::new(0),
+            init_done: Mutex::new(false),
+            cfg: LuckynodeCfg {
+                bond: 400_000_000,
+                epoch: 3,
+                slice_bps: 1000,
+                hb_window: 3600,
+                reset_gap: 86400,
+                interval: 60,
+                exec: false,
+            },
+        })
+    }
+
+    fn test_http_ctx(shared: &Arc<LuckynodeShared>) -> HttpCtx {
+        HttpCtx {
+            node: None,
+            mode: "mock".to_string(),
+            exec: false,
+            threshold: 0,
+            history: Arc::new(Mutex::new(VecDeque::new())),
+            luckynode: Some(Arc::clone(shared)),
+            network: "test".to_string(),
+        }
+    }
+
+    #[test]
+    fn luckynode_register_fails_closed_without_identity_sig() {
+        // Pinned ed25519 identity (same vector as the deadlock test).
+        let secret = [7u8; 32];
+        let id = "ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c".to_string();
+        let payout_secret = [9u8; 32];
+        let address = "mx5tDPWsWxhC7EVkJXGCR14dUoMdps8fLy";
+        let shared = test_luckynode_shared();
+        let ctx = test_http_ctx(&shared);
+
+        // Full body, then strip the identity signature: even with a
+        // well-formed payout proof, no idsig = reject, before any RPC.
+        let full = lm_luckynode::register_body(&id, address, &payout_secret, None, &secret).expect("body");
+        let mut stripped = full.clone();
+        stripped.as_object_mut().expect("obj").remove("idsig");
+        let (ok, body) = luckynode_register(&ctx, &stripped.to_string());
+        assert!(!ok, "missing idsig must fail closed");
+        assert!(body.contains("identity signature") || body.contains("idsig"), "fail-closed reason, got: {body}");
+
+        // Tampered idsig: fail closed too (this is the takeover shape —
+        // valid payout proof, forged identity binding).
+        let mut forged = full.clone();
+        let obj = forged.as_object_mut().expect("obj");
+        let mut bad = obj["idsig"].as_str().expect("idsig").to_string();
+        bad.replace_range(..2, if &bad[..2] == "00" { "ff" } else { "00" });
+        obj["idsig"] = serde_json::Value::String(bad);
+        let (ok, body) = luckynode_register(&ctx, &forged.to_string());
+        assert!(!ok, "forged idsig must fail closed");
+        assert!(body.contains("identity signature"), "fail-closed reason, got: {body}");
+
+        // Nothing was registered by the failures (fail closed, no state).
+        assert!(shared.core.lock().expect("lock").registry.get(&id).is_none());
+
+        // Valid idsig but no node connection: fails at the payout-proof
+        // step, proving the identity check runs FIRST (no RPC needed).
+        let (ok, body) = luckynode_register(&ctx, &full.to_string());
+        assert!(!ok);
+        assert!(body.contains("no node connection"), "ordering proof, got: {body}");
     }
 
     #[test]

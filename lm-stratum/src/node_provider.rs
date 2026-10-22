@@ -108,6 +108,128 @@ fn header_merkle(header: &[u8]) -> Option<[u8; 32]> {
     header.get(MERKLE_RANGE).and_then(|m| m.try_into().ok())
 }
 
+/// Complete claim configuration for a node-backed provider. Passed at
+/// construction so the FIRST template already carries the resolved
+/// divisors and faucet/dev decisions — building with defaults and
+/// reconfiguring after would serve one wrong-claim template until the
+/// first refresh (up to 2 s of miners grinding claims the node would
+/// reject, or missing seed drips it advertised).
+#[derive(Clone, Debug)]
+pub struct ProviderConfig {
+    pub claim_jackpots: bool,
+    pub claim_pot: bool,
+    pub claim_faucet: bool,
+    pub claim_dev: bool,
+    pub jackpot_divisor: u64,
+    pub pot_divisor: u64,
+    /// Landed-but-immature faucet claims restored from the state file,
+    /// so the first template's top-up math already accounts for them.
+    pub restored_unmatured: Vec<(u64, u64)>,
+}
+
+impl Default for ProviderConfig {
+    fn default() -> Self {
+        Self {
+            claim_jackpots: true,
+            claim_pot: true,
+            claim_faucet: false,
+            claim_dev: false,
+            jackpot_divisor: 100,
+            pot_divisor: 1000,
+            restored_unmatured: Vec::new(),
+        }
+    }
+}
+
+impl ProviderConfig {
+    /// Faucet/dev claims off (the pool binary turns them on explicitly).
+    pub fn new(
+        claim_jackpots: bool,
+        claim_pot: bool,
+        claim_faucet: bool,
+        claim_dev: bool,
+        jackpot_divisor: u64,
+        pot_divisor: u64,
+    ) -> Self {
+        Self {
+            claim_jackpots,
+            claim_pot,
+            claim_faucet,
+            claim_dev,
+            jackpot_divisor: jackpot_divisor.max(1),
+            pot_divisor: pot_divisor.max(1),
+            restored_unmatured: Vec::new(),
+        }
+    }
+
+    pub fn with_restored_unmatured(mut self, v: Vec<(u64, u64)>) -> Self {
+        self.restored_unmatured = v;
+        self
+    }
+}
+
+/// Decide the seed-fund legs (faucet top-up, dev cadence) for one
+/// template. Shared by the constructor (first template) and the refresh
+/// loop so both apply identical policy. Prunes matured entries from the
+/// unmatured map as a side effect.
+fn decide_seed_claim<F>(
+    faucet_balance: &F,
+    gbt: &serde_json::Value,
+    height: u64,
+    claim_faucet: bool,
+    claim_dev: bool,
+    unmatured: &mut std::collections::BTreeMap<u64, u64>,
+) -> SeedClaim
+where
+    F: Fn(&str) -> Option<u64>,
+{
+    let (faucet_drip, faucet_script, dev_drip, dev_script, dev_epoch) =
+        parse_seed_fields(gbt);
+    let faucet_need = if claim_faucet && faucet_drip > 0 && !faucet_script.is_empty() {
+        match gbt
+            .get("faucetaddress")
+            .and_then(|v| v.as_str())
+            .and_then(faucet_balance)
+        {
+            Some(balance) => {
+                unmatured.retain(|h, _| h.saturating_add(FAUCET_MATURITY) > height);
+                // Pending = LANDED-but-immature claims only (recorded
+                // at accept, never at template-build: an unlanded
+                // template must not suppress future top-ups).
+                let pending = unmatured_total(unmatured, height, FAUCET_MATURITY);
+                let need = faucet_topup_amount(
+                    faucet_drip,
+                    balance.saturating_add(pending),
+                    FAUCET_TOPUP_TARGET,
+                );
+                if need > 0 {
+                    eprintln!(
+                        "faucet claim: height={} drip={} wallet={} pending={} claiming={}",
+                        height, faucet_drip, balance, pending, need
+                    );
+                }
+                need
+            }
+            None => 0,
+        }
+    } else {
+        0
+    };
+    // Dev policy is cadence-driven: claim the full drip on
+    // dev-epoch heights when enabled.
+    let dev_need = if claim_dev && dev_epoch && dev_drip > 0 && !dev_script.is_empty() {
+        dev_drip
+    } else {
+        0
+    };
+    SeedClaim {
+        faucet: faucet_need,
+        faucet_script,
+        dev: dev_need,
+        dev_script,
+    }
+}
+
 /// Provider backed by a running node's JSON-RPC.
 pub struct NodeProvider {
     rpc: RpcClient,
@@ -147,30 +269,49 @@ pub struct NodeProvider {
 
 impl NodeProvider {
     /// Connect and fetch the first template; fails fast if the node is
-    /// unreachable or returns something unmappable. Claims default ON
-    /// (jackpot + pot); faucet/dev default OFF here — the pool binary
-    /// enables them via [`with_claim_faucet`](Self::with_claim_faucet) /
-    /// [`with_claim_dev`](Self::with_claim_dev).
+    /// unreachable or returns something unmappable. Default config:
+    /// jackpot + pot claims on, faucet/dev off, frozen divisors, no
+    /// restored in-flight claims.
     pub fn connect(addr: &str, user: &str, pass: &str) -> Result<Self, String> {
-        Self::connect_with_claims(addr, user, pass, true, true)
+        Self::connect_with_config(addr, user, pass, ProviderConfig::default())
     }
 
-    /// As [`connect`], optionally serving claim templates.
-    pub fn connect_with_claims(
+    /// As [`connect`], with the full claim configuration applied BEFORE
+    /// the first template is built — every template this provider ever
+    /// serves, including the first, uses the resolved divisors and the
+    /// faucet/dev decisions (the old construct-then-configure sequence
+    /// served one template with hardcoded divisors and no seed claims).
+    pub fn connect_with_config(
         addr: &str,
         user: &str,
         pass: &str,
-        claim_jackpots: bool,
-        claim_pot: bool,
+        cfg: ProviderConfig,
     ) -> Result<Self, String> {
         let rpc = RpcClient::new(addr, user, pass);
         let gbt = rpc.call(
             "getblocktemplate",
             serde_json::json!([{"capabilities": []}]),
         )?;
+        let height = gbt.get("height").and_then(|v| v.as_u64()).unwrap_or(0);
         let league = parse_league_overflow(&gbt);
-        let (tpl, txs, bonus, pot, coinbase, pity, faucet, dev) =
-            build_template(&gbt, claim_jackpots, claim_pot, 100, 1000, &SeedClaim::default())?;
+        let mut unmatured: std::collections::BTreeMap<u64, u64> =
+            cfg.restored_unmatured.into_iter().collect();
+        let seed = decide_seed_claim(
+            &|addr| faucet_wallet_balance(&rpc, addr),
+            &gbt,
+            height,
+            cfg.claim_faucet,
+            cfg.claim_dev,
+            &mut unmatured,
+        );
+        let (tpl, txs, bonus, pot, coinbase, pity, faucet, dev) = build_template(
+            &gbt,
+            cfg.claim_jackpots,
+            cfg.claim_pot,
+            cfg.jackpot_divisor.max(1),
+            cfg.pot_divisor.max(1),
+            &seed,
+        )?;
         let mut recent = std::collections::VecDeque::new();
         if let Some(m) = header_merkle(&tpl.header) {
             recent.push_front(RecentTemplate {
@@ -202,43 +343,14 @@ impl NodeProvider {
             }),
             accepted: Mutex::new(0),
             rejected: Mutex::new(0),
-            claim_jackpots,
-            claim_pot,
-            claim_faucet: false,
-            claim_dev: false,
-            faucet_unmatured: Mutex::new(std::collections::BTreeMap::new()),
-            pot_divisor: 1000,
-            jackpot_divisor: 100,
+            claim_jackpots: cfg.claim_jackpots,
+            claim_pot: cfg.claim_pot,
+            claim_faucet: cfg.claim_faucet,
+            claim_dev: cfg.claim_dev,
+            faucet_unmatured: Mutex::new(unmatured),
+            pot_divisor: cfg.pot_divisor.max(1),
+            jackpot_divisor: cfg.jackpot_divisor.max(1),
         })
-    }
-
-    /// Match a regtest node's `-lucky-pot-divisor` override (default
-    /// 1000). Testnet/mainnet pools must leave this at the default.
-    pub fn with_pot_divisor(mut self, divisor: u64) -> Self {
-        self.pot_divisor = divisor.max(1);
-        self
-    }
-
-    /// Match a regtest node's `-lucky-jackpot-divisor` override (default
-    /// 100).
-    pub fn with_jackpot_divisor(mut self, divisor: u64) -> Self {
-        self.jackpot_divisor = divisor.max(1);
-        self
-    }
-
-    /// Claim faucet seed-fund outputs (top-up policy against the node's
-    /// advertised drip). The pool binary enables this by default.
-    pub fn with_claim_faucet(mut self, on: bool) -> Self {
-        self.claim_faucet = on;
-        self
-    }
-
-    /// Claim dev seed-fund outputs on dev-epoch heights (up to the node's
-    /// advertised drip). The cadence is consensus (every
-    /// DEV_EPOCH-th block); the pool only decides on/off (binary default on).
-    pub fn with_claim_dev(mut self, on: bool) -> Self {
-        self.claim_dev = on;
-        self
     }
 
     /// (accepted, rejected) block submissions.
@@ -274,63 +386,20 @@ impl NodeProvider {
             )
             .and_then(|gbt| {
                 let league = parse_league_overflow(&gbt);
-                // Seed-fund claims (internal/20): the pool decides amounts
-                // against the node's advertised drip + pinned scripts.
-                // Faucet policy is demand-driven: claim only the shortfall
-                // to the top-up target (wallet balance via listunspent —
-                // no addressindex needed, plus this pool's own landed-but-
-                // immature claims which listunspent cannot see); a silent
-                // RPC keeps the wallet full assumption and claims nothing
-                // (fail closed).
-                // Dev policy is cadence-driven: claim the full drip on
-                // dev-epoch heights when enabled.
+                // Seed-fund claims (internal/20): decided by the shared
+                // helper so the constructor's first template and every
+                // refresh apply identical policy.
                 let height = gbt.get("height").and_then(|v| v.as_u64()).unwrap_or(0);
-                let (faucet_drip, faucet_script, dev_drip, dev_script, dev_epoch) =
-                    parse_seed_fields(&gbt);
-                let faucet_need = if claim_faucet && faucet_drip > 0 && !faucet_script.is_empty() {
-                    match gbt
-                        .get("faucetaddress")
-                        .and_then(|v| v.as_str())
-                        .and_then(|addr| faucet_wallet_balance(&self.rpc, addr))
-                    {
-                    Some(balance) => {
-                        let mut unm = self.faucet_unmatured.lock().expect("unmatured");
-                        unm.retain(|h, _| h.saturating_add(FAUCET_MATURITY) > height);
-                        // Pending = LANDED-but-immature claims only (recorded
-                        // at accept, never at template-build: an unlanded
-                        // template must not suppress future top-ups).
-                        let pending = unmatured_total(&unm, height, FAUCET_MATURITY);
-                        let need = faucet_topup_amount(
-                            faucet_drip,
-                            balance.saturating_add(pending),
-                            FAUCET_TOPUP_TARGET,
-                        );
-                        if need > 0 {
-                            eprintln!(
-                                "faucet claim: height={} drip={} wallet={} pending={} claiming={}",
-                                height, faucet_drip, balance, pending, need
-                            );
-                        }
-                        need
-                    }
-                        None => 0,
-                    }
-                } else {
-                    0
-                };
-                // Dev policy is cadence-driven: claim the full drip on
-                // dev-epoch heights when enabled.
-                let dev_need = if claim_dev && dev_epoch && dev_drip > 0 && !dev_script.is_empty() {
-                    dev_drip
-                } else {
-                    0
-                };
-                let seed = SeedClaim {
-                    faucet: faucet_need,
-                    faucet_script,
-                    dev: dev_need,
-                    dev_script,
-                };
+                let mut unm = self.faucet_unmatured.lock().expect("unmatured");
+                let seed = decide_seed_claim(
+                    &|addr| faucet_wallet_balance(&self.rpc, addr),
+                    &gbt,
+                    height,
+                    claim_faucet,
+                    claim_dev,
+                    &mut unm,
+                );
+                drop(unm);
                 build_template(&gbt, claim_jackpots, claim_pot, jackpot_divisor, pot_divisor, &seed)
                     .map(|bt| (bt, league))
             }) {
@@ -1361,8 +1430,57 @@ mod tests {
     }
 
     #[test]
-    fn league_overflow_parses_and_defaults_to_zero() {
-        let gbt: serde_json::Value = serde_json::from_str(GBT_FIXTURE).expect("fixture json");
+    fn decide_seed_claim_applies_topup_and_cadence() {
+        // The first template and every refresh share this policy: faucet
+        // claims only the shortfall to the top-up target (restored
+        // in-flight claims included), dev claims the full drip on dev
+        // epochs. Fail closed on unknown balance (claims nothing).
+        let mut gbt: serde_json::Value = serde_json::from_str(GBT_FIXTURE).expect("json");
+        gbt["height"] = serde_json::json!(200u64);
+        gbt["faucetaddress"] = serde_json::json!("mAddr");
+        gbt["faucetdrip"] = serde_json::json!(1_000u64);
+        gbt["faucetscript"] = serde_json::json!("76a91400");
+        gbt["devdrip"] = serde_json::json!(50u64);
+        gbt["devscript"] = serde_json::json!("a91411");
+        gbt["devepoch"] = serde_json::json!(true);
+
+        // Empty wallet: full drip (capped), dev on cadence.
+        let mut unm = std::collections::BTreeMap::new();
+        let s = decide_seed_claim(&|_| Some(0), &gbt, 200, true, true, &mut unm);
+        assert_eq!((s.faucet, s.dev), (1_000, 50));
+        assert_eq!(s.faucet_script, hex_bytes("76a91400").expect("hex"));
+
+        // Near-target wallet + pending in-flight claim: top-up shrinks.
+        let mut unm = std::collections::BTreeMap::from([(150u64, 400u64)]);
+        let s = decide_seed_claim(&|_| Some(FAUCET_TOPUP_TARGET - 500), &gbt, 200, true, true, &mut unm);
+        assert_eq!(s.faucet, 100); // 500 shortfall - 400 pending = 100
+        assert!(unm.contains_key(&150)); // retained: not yet matured
+
+        // Matured pending entries prune instead of suppressing.
+        let mut unm = std::collections::BTreeMap::from([(50u64, 400u64)]);
+        let s = decide_seed_claim(&|_| Some(FAUCET_TOPUP_TARGET - 500), &gbt, 200, true, true, &mut unm);
+        assert_eq!(s.faucet, 500);
+        assert!(!unm.contains_key(&50));
+
+        // Unknown balance fails closed (claims nothing).
+        let mut unm = std::collections::BTreeMap::new();
+        let s = decide_seed_claim(&|_: &str| None, &gbt, 200, true, true, &mut unm);
+        assert_eq!((s.faucet, s.dev), (0, 50)); // dev is cadence-only, unaffected
+
+        // Flags off: nothing claimed even when advertised.
+        let mut unm = std::collections::BTreeMap::new();
+        let s = decide_seed_claim(&|_| Some(0), &gbt, 200, false, false, &mut unm);
+        assert_eq!((s.faucet, s.dev), (0, 0));
+        // Not a dev-epoch height: no dev claim.
+        let mut gbt2 = gbt.clone();
+        gbt2["devepoch"] = serde_json::json!(false);
+        let mut unm = std::collections::BTreeMap::new();
+        let s = decide_seed_claim(&|_| Some(0), &gbt2, 200, true, true, &mut unm);
+        assert_eq!((s.faucet, s.dev), (1_000, 0));
+    }
+
+    #[test]
+    fn league_overflow_parses_and_defaults_to_zero() {        let gbt: serde_json::Value = serde_json::from_str(GBT_FIXTURE).expect("fixture json");
         // Old node (field absent): no league credit.
         assert_eq!(parse_league_overflow(&gbt), 0);
         // New node: the exact per-height overflow rides through.

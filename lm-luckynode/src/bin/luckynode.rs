@@ -199,7 +199,7 @@ fn main() {
         Some(bond_utxo.as_str())
     };
 
-    let reg = match register_body(&id, &address, &payout_secret, bond_opt) {
+    let reg = match register_body(&id, &address, &payout_secret, bond_opt, &secret) {
         Ok(b) => b,
         Err(e) => {
             eprintln!("luckynode: register sign failed: {e}");
@@ -234,7 +234,7 @@ fn main() {
                 eprintln!("luckynode: heartbeat failed: {e}");
                 // Pool restarted (registry wiped): re-register, then retry.
                 if e.contains("unknown node") {
-                    match register_body(&id, &address, &payout_secret, bond_opt) {
+                    match register_body(&id, &address, &payout_secret, bond_opt, &secret) {
                         Ok(reg) => match http(&pool, "POST", "/api/luckynode/register", Some(&reg.to_string())) {
                             Ok(b) => println!("re-register: {b}"),
                             Err(e) => eprintln!("luckynode: re-register failed: {e}"),

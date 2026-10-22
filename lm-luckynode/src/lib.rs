@@ -61,6 +61,18 @@ pub struct Registry {
     nodes: HashMap<String, Node>,
 }
 
+/// An identity-bound registration request: the payout address (and
+/// optional bond UTXO) together with the ID-key signature binding them
+/// to this ID at this timestamp. Bundled so the registry entry point
+/// stays a two-argument call.
+pub struct IdBinding<'a> {
+    pub id: &'a str,
+    pub address: &'a str,
+    pub bond_utxo: Option<(String, u32)>,
+    pub ts: u64,
+    pub idsig_hex: &'a str,
+}
+
 impl Registry {
     #[must_use]
     pub fn new() -> Self {
@@ -90,27 +102,68 @@ impl Registry {
     /// only if the node never went dark; a fresh id starts tenure now.
     /// `owned` records whether the payout address signed the registration
     /// (proof of control; the pool verifies it).
+    /// NOTE: pool-facing registrations must go through [`register_bound`],
+    /// which additionally requires the ID-key signature. This raw form
+    /// keeps tenure semantics testable without keys; it must never be
+    /// reachable from the pool HTTP surface for existing ids (that would
+    /// allow ID takeover: anyone re-mapping a live node's payout address
+    /// while keeping its tenure).
     pub fn register(&mut self, id: &str, address: &str, now: u64, owned: bool) {
         if let Some(n) = self.nodes.get_mut(id) {
             n.address = address.to_string();
             n.owned = owned;
         } else {
-            self.nodes.insert(
-                id.to_string(),
-                Node {
-                    id: id.to_string(),
-                    address: address.to_string(),
-                    registered_at: now,
-                    tenure_start: now,
-                    last_heartbeat: 0,
-                    heartbeats: 0,
-                    owned,
-                    bond_utxo: None,
-                    bond_ok: false,
-                    bond_checked_at: 0,
-                },
-            );
+            self.insert_fresh(id, address, now, owned);
         }
+    }
+
+    fn insert_fresh(&mut self, id: &str, address: &str, now: u64, owned: bool) {
+        self.nodes.insert(
+            id.to_string(),
+            Node {
+                id: id.to_string(),
+                address: address.to_string(),
+                registered_at: now,
+                tenure_start: now,
+                last_heartbeat: 0,
+                heartbeats: 0,
+                owned,
+                bond_utxo: None,
+                bond_ok: false,
+                bond_checked_at: 0,
+            },
+        );
+    }
+
+    /// ID-bound registration (the only pool-facing path). Requires a valid
+    /// ed25519 identity signature over
+    /// [`idbind_msg`](idbind_msg()) covering (id, address, bond, ts);
+    /// fails closed otherwise — for new ids (squat-proofing) and existing
+    /// ids (takeover-proofing) alike. On an authenticated rotation the
+    /// tenure and heartbeat state are preserved (same operator, proven by
+    /// the ID key); the bond designation follows the signed binding
+    /// (`Some` replaces, `None` keeps the existing designation — the
+    /// per-tick script/value check fails safe on any stale mapping).
+    /// `owned` is the payout-address proof result (node `verifymessage`).
+    pub fn register_bound(&mut self, b: &IdBinding, now: u64, owned: bool) -> Result<bool, String> {
+        let bond_str = b
+            .bond_utxo
+            .as_ref()
+            .map(|(t, v)| format!("{t}:{v}"));
+        if !verify_idbind(b.id, b.address, bond_str.as_deref(), b.ts, b.idsig_hex) {
+            return Err("identity signature invalid (register with the luckynode ID key)".to_string());
+        }
+        let is_new = !self.nodes.contains_key(b.id);
+        if is_new {
+            self.insert_fresh(b.id, b.address, now, owned);
+        } else if let Some(n) = self.nodes.get_mut(b.id) {
+            n.address = b.address.to_string();
+            n.owned = owned;
+            if b.bond_utxo.is_some() {
+                n.bond_utxo = b.bond_utxo.clone();
+            }
+        }
+        Ok(is_new)
     }
 
     /// Record a heartbeat; returns false for unknown ids. A gap longer
@@ -294,6 +347,38 @@ pub fn parse_bond_utxo(s: &str) -> Result<(String, u32), String> {
     }
     Ok((txid.to_string(), vout.parse::<u32>().map_err(|e| e.to_string())?))
 }
+/// Identity-binding message for luckynode registration: proves control
+/// of the luckynode ID key itself, not just the payout address. The pool
+/// requires this signature on every registration (new or rotation) —
+/// without it anyone could claim anyone's ID and divert (or deny) that
+/// node's draw payouts while keeping its tenure. `bond` is the designated
+/// UTXO ("txid:vout") or "-" when none is designated, so the binding also
+/// pins the collateral triple (id, payout address, bond outpoint).
+/// Domain-separated from heartbeat/cosign/register messages so a
+/// signature for one flow can never be replayed as another.
+#[must_use]
+pub fn idbind_msg(id: &str, address: &str, bond_utxo: Option<&str>, ts: u64) -> String {
+    format!(
+        "luckynode-idbind:v1:{id}:{address}:{bond}:{ts}",
+        bond = bond_utxo.unwrap_or("-")
+    )
+}
+
+/// Verify an identity-binding signature against the ID's ed25519 pubkey
+/// (hex, 32 bytes). Fails closed on any malformed input.
+#[must_use]
+pub fn verify_idbind(id_hex: &str, address: &str, bond_utxo: Option<&str>, ts: u64, sig_hex: &str) -> bool {
+    let pk = match notarize::unhex(id_hex) {
+        Ok(b) if b.len() == 32 => b,
+        _ => return false,
+    };
+    let sig = match notarize::unhex(sig_hex) {
+        Ok(b) if b.len() == 64 => b,
+        _ => return false,
+    };
+    notarize::verify(&pk, idbind_msg(id_hex, address, bond_utxo, ts).as_str(), &sig)
+}
+
 /// Registration body proving the registrar controls the payout address:
 /// the address's key signs a canonical, timestamped message (the pool
 /// verifies via the node's `verifymessage`). Shared by the wallet's embedded
@@ -301,21 +386,31 @@ pub fn parse_bond_utxo(s: &str) -> Result<(String, u32), String> {
 /// `bond_utxo` is the optional locked collateral ("txid:vout"): when
 /// present the pool evicts the node the moment that output is spent.
 /// Shape-checked here so typos fail fast instead of pool-side.
+///
+/// `id_secret` signs the identity binding (`idsig` over
+/// [`idbind_msg`]): the pool requires it so that only the ID-key holder
+/// can create or rotate an ID's payout mapping. Without it, anyone could
+/// re-register a live node's ID under their own address and divert its
+/// draws (or knock it out with an unfunded address).
 pub fn register_body(
     id: &str,
     address: &str,
     payout_secret: &[u8; 32],
     bond_utxo: Option<&str>,
+    id_secret: &[u8; 32],
 ) -> Result<serde_json::Value, String> {
     let ts = now_secs();
     let msg = format!("luckynode-register:v1:{id}:{address}:{ts}");
     let sig = lm_keys::sign_message(payout_secret, &msg)?;
+    let idbind = idbind_msg(id, address, bond_utxo, ts);
+    let idsig = notarize::hex(&notarize::sign(id_secret, &idbind).map_err(|e| format!("id sign: {e}"))?);
     let mut body = serde_json::json!({
         "id": id,
         "address": address,
         "pubkey": id,
         "msg": msg,
         "sig": sig,
+        "idsig": idsig,
         "ts": ts,
     });
     if let Some(utxo) = bond_utxo {
@@ -351,21 +446,131 @@ mod tests {
     #[test]
     fn register_body_carries_optional_bond_utxo() {
         let secret = [7u8; 32];
-        let bare = register_body("id1", "mAddr", &secret, None).expect("bare");
+        let id_secret = [9u8; 32];
+        let bare = register_body("id1", "mAddr", &secret, None, &id_secret).expect("bare");
         assert!(bare.get("bond_utxo").is_none());
         assert_eq!(bare.get("id").and_then(|v| v.as_str()), Some("id1"));
+        // The identity signature is bound to (id, address, bond, ts).
+        assert!(bare.get("idsig").and_then(|v| v.as_str()).is_some());
         let utxo = "ab".repeat(32) + ":3";
         let locked =
-            register_body("id1", "mAddr", &secret, Some(&utxo)).expect("locked");
+            register_body("id1", "mAddr", &secret, Some(&utxo), &id_secret).expect("locked");
         assert_eq!(
             locked.get("bond_utxo").and_then(|v| v.as_str()),
             Some(utxo.as_str())
         );
         // Junk shapes fail fast, before any pool round-trip.
-        assert!(register_body("id1", "mAddr", &secret, Some("nope")).is_err());
-        assert!(register_body("id1", "mAddr", &secret, Some("ab:3")).is_err());
+        assert!(register_body("id1", "mAddr", &secret, Some("nope"), &id_secret).is_err());
+        assert!(register_body("id1", "mAddr", &secret, Some("ab:3"), &id_secret).is_err());
         let bad_vout = "ab".repeat(32) + ":x";
-        assert!(register_body("id1", "mAddr", &secret, Some(&bad_vout)).is_err());
+        assert!(register_body("id1", "mAddr", &secret, Some(&bad_vout), &id_secret).is_err());
+    }
+
+    #[test]
+    fn idbind_roundtrip_and_tamper() {
+        use ed25519_dalek::SigningKey;
+        let secret = [42u8; 32];
+        let id = notarize::hex(&SigningKey::from_bytes(&secret).verifying_key().to_bytes());
+        // Valid binding verifies.
+        assert!(verify_idbind(&id, "addr1", Some("ab"), 1234, &notarize::hex(
+            &notarize::sign(&secret, &idbind_msg(&id, "addr1", Some("ab"), 1234)).expect("sign"))));
+        // Bare (no-bond) binding verifies with the "-" slot.
+        assert!(verify_idbind(&id, "addr1", None, 1234, &notarize::hex(
+            &notarize::sign(&secret, &idbind_msg(&id, "addr1", None, 1234)).expect("sign"))));
+        // Tamper with any bound field and it fails.
+        let tampered = |addr: &str, bond: Option<&str>| {
+            let sig = notarize::hex(
+                &notarize::sign(&secret, &idbind_msg(&id, addr, bond, 1234)).expect("sign"));
+            // verified against the ORIGINAL fields, not the signed ones
+            !verify_idbind(&id, "addr1", Some("ab"), 1234, &sig)
+        };
+        assert!(tampered("addr2", Some("ab")), "address swap must fail");
+        let sig = notarize::hex(
+            &notarize::sign(&secret, &idbind_msg(&id, "addr2", Some("ab"), 1234)).expect("sign"));
+        assert!(!verify_idbind(&id, "addr1", Some("ac"), 1234, &sig));
+        assert!(!verify_idbind(&id, "addr1", None, 1234, &sig));
+        // Wrong key fails.
+        let other = [7u8; 32];
+        let other_id = notarize::hex(&SigningKey::from_bytes(&other).verifying_key().to_bytes());
+        let sig2 = notarize::hex(
+            &notarize::sign(&other, &idbind_msg(&other_id, "addr1", Some("ab"), 1234)).expect("sign"));
+        assert!(!verify_idbind(&id, "addr1", Some("ab"), 1234, &sig2));
+        // Malformed inputs fail closed.
+        assert!(!verify_idbind("zz", "addr1", Some("ab"), 1234, &sig));
+        assert!(!verify_idbind(&id, "addr1", Some("ab"), 1234, "zz"));
+    }
+
+    #[test]
+    fn register_bound_rejects_takeover_and_keeps_tenure_on_rotation() {
+        use ed25519_dalek::SigningKey;
+        let mk_id = |b: u8| {
+            let s = [b; 32];
+            (s, notarize::hex(&SigningKey::from_bytes(&s).verifying_key().to_bytes()))
+        };
+        let (victim_sk, victim) = mk_id(11);
+        let (attacker_sk, attacker) = mk_id(22);
+        fn bind<'a>(
+            id: &'a str,
+            addr: &'a str,
+            bond: Option<(String, u32)>,
+            ts: u64,
+            sig: &'a str,
+        ) -> IdBinding<'a> {
+            IdBinding {
+                id,
+                address: addr,
+                bond_utxo: bond,
+                ts,
+                idsig_hex: sig,
+            }
+        }
+
+        let mut r = Registry::new();
+        // Unknown id + valid ID sig: registers fresh.
+        let ts = 1000u64;
+        let sig = notarize::hex(
+            &notarize::sign(&victim_sk, &idbind_msg(&victim, "addr-v", None, ts)).expect("sign"));
+        assert_eq!(
+            r.register_bound(&bind(&victim, "addr-v", None, ts, &sig), 1000, true),
+            Ok(true)
+        );
+        r.heartbeat(&victim, 1500, 86400);
+        let tenure_before = r.tenure_secs(r.get(&victim).expect("v"), 2000);
+        assert!(tenure_before > 0);
+
+        // Attacker re-registers the victim's id with no/wrong ID sig:
+        // rejected, mapping untouched.
+        assert!(r
+            .register_bound(&bind(&victim, "addr-evil", None, ts, "00"), 2000, true)
+            .is_err());
+        let wrong_sig = notarize::hex(
+            &notarize::sign(&attacker_sk, &idbind_msg(&victim, "addr-evil", None, ts)).expect("sign"));
+        assert!(r
+            .register_bound(&bind(&victim, "addr-evil", None, ts, &wrong_sig), 2000, true)
+            .is_err());
+        // Attacker self-signs their OWN id (not the victim's): still rejected
+        // against the victim's record.
+        let self_sig = notarize::hex(
+            &notarize::sign(&attacker_sk, &idbind_msg(&attacker, "addr-evil", None, ts)).expect("sign"));
+        assert!(r
+            .register_bound(&bind(&victim, "addr-evil", None, ts, &self_sig), 2000, true)
+            .is_err());
+        assert_eq!(r.get(&victim).expect("v").address, "addr-v");
+
+        // Authenticated rotation by the real operator: address updates,
+        // tenure and heartbeats survive.
+        let ts2 = 2100u64;
+        let rot_sig = notarize::hex(
+            &notarize::sign(&victim_sk, &idbind_msg(&victim, "addr-v2", None, ts2)).expect("sign"));
+        assert_eq!(
+            r.register_bound(&bind(&victim, "addr-v2", None, ts2, &rot_sig), 2100, true),
+            Ok(false)
+        );
+        let n = r.get(&victim).expect("v");
+        assert_eq!(n.address, "addr-v2");
+        assert_eq!(r.tenure_secs(n, 2200), r.tenure_secs(r.get(&victim).expect("v"), 2200));
+        assert!(r.tenure_secs(n, 2200) >= tenure_before);
+        assert_eq!(n.heartbeats, 1);
     }
 
     #[test]

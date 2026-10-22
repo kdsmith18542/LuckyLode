@@ -1097,7 +1097,7 @@ pub fn luckynode_register(
         wallet::network_of(&rpc)?
     };
     let addr_secret = address_key(&seed, net, &address, recv_next, change_next)?;
-    let reg = lm_luckynode::register_body(&id, &address, &addr_secret, bond_utxo.as_deref())?;
+    let reg = lm_luckynode::register_body(&id, &address, &addr_secret, bond_utxo.as_deref(), &key)?;
     let body = pool::post(
         &url,
         "api/luckynode/register",

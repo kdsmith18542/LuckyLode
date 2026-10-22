@@ -63,7 +63,7 @@ pub fn start(
     let bond_first = bond_utxo.clone();
     let bond_for_svc = bond_utxo.clone();
     std::thread::spawn(move || {
-        let reg = match lm_luckynode::register_body(&id, &address, &addr_secret, bond_first.as_deref()) {
+        let reg = match lm_luckynode::register_body(&id, &address, &addr_secret, bond_first.as_deref(), &key) {
             Ok(b) => b,
             Err(e) => {
                 eprintln!("luckynode {id}: register sign failed: {e}");
@@ -87,7 +87,7 @@ pub fn start(
                         Err(e) => {
                             eprintln!("luckynode {id}: heartbeat: {e}");
                             if e.contains("unknown node") {
-                                let reg = match lm_luckynode::register_body(&id, &address, &addr_secret, bond_utxo.as_deref()) {
+                                let reg = match lm_luckynode::register_body(&id, &address, &addr_secret, bond_utxo.as_deref(), &key) {
                                     Ok(b) => b,
                                     Err(e) => {
                                         eprintln!("luckynode {id}: register sign failed: {e}");

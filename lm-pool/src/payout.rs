@@ -170,20 +170,14 @@ pub fn format_coins(v: u64) -> String {
 /// send time (it checks the network params and returns an error the
 /// payout loop treats as a failed send).
 #[must_use]
-/// Base58check validity: decodes to 25 bytes (a version byte, a 20-byte
-/// hash160, and a 4-byte sha256d checksum) and verifies the checksum.
-/// Shape alone let a typo hold a balance forever; the checksum is what
-/// catches it.
-///
-/// The version byte is NOT constrained here — the prefix filter above
-/// is the chain policy; this only proves the checksum.
-fn b58check_ok(s: &str) -> bool {
+/// Base58check decode: 25 bytes (version byte, 20-byte hash160,
+/// 4-byte sha256d checksum), checksum-verified. `b58check_ok` is this
+/// plus the length check.
+fn b58check_decode(s: &str) -> Option<[u8; 25]> {
     const ALPHABET: &[u8; 58] = b"123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
     let mut num: Vec<u8> = Vec::with_capacity(25);
     for c in s.bytes() {
-        let Some(idx) = ALPHABET.iter().position(|&a| a == c) else {
-            return false;
-        };
+        let idx = ALPHABET.iter().position(|&a| a == c)?;
         let mut carry = idx as u32;
         for byte in num.iter_mut() {
             carry += u32::from(*byte) * 58;
@@ -199,11 +193,56 @@ fn b58check_ok(s: &str) -> bool {
     let mut full = vec![0u8; leading];
     full.extend(num.iter().rev());
     if full.len() != 25 {
-        return false;
+        return None;
     }
     use sha2::{Digest, Sha256};
     let checksum = Sha256::digest(Sha256::digest(&full[..21]));
-    full[21..] == checksum[..4]
+    if full[21..] != checksum[..4] {
+        return None;
+    }
+    let mut out = [0u8; 25];
+    out.copy_from_slice(&full);
+    Some(out)
+}
+
+/// Base58check validity: decodes to 25 bytes (a version byte, a 20-byte
+/// hash160, and a 4-byte sha256d checksum) and verifies the checksum.
+/// Shape alone let a typo hold a balance forever; the checksum is what
+/// catches it.
+///
+/// The version byte is NOT constrained here — the prefix filter above
+/// is the chain policy; this only proves the checksum.
+fn b58check_ok(s: &str) -> bool {
+    b58check_decode(s).is_some()
+}
+
+/// Expected locking script (hex) for one of our payout addresses, so the
+/// pool can verify a designated bond UTXO actually pays the registered
+/// address (and not some unrelated output). P2PKH for R/L/m/n prefixes,
+/// P2SH for the `2...` multisig prefix — the same prefix set as
+/// [`valid_payout_address`]. Returns None for anything else (fail closed).
+#[must_use]
+pub fn payout_script_pubkey(address: &str) -> Option<String> {
+    if !valid_payout_address(address) {
+        return None;
+    }
+    let raw = b58check_decode(address)?;
+    let hash160: String = raw[1..21].iter().map(|b| format!("{b:02x}")).collect();
+    match address.as_bytes().first() {
+        Some(b'2') => Some(format!("a914{hash160}87")),
+        _ => Some(format!("76a914{hash160}88ac")),
+    }
+}
+
+/// Bond-UTXO binding check: the designated output must pay the registered
+/// address (script match), hold at least the bond (satoshis), and be
+/// unspent. Pure function over node-verified fields so the tick and the
+/// registration path share one rule; both fail closed on any mismatch.
+#[must_use]
+pub fn bond_utxo_matches(expected_script_hex: &str, utxo_script_hex: &str, value_sats: u64, bond_sats: u64) -> bool {
+    !expected_script_hex.is_empty()
+        && expected_script_hex.eq_ignore_ascii_case(utxo_script_hex)
+        && value_sats >= bond_sats
 }
 
 /// Payout-address validity: our chains' prefixes, then FULL base58check.
@@ -342,7 +381,46 @@ mod tests {
         assert!(!valid_payout_address(&format!("R{}", "a".repeat(31)))); // too short
         assert!(!valid_payout_address(&format!("R{}", "a".repeat(36)))); // too long
     }
-}
+
+    #[test]
+    fn payout_script_matches_chain_vectors() {
+        // Frozen vectors, decoded independently (Python hashlib): the pool
+        // must derive the exact locking script the node will check, or the
+        // bond-UTXO binding compares against the wrong bytes.
+        assert_eq!(
+            payout_script_pubkey("mxVc37AiDBhP4FcydkCu5AEZqgfMYy8hC9"),
+            Some("76a914ba38cfe49e436bb2a43898083a98becc148c204488ac".to_string())
+        );
+        assert_eq!(
+            payout_script_pubkey("2NFdM6aq2Rtr444aGVrE9CZXLzZ2JF8dadE"),
+            Some("a914f581da35b024c755572850ad3a9d6f5bd8b1afcc87".to_string())
+        );
+        assert_eq!(
+            payout_script_pubkey("2MstP8uJfYBsk1HfmCU9MW3qqKgvrw3ESd1").map(|s| s[..4].to_string()),
+            Some("a914".to_string())
+        );
+        // Junk never yields a script (fail closed, never a match).
+        assert_eq!(payout_script_pubkey("t1short"), None);
+        assert_eq!(payout_script_pubkey(""), None);
+        assert_eq!(payout_script_pubkey("mfWyW5fc9NUj75YAnFgoRLrjxgLDmNrbUb"), None);
+    }
+
+    #[test]
+    fn bond_utxo_binding_needs_script_and_value() {
+        let script = "76a914ba38cfe49e436bb2a43898083a98becc148c204488ac";
+        // Exact match at/above the bond passes.
+        assert!(bond_utxo_matches(script, script, 40_000_000_000, 40_000_000_000));
+        assert!(bond_utxo_matches(script, script, 40_000_000_001, 40_000_000_000));
+        // Case-insensitive hex (node returns lowercase; be liberal here).
+        assert!(bond_utxo_matches(&script.to_uppercase(), script, 40_000_000_000, 40_000_000_000));
+        // Dust designated as "locked" fails: value below the bond.
+        assert!(!bond_utxo_matches(script, script, 1, 40_000_000_000));
+        // Someone else's UTXO fails: script pays a different address.
+        assert!(!bond_utxo_matches(script, "76a914000000000000000000000000000000000000000088ac", 50_000_000_000, 40_000_000_000));
+        // Empty script never matches.
+        assert!(!bond_utxo_matches("", script, 50_000_000_000, 40_000_000_000));
+        assert!(!bond_utxo_matches(script, "", 50_000_000_000, 40_000_000_000));
+    }
 
     #[test]
     fn dev_slice_moves_from_fees_not_miners() {
@@ -370,3 +448,4 @@ mod tests {
         assert_eq!(p.owed("m99"), 0);
         assert_eq!(p.owed("m1"), 10_000);
     }
+}
