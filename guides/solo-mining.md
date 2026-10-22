@@ -7,8 +7,18 @@ no third party.
 
 ## What "solo" means here
 
-There is no solo-mining mode inside the miner. Solo = you run all three
-pieces on your own machine(s):
+Two solo paths exist:
+
+1. **The node's own miner** (`luckyd -gen=1`, or `generate` on a local
+   node) — claim-aware since 2026-10-21: on jackpot/pot draw heights the
+   coinbase claims the exact bonus/splash for the miner. Point
+   `-mineraddress` at your address. Full parity with pool mining, no
+   extra software.
+2. **The reference stack** — you run all three pieces yourself (below);
+   useful when you want vardiff, dashboards, or several workers.
+
+Either way you keep every coin: block reward, fees, and any jackpot or
+pot bonus. No fee, no split, no third party.
 
 1. **Node** (`luckyd`) — holds the chain, builds block templates, pays the
    coinbase to *your* address.
