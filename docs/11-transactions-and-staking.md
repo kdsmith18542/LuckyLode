@@ -80,14 +80,14 @@ exist yet** — and the game layer (doc 12) is exactly where such jobs live.
 Bonded, opt-in staking role. Duties (all currently sidecar/pool-layer, no
 consensus change if kept so):
 
-- **Draw notarization**: cosign jackpot/league draw results (block hash +
+- **Draw notarization**: cosign jackpot/prize draw results (block hash +
   rule id) so any player can verify the game ran honestly;
 - **Attestation relay**: sign and forward device-attestation verdicts
   (doc 03 §3.6) without ever seeing identity;
 - **Index service**: replicate leaderboard/season state so the fun layer
   has no single host.
 
-Economics: paid from **fun-layer budgets** (league pool slice — doc 06
+Economics: paid from **fun-layer budgets** (prize fund slice — doc 06
 §6.2 overflow already feeds it), never from inflation. Bond is slashable
 for provable misbehavior (double-notarization, forged verdicts).
 
@@ -98,7 +98,7 @@ version stays pool/sidecar.
 
 ### Direction B — Season stakes (governance-lite)
 
-Lock stake for a 4–8 week season → earn league-pool share (for uptime, not
+Lock stake for a 4–8 week season → earn prize-fund share (for uptime, not
 for size alone) + one vote on **season presentation parameters** (prize
 splits within published bounds, event themes, schedule). No consensus
 parameters, no protocol governance — and say so loudly to avoid

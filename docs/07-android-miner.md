@@ -49,19 +49,19 @@ rejected at construction.
   background workers; be honest in UI about why the icon stays).
 - **One-tap start**: wallet → pool → mine, with the scheduler preconfigured
   to §7.2 defaults; advanced screen exposes thresholds.
-- **Dashboard**: hashrate, shares, streak day-count, league rank, jackpot
+- **Dashboard**: hashrate, shares, streak day-count, division rank, jackpot
   alerts, temp/battery tiles — the tamagotchi surface (doc 03 §3.1).
 - **Battery honesty**: show projected drain (typical phone ~15 Wh pack at
   ~5 W mining ≈ 3 h from full) and default to charge-only. Never promise
   free energy.
-- **Attestation hook**: opt-in self label for phone-league entry
+- **Attestation hook**: opt-in self label for phone-division entry
   (doc 03 §3.6) — verdict only, no identity. No Play Integrity path:
   miners are banned from the Play Store, so distribution is
   sideload-only permanently and no Play verdict can ever arrive.
 
 ## 7.5 iOS companion (no on-device mining — store ban, doc 04 §4.5)
 
-Wallet, league spectating + jackpot alerts, faucet games, badge gallery,
+Wallet, division spectating + jackpot alerts, faucet games, badge gallery,
 tipping. iOS users participate in everything except hashing; say so
 plainly in the app description (Electroneum lesson, doc 01).
 

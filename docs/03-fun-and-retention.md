@@ -1,25 +1,25 @@
 # 03 — Fun & Retention: The Excitement Layer (core differentiator)
 
 Mining dies when it becomes invisible background process with dust payouts.
-This doc designs mining as a **game with seasons, leagues, streaks, and
+This doc designs mining as a **game with seasons, divisions, streaks, and
 jackpots** — most of it *without* consensus changes (pool-side + sidecar),
 so it ships fast and iterates faster.
 
 > **Update 2026-10-17 (owner-directed):** the first-party casino that was
 > briefly specified in doc 14 is **withdrawn** — tech-debt and risk outweigh
 > the upside, and the crate/deployment are removed. The "no-wager" posture of
-> this doc stands absolute again: the excitement layer is mining leagues,
+> this doc stands absolute again: the excitement layer is mining divisions,
 > streaks, jackpots, the Lucky Pot, and the Luckynode Draw only.
 
 ## 3.1 Design principles
 
 1. **A phone must be able to win something weekly.** If all rewards scale
    linearly with hashrate, EPYC owners take everything and phones churn.
-   Non-linear rewards (lotteries, streaks, leagues) fix this.
+   Non-linear rewards (lotteries, streaks, divisions) fix this.
 2. **Never fake work.** Every reward must trace to verified shares/blocks.
    (Electroneum/Pi lesson.)
 3. **Separate the competitions.** Phones don't race servers; they race
-   phones. Leagues by device class.
+   phones. Divisions by device class.
 4. **Seasons, not infinity.** 4–8 week seasons with resets keep newcomers
    from facing a 3-year leaderboard they'll never climb.
 5. **Spectacle is a feature.** Public draws, live leaderboards, draw
@@ -37,16 +37,16 @@ commits a coinbase.
 > reserve / 1% Lucky Pot; jackpot pays base + up to `5×R` bonus
 > (expectation-neutral, reserve-capped); pot splash `draw < 2²⁵⁶/1000`
 > with tiered draws (10/25/50%) and a 4,320-block pity timer; pot
-> cap-overflow burns, reserve overflow feeds the league prize pool
+> cap-overflow burns, reserve overflow feeds the prize fund
 > (§3.3); **PoW-finder-only** — PoS blocks never claim (stakers get the
 > Luckynode Draw instead, doc 06 §6.6); pools split progressively
 > (sqrt-weight, 25% cap, PPLNS window), solo miners keep everything.
 > Pool dashboards celebrate draws loudly — spectacle is specified in
 > doc 06 §6.4.
 
-## 3.3 Device-family leagues (pool-side first, consensus only if forced)
+## 3.3 Device-family divisions (pool-side first, consensus only if forced)
 
-Leagues are by **declared device family, policed by observed rate**
+Divisions are by **declared device family, policed by observed rate**
 (self-declared + statistically policed, see §3.6). When a miner
 connects it declares its family in the agent string (V1 subscribe
 agent; V2 `SetupConnection.vendor` carries the configured agent
@@ -54,26 +54,26 @@ verbatim): `android`/`mobile`/`arm` → phone, `opencl`/`gpu` →
 discrete GPUs, `cpu` → CPUs. The pool reads the label and checks it
 against the miner's trailing-24h rate:
 
-- 📱 **phone league** — phones and small ARM boards. Claims above
+- 📱 **phone division** — phones and small ARM boards. Claims above
   ~10 kH/s are not phones.
-- 🖥️ **cpu league** — laptops, desktops, servers mining on CPU.
+- 🖥️ **cpu division** — laptops, desktops, servers mining on CPU.
   Claims above ~100 kH/s are not CPU miners.
-- 🎮 **gpu league** — discrete GPUs, any hash rate below farm scale.
-- 🏭 **farm league** — anything at or above ~500 kH/s, whatever it
+- 🎮 **gpu division** — discrete GPUs, any hash rate below farm scale.
+- 🏭 **farm division** — anything at or above ~500 kH/s, whatever it
   claims. Farms are paid, not feted.
 
 Labels only ever get corrected *up* (a slow desktop stays a desktop;
 a "phone" at 50 kH/s does not), unlabeled miners fall back to the
-rate-implied family, and the phone-league prize tier is attestation-gated
+rate-implied family, and the phone-division prize tier is attestation-gated
 (§3.6) once prizes exist. Rate bands are fraud bounds, not targets —
 generous on purpose, retuned against measured LuckyHash rates
 (phone-class CPUs ~0.02–2 kH/s, desktop CPUs ~3–10 kH/s, GTX 1080
 ~15–21 kH/s; the old 10/60/500 MH/s bands assumed rates ~1000× above
 reality and made every real miner a "phone").
 
-Each league has its own seasonal leaderboard (shares + uptime + streaks),
+Each division has its own seasonal leaderboard (shares + uptime + streaks),
 its own prize pool (sponsored from treasury/dev fund + pool fee slice), and
-its own heroes. A phone finishing #3 in the phone league gets celebrated
+its own heroes. A phone finishing #3 in the phone division gets celebrated
 like a pool finding a block. **Nobody cares they were 4,000th globally.**
 
 Prizes: jackpot multipliers on their shares for a week, badge NFTs/IDs,
@@ -108,7 +108,7 @@ whole pool, which defeats the "phones race phones" point.
 ## 3.6 Anti-gaming (honest limits — perfect is impossible)
 
 Hard truth: **a server can pretend to be 100 phones.** No protocol fully
-prevents league spoofing. Mitigations, layered:
+prevents division spoofing. Mitigations, layered:
 
 1. **Self-declared devices + statistical policing:** workers declare
    their family (pool) or attest opt-in "self" (app); trailing-rate bars
@@ -130,11 +130,11 @@ Accept residual gaming in free tiers; harden only where money is on the line.
 | Mechanic | Layer | Consensus change? |
 |---|---|---|
 | Jackpot blocks + progressive split | Consensus | Yes (the one) |
-| Leagues, leaderboards, seasons | Pool + sidecar | No |
+| Divisions, leaderboards, seasons | Pool + sidecar | No |
 | Streaks, comeback bonuses | Pool | No |
 | Badges | IDs/NFTs (inherited) or sidecar | No |
 | Faucet/tipping | Wallet + treasury | No |
-| Attestation-gated league entry | Pool | No |
+| Attestation-gated division entry | Pool | No |
 
 Rule: a full season of the game must be runnable with **zero hard forks**
 after the lottery change ships.

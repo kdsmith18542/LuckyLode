@@ -27,7 +27,7 @@ Meanwhile the raw facts favor it:
 3. **The tinkerer** — old ThinkPad, Raspberry Pi cluster, underclocking
    experiments. Here to optimize and show off.
 4. **The community native** — Discord/Reddit tip culture, faucet games,
-   leagues. Here for people.
+   divisions. Here for people.
 
 Explicitly **not** for: farms, ASIC operators, yield mercenaries. The design
 should make them unwelcome or at least unadvantaged (see doc 03).
@@ -40,12 +40,12 @@ should make them unwelcome or at least unadvantaged (see doc 03).
 | Electroneum | Simulated mining → users felt lied to once understood; app decayed to a wallet | Never fake the mining. If the phone hashes, say so; if it can't (iOS), offer honest non-mining roles. |
 | Pi Network | Massive "miner" count, zero real mining → permanent credibility asterisk | Distribution ≠ mining. Don't call it mining unless work is verified. |
 | Verus mobile | Real, but buried inside a platform story; VRSC economics don't reward phone miners (~$0.01/day) | A phone miner earning dust inside a server-dominated reward pool quits. **Segment rewards by device class** (doc 03) — this is the single biggest retention idea. |
-| Generic CPU coins (Monero etc.) | Botnets + server farms squeeze hobbyists out | Expect adversaries; design leagues and lotteries so a phone can still *win* (doc 03). |
+| Generic CPU coins (Monero etc.) | Botnets + server farms squeeze hobbyists out | Expect adversaries; design divisions and lotteries so a phone can still *win* (doc 03). |
 
 ## Positioning statement (draft)
 
 > *Lucky Lode is the fair-launch coin mined on everyday hardware — phones,
-> miniPCs, laptops — where small miners compete in their own leagues and
+> miniPCs, laptops — where small miners compete in their own divisions and
 > every block can be a lottery win. No premine, no ICO, no ASICs, no faking.*
 
 ## Success criteria (12 months post-launch)

@@ -18,7 +18,7 @@ The full design record lives in [`docs/`](docs/README.md).
 | [LuckyLode-node](https://github.com/kdsmith18542/LuckyLode-node) | The consensus node — a Verus v1.2.18 fork with LuckyHash PoW, the Lucky Pot and draw rules, and Lucky Lode chain parameters |
 
 Crates: `lm-pow` (LuckyHash + exact difficulty + jackpot trigger),
-`lm-rewards` (game money rules), `lm-pool` (PPLNS ledger, leagues,
+`lm-rewards` (game money rules), `lm-pool` (PPLNS ledger, divisions,
 payouts), `lm-stratum` (Stratum V1 + V2 pool wire layer), `lm-miner`
 (CPU/OpenCL miner), `lm-keys` (self-custody wallet core),
 `lm-luckynode` (bonded staker registry), `lm-explorer`, `lm-sync`,

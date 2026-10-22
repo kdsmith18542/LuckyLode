@@ -12,7 +12,7 @@ everything else is the reasoning behind it.
 | [`00`](00-lucky-lode-at-a-glance.md) | The coin at a glance: supply, consensus, the game layer, status |
 | [`01`](01-thesis-and-positioning.md) | Why this niche is open, who it's for, what killed the predecessors |
 | [`02`](02-technical-stack.md) | Fork-Verus decision, algorithm strategy, the modular stack |
-| [`03`](03-fun-and-retention.md) | The excitement layer: jackpot blocks, leagues, streaks, seasons, badges — the core differentiator |
+| [`03`](03-fun-and-retention.md) | The excitement layer: jackpot blocks, divisions, streaks, seasons, badges — the core differentiator |
 | [`04`](04-economics-launch-roadmap.md) | Emission, dev funding without breaking fair-launch trust, launch sequence, roadmap, risks |
 | [`05`](05-pow-algorithm.md) | **LuckyHash v1** — the PoW spec, frozen with test vectors, difficulty rules, and mainnet gates |
 | [`06`](06-jackpot-lottery.md) | Jackpot blocks, the Lucky Pot, draw rules, funding conservation |

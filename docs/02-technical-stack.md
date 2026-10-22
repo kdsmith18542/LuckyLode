@@ -26,7 +26,7 @@ and every future change pays the "don't touch consensus" tax.
 | D. No fork: launch as Verus PBaaS chain | Verus security + ecosystem free | Couples fate/schedule to Verus; weaker "own coin" story | Research in Phase 0, decide fast |
 
 **Strangler-fig rule:** whatever the base, *consensus code is frozen* except
-for the planned changes (lottery rewards §3.2, league/accounting fields if
+for the planned changes (lottery rewards §3.2, division/accounting fields if
 needed). All innovation goes into replaceable modules around it.
 Consensus changes are the #1 killer of small-chain projects.
 
@@ -67,7 +67,7 @@ message.
   up (ASIC pressure, trading away old phones explicitly), via scheduled
   upgrades with testnet bake-in. Never a surprise fork.
 - **Rejected for v1: dual-algo** (e.g. VerusHash queue + Argon2id queue
-  with separate rewards — superficially perfect for leagues). It halves the
+  with separate rewards — superficially perfect for divisions). It halves the
   effective 51% threshold per algorithm on a small chain and doubles audit
   surface. Revisit only at large hashrate.
 
@@ -90,11 +90,11 @@ user touches — that's where "modernize the stack" actually pays:
 |---|---|---|
 | Reference miner (CPU/ARM) | **Rust** core + C/ASM kernels | Rust for stratum, scheduling, thermal logic; hand-tuned NEON/AArch64 kernels where it counts (hashrate lives in kernels, safety lives in Rust). Static binaries for miniPC/Pi. |
 | Thermal-aware scheduler | Rust (in-miner, ref: `lm-sched`, spec: doc 07) | big.LITTLE pinning, temp ceilings, charge-only mode, "overnight mode". This is *the* phone-mining feature — Primo-style, but built in. |
-| Android app | Kotlin + Rust core (JNI) | One-tap: wallet → pool → start. Dashboard (shares, streaks, league rank), temp/battery guards, pause-on-discharge. No iOS miner (store ban) — iOS gets wallet + league spectating + faucet games. |
+| Android app | Kotlin + Rust core (JNI) | One-tap: wallet → pool → start. Dashboard (shares, streaks, division rank), temp/battery guards, pause-on-discharge. No iOS miner (store ban) — iOS gets wallet + division spectating + faucet games. |
 | Desktop wallets | Tauri (TS + Rust) or Electron-lite | Light, reproducible builds. Faucet + tipping built in (TRTL's killer social feature, resurrected). |
-| Pool software | Rust or Go, **Stratum V2** | Open-source reference pool with the fun layer hooks (streaks, leagues, lottery accounting). Multiple independent pools required (doc 01 criteria). Solo-mining guide day one. |
+| Pool software | Rust or Go, **Stratum V2** | Open-source reference pool with the fun layer hooks (streaks, divisions, lottery accounting). Multiple independent pools required (doc 01 criteria). Solo-mining guide day one. |
 | Fun-layer backend | TS/Go sidecar + indexer | Leaderboards, badges, seasons — reads chain + pool APIs, writes nothing to consensus. Swappable without forks. |
-| Explorer + dashboard | TS | Network health, league tables, subsidy transparency (every dev-fee coin traceable). |
+| Explorer + dashboard | TS | Network health, division tables, subsidy transparency (every dev-fee coin traceable). |
 
 **Why Rust for the miner (honest):** not 2× hashrate — expect parity with
 XMRig/ccminer. The wins are memory safety in long-running daemons, fearless
@@ -106,7 +106,7 @@ stay intrinsics/ASM regardless of host language.
 
 1. **Lottery-block rewards** (doc 03 §3.2): VRF-style per-block draw,
    multiplier range, reserve/burn accounting. Needs spec + audit.
-2. **League/accounting commitments** (only if pool-side leagues prove
+2. **Division/accounting commitments** (only if pool-side divisions prove
    unworkable): minimal on-chain fields, never identity.
 3. **Stage-2 algorithm swap**: pre-scheduled, testnetted, reviewed.
 

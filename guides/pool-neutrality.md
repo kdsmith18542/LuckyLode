@@ -9,7 +9,7 @@ to point — and constrains it in writing so it can never become an empire
 
 1. Day-one onboarding — a good pool must exist before third parties build one.
 2. The reference pool in production is the fun layer's best-integrated home
-   (leagues, streaks, draws are pool-side).
+   (divisions, streaks, draws are pool-side).
 3. It realizes the dev-funding leg (doc 04 §4.2): the reference-pool fee
    slice, dashboard-traceable coin-for-coin.
 
@@ -18,14 +18,14 @@ to point — and constrains it in writing so it can never become an empire
 1. **Same fees as the reference default.** No official-pool exclusives, no
    hidden cuts. The fee schedule is published; every coin is traceable on
    the dashboard (doc 04 §4.2 discipline).
-2. **Every fun mechanic is an open spec.** Leagues, streaks, draws run the
+2. **Every fun mechanic is an open spec.** Divisions, streaks, draws run the
    same `lm-pool` ledger rules everywhere — nothing works only on the
    official pool. Other pools implement identical rules from the same code.
 3. **40% hashrate-share circuit breaker.** A live dashboard shows the
    official pool's share. If it exceeds ~40% sustained for a week: fee goes
    to 0, a public notice goes out, and the community is asked to spread.
    Committed here, before public testnet.
-4. **Leagues never require the official pool.** Cross-pool season boards
+4. **Divisions never require the official pool.** Cross-pool season boards
    aggregate from opt-in pools' public APIs via the sidecar. Your rank
    follows you, not your pool.
 5. **Solo mining gets equal prominence.** The solo guide ships alongside
@@ -47,5 +47,5 @@ to point — and constrains it in writing so it can never become an empire
 ## How to hold us to this
 
 Watch the dashboard: fee schedule, hashrate share, fee-wallet flows, and
-the league-board source list are all public. If any commitment above
+the division-board source list are all public. If any commitment above
 breaks, say so loudly — the circuit breaker in (3) exists to be used.

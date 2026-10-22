@@ -61,13 +61,13 @@ positive-sum — fine, fees feed the spectacle).
   launch miners proportionally to hash. Organic levy takes over as it
   drains.
 - **Overflow:** levy that would push the reserve past the cap flows to the
-  **league prize pool** (doc 03 §3.3) instead of burning — the two fun
+  **prize fund** (doc 03 §3.3) instead of burning — the two fun
   systems fund each other. Fully traceable on the dashboard (doc 04 §4.2).
 - **Reorgs:** reserve accounting reverts with blocks like any state. No
   special casing.
 - **Replay-derivability invariant (added 2026-10-17, after two live
   incidents):** every consensus field this system adds to block-index
-  state (reserve, drought/pity timer, pot, league overflow) must be
+  state (reserve, drought/pity timer, pot, prize inflow) must be
   *rebuildable by replay* — a fresh reindex of the chain reproduces it
   byte-for-byte. Serialization/reload paths (e.g. `LoadBlockIndexGuts`)
   are consensus code, not plumbing: a field that survives in memory but
@@ -149,7 +149,7 @@ issuance. Executable spec: `lm-rewards/src/pot.rs`; consensus:
   payout.
 - **Cap + burn:** pot cap `200 × R`; levy that would exceed it is burned
   (unspendable by construction). The jackpot reserve's overflow instead
-  feeds the league pool (§6.2) — different valves for different funds.
+  feeds the prize fund (§6.2) — different valves for different funds.
 - **Who can win:** draws are gated to **PoW finders** in consensus (the
   locked 2026-10-13 rule); PoS blocks never claim. The pity splash lands
   on the next finder regardless of the draw class. Stakers get their game-layer luck through the **Luckynode

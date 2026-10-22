@@ -129,7 +129,7 @@ AD paths exercised). Any implementation disagreeing on any byte is wrong.
   than ~20× the fastest per thread.
 - **GPUs: tolerated, bounded, watched.** Argon2id at 1 MiB is GPU-mineable
   (unlike 2 GB RandomX). Expected GPU edge: low single-digit multiples per
-  watt, not two orders of magnitude — and GPUs race in the top league only
+  watt, not two orders of magnitude — and GPUs race in the top division only
   (doc 03). If measured GPU efficiency exceeds ~10× flagship-phone
   efficiency per watt, the reserved lever is `t_cost` up at the next
   scheduled upgrade. 90-day fork policy applies (doc 02 §2.2).

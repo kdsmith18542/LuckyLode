@@ -110,3 +110,36 @@ consensus; the frozen strings below are called out precisely because they
   genuine PBaaS chains — same format-not-branding policy. The data-dir
   subpaths are done for Lucky Lode chains (2026-10-17).
 - Name-the-algo contest — **concluded 2026-10-14: LuckyHash** (§13.2).
+- **"League" retired — 2026-10-21 (owner direction: "I don't like the
+  league naming").** The old name covered two different things; both
+  carry new names everywhere (code, docs, dashboards, APIs — a
+  deliberate testnet API break, done once, before the consensus prize
+  fund is named in code):
+  - The device-class boards are **Divisions** (phone / cpu / gpu /
+    farm divisions, seasons, ranks). `lm-pool` `league` module →
+    `division`, JSON `league_class`/`league_rank`/`league_size` →
+    `division_*`, pool route `/api/league` → `/api/divisions`, the
+    stats object `league.boards` → `divisions.boards`, explorer
+    `/league` page + `league_boards` table → divisions.
+  - The staker-side game money is the **Prize Fund** (funds the
+    Luckynode Draw; consensus-tracked in the planned fund). Money
+    identifiers renamed: `to_league` → `to_prize` (node + Rust
+    mirror), GBT `leagueoverflow` → `prizeoverflow`, pool
+    `league_pool` → `prize_pool` (serde alias loads pre-rename state
+    files), block JSON `league_overflow` → `prize_inflow`, explorer
+    `game_blocks.league` column → `prize` (with an `ALTER TABLE`
+    migration), `prize.credits` on `/api/stats`.
+- **Rebrand finished — 2026-10-21 (owner direction: "finish the verus
+  rebrand").** The CLI utilities are now **`lucky`** (was `verus`) and
+  **`lucky-tx`** (was `verus-tx`); the missed daemon banner now prints
+  "luckyd … server starting"; the no-CLI error and rewind hint point
+  at `lucky`; thread names are `lucky-*`; regtest-only test knobs take
+  `-lucky-min-stakeage` / `-lucky-coinbase-maturity` (the old
+  `-verus-*` spellings still read, both hard-gated to regtest).
+  Deliberately kept, per the format-not-branding policy: the frozen
+  `verusDataSignaturePrefix`, `VERSION_VERUSID` /
+  `ACTIVATE_VERUSVAULT` constants, upstream copyright + internal file
+  names (`verus_hash.h`, `veruslaunch.*`), the `verushash` algorithm
+  name (real algorithm foreign chains use), `.verus`/`.verustest`
+  PBaaS datadir paths, the wallet's `verusd` fallback detection, and
+  cross-chain import strings (Verus Desktop / Agama / Verus Mobile).

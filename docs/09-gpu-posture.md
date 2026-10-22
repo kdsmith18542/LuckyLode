@@ -7,7 +7,7 @@ stands: LuckyHash v1 genesis at 1 MiB).
 ## Posture in one sentence
 
 Hold the 1 MiB genesis for maximal low-end inclusion; GPUs race the top
-league under sub-linear rewards meanwhile; a sustained 10× efficiency breach
+division under sub-linear rewards meanwhile; a sustained 10× efficiency breach
 pulls a pre-committed lever at the next *scheduled* upgrade — never an
 emergency fork debate.
 
@@ -26,8 +26,8 @@ levers loaded.
 
 - **Metric:** sustained hashes/second/watt, measured quarterly per doc 02 §2.2.
 - **Denominator:** the most efficient *eligible* low-end reference box (top
-  of the laptop/desktop league, e.g. N100-class miniPC) — **not** the phone.
-  Phones are protected structurally by league separation (doc 03 §3.3) and
+  of the laptop/desktop division, e.g. N100-class miniPC) — **not** the phone.
+  Phones are protected structurally by division separation (doc 03 §3.3) and
   sub-linear splits (doc 06 §6.3); phone-vs-GPU ratios are telemetry, never
   a trigger.
 - **Threshold:** GPU efficiency > **10×** the reference box, sustained over
@@ -44,7 +44,7 @@ low-end, and Intel/AMD iGPUs**. Rationale: "whatever hardware you already
 own" includes a 2016 GTX 1060 and every laptop iGPU — and LuckyHash's
 1 MiB footprint (vs 4 GB+ DAGs) is precisely what makes that class
 *includable* instead of gated out. This changes nothing about the
-tripwire above: it guards the efficiency *ratio*, and leagues still
+tripwire above: it guards the efficiency *ratio*, and divisions still
 separate phones from farms by observed hashrate.
 
 - **One codebase: OpenCL.** A single OpenCL Argon2id kernel covers NVIDIA
@@ -88,7 +88,7 @@ separate phones from farms by observed hashrate.
 
 ## Explicit non-triggers
 
-- Phone-vs-GPU ratios at any value (league cover).
+- Phone-vs-GPU ratios at any value (division cover).
 - Single-quarter GPU spikes (sustained-window rule).
-- GPU presence in the top league per se (security subsidy while small).
+- GPU presence in the top division per se (security subsidy while small).
 - Absolute H/s comparisons across algorithms (difficulty-neutral theater).

@@ -20,11 +20,11 @@
 - **Jackpot + Lucky Pot funding** (§3.2, doc 06): a 5% per-block levy,
   split **4% jackpot reserve / 1% Lucky Pot**; jackpots pay the finder up
   to `5×R`, pot draws pay tiered splashes (10/25/50%, pity-timer floor);
-  jackpot-reserve overflow feeds the league pool, pot overflow burns.
+  jackpot-reserve overflow feeds the prize fund, pot overflow burns.
   Expectation-neutral by construction — the game layer redistributes
   miner-earned value, it never mints.
 - **Luckynodes** (docs/11 §11.6 Direction A,: cheap-bond
-  service nodes paid from fun-layer budgets (league pool), **never from
+  service nodes paid from fun-layer budgets (prize fund), **never from
   inflation** — so the emission schedule funds only PoW miners and PoS
   stakers.
 - Fees: minimal anti-spam floor; no fee burns at launch (keep the economy
@@ -72,8 +72,8 @@ seed.
    **done** (mainnet pin + testnet's own genesis); name-the-algo contest
    concluded (doc 02 §2.2) — **done 2026-10-14** (**LuckyHash**, docs/13).
 3. **Launch day = event**: live leaderboards, first-jackpot watch party,
-   league signups open. Treat genesis like a game launch, not a deploy.
-4. **Season 1 starts at block N** (e.g. 1 month in): leagues, streaks,
+   division signups open. Treat genesis like a game launch, not a deploy.
+4. **Season 1 starts at block N** (e.g. 1 month in): divisions, streaks,
    badges live.
 
 **Pre-mainnet engineering gates (added 2026-10-17; each traces to a live
@@ -113,9 +113,9 @@ testnet incident or a known gap):**
 |---|---|---|
 | **P0 — Decision** (4–6 wks) | Fork eval (doc 02 options A/D), brand + rebrand checklist, PoW spec frozen ([doc 05](05-pow-algorithm.md) rev 1.0 ✓) | Written fork decision + frozen PoW params + vectors |
 | **P1 — Testnet** | Forked node mining LuckyHash from block 1, reference Rust miner (`lm-pow`) + thermal scheduler, 1–2 ref pools (Stratum V1 proven on testnet; V2 framing in P2), wallets, faucet, miner bake-off (third-party ports) | Public testnet ≥8 weeks on frozen params, 1k+ miners, device-matrix benchmarks published (doc 05 §5.6 gate), third-party PoW review commissioned |
-| **P2 — Mainnet + Season 1** | Genesis event, Android app beta, leagues/streaks/badges live, 3+ pools | Review clean (no open High/Critical), 10k low-end accounts; median day-90 retention tracked |
-| **P3 — Mobile GA** | Thermal engine v1 (`lm-sched` policy, doc 07), overnight mode, iOS companion (wallet/spectate/faucet games) | Phone-league participation doubled vs S1 |
-| **P4 — Depth** | Attestation-gated leagues, solo guides push, P2 optional treasury vote | Farm/spoof rate bounded; funding runway ≥18 mo |
+| **P2 — Mainnet + Season 1** | Genesis event, Android app beta, divisions/streaks/badges live, 3+ pools | Review clean (no open High/Critical), 10k low-end accounts; median day-90 retention tracked |
+| **P3 — Mobile GA** | Thermal engine v1 (`lm-sched` policy, doc 07), overnight mode, iOS companion (wallet/spectate/faucet games) | Phone-division participation doubled vs S1 |
+| **P4 — Depth** | Attestation-gated divisions, solo guides push, P2 optional treasury vote | Farm/spoof rate bounded; funding runway ≥18 mo |
 | **P5 — PoW tuning future** | Parameter levers (`t_cost`/`m_cost`) per measured GPU/ASIC pressure | Benchmarks + review, or explicit keep-params call |
 
 ## 4.5 Honest risks
@@ -123,7 +123,7 @@ testnet incident or a known gap):**
 1. **Botnets.** Any CPU coin gets them. They add hashrate but poison the
    story and invite exchange/AV trouble. Mitigation: pool-side anomaly
    detection + clear ToS, no illusions of protocol-level prevention.
-2. **League spoofing by farms** (doc 03 §3.6). Bounded by sub-linear rewards
+2. **Division spoofing by farms** (doc 03 §3.6). Bounded by sub-linear rewards
    + attestation; residual accepted in free tiers.
 3. **Verus-core weight.** Big C++ base = slow iteration + audit surface.
    Mitigated by strangler-fig rule (doc 02 §2.1): consensus frozen except
