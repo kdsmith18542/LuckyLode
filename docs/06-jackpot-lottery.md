@@ -278,4 +278,5 @@ controller). Registering `ln-<yourname>@` **is** registration:
   updates) through a shared `lm_luckynode::identity` module — no pool,
   no side-identities, no bonds. The Luckynodes tab shows the consensus
   draw (current epoch + winner), the last landed claim, and per-identity
-  chain state. Pending: testnet reset #5, VPS redeploy.
+  chain state. Testnet reset #5 + VPS redeploy DONE 2026-10-23 (consensus
+  prize fund live: two exact draw claims spliced, credit-once holds).
