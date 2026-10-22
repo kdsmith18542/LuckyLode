@@ -926,10 +926,20 @@ fn attest_api<P: TemplateProvider + 'static>(
 /// Bounded line read for HTTP: a header line must never be able to
 /// allocate without limit, and the caller's read timeout bounds how long
 /// a stalled peer can hold the connection.
-fn read_line_capped(reader: &mut impl Read, cap: usize) -> std::io::Result<String> {
+fn read_line_capped(
+    reader: &mut impl Read,
+    cap: usize,
+    deadline: std::time::Instant,
+) -> std::io::Result<String> {
     let mut out: Vec<u8> = Vec::with_capacity(128);
     let mut b = [0u8; 1];
     loop {
+        if std::time::Instant::now() > deadline {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "request deadline",
+            ));
+        }
         if reader.read(&mut b)? == 0 {
             break; // EOF
         }
@@ -955,12 +965,16 @@ fn http_reply<P: TemplateProvider + 'static>(
     // Deadlines: a slowloris gets seconds, not forever.
     let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(10)));
     let _ = stream.set_write_timeout(Some(std::time::Duration::from_secs(10)));
+    // Total-request deadline: the per-read timeouts above reset with
+    // every byte, so a slowloris at one byte per nine seconds held a
+    // thread forever. One request gets 30 seconds, all reads included.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
     let mut body = String::new();
     let mut authorization = String::new();
     let line;
     {
         let mut reader = BufReader::new(stream.try_clone()?);
-        line = read_line_capped(&mut reader, 8192)?;
+        line = read_line_capped(&mut reader, 8192, deadline)?;
         // Headers: only Content-Length matters (POST bodies for the
         // luckynode API); the whole header section is capped (lines and
         // bytes) so neither count nor size can grow without bound.
@@ -968,7 +982,7 @@ fn http_reply<P: TemplateProvider + 'static>(
         let mut header_lines = 0usize;
         let mut header_bytes = 0usize;
         loop {
-            let h = read_line_capped(&mut reader, 8192)?;
+            let h = read_line_capped(&mut reader, 8192, deadline)?;
             header_lines += 1;
             header_bytes += h.len();
             let h = h.trim_end();

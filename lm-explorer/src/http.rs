@@ -917,7 +917,7 @@ fn address_page(a: &serde_json::Value) -> String {
         "address",
         format!(
             "<table><tr><th>address</th><td>{}</td></tr><tr><th>balance</th><td>{}</td></tr><tr><th>total received</th><td>{}</td></tr><tr><th>transactions</th><td>{}</td></tr><tr><th>first seen</th><td>{}</td></tr><tr><th>unconfirmed</th><td>{}</td></tr></table>{}<h2>Transactions</h2><table><tr><th>txid</th><th>block</th><th>direction</th><th>net</th></tr>{rows}</table>",
-            a["address"].as_str().unwrap_or(""),
+            esc(a["address"].as_str().unwrap_or("")),
             coins(a["balance"].as_i64().unwrap_or(0)),
             coins(a["received"].as_i64().unwrap_or(0)),
             a["txcount"].as_i64().map(|n| n.to_string()).unwrap_or_else(|| "–".to_string()),
@@ -1102,6 +1102,11 @@ fn handle(idx: &mut Indexer, method: &str, path: &str) -> String {
                 return html_resp(&format!("<head><meta http-equiv=refresh content=\"0;url=/tx/{q}\"></head>"));
             }
         }
+        // Reflected input goes through esc(): the URL-encode sets make a
+        // browser-delivered exploit awkward, but the meta-refresh content
+        // attribute is double-quoted user input in an HTML document —
+        // escape it like every other interpolation.
+        let q = esc(q);
         return html_resp(&format!("<head><meta http-equiv=refresh content=\"0;url=/address/{q}\"></head>"));
     }
     err404()
@@ -1119,19 +1124,28 @@ pub fn serve(listener: TcpListener, idx: Arc<Mutex<Indexer>>) {
 }
 
 fn serve_one(stream: TcpStream, idx: Arc<Mutex<Indexer>>) {
+    // Bounded request handling: a read deadline and a line cap, so a
+    // connected-and-silent peer parks a thread for seconds, not forever.
+    let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(10)));
+    let _ = stream.set_write_timeout(Some(std::time::Duration::from_secs(10)));
     let mut reader = BufReader::new(&stream);
     let mut request = String::new();
-    if reader.read_line(&mut request).is_err() {
+    if reader.read_line(&mut request).is_err() || request.len() > 16 * 1024 {
         return;
     }
     let mut parts = request.split_whitespace();
     let (method, path) = (parts.next().unwrap_or(""), parts.next().unwrap_or("/"));
     // Drain headers.
+    let mut header_bytes = request.len();
     loop {
         let mut line = String::new();
         match reader.read_line(&mut line) {
             Ok(0) | Err(_) => break,
             Ok(_) => {
+                header_bytes += line.len();
+                if header_bytes > 32 * 1024 {
+                    break;
+                }
                 if line == "\r\n" || line == "\n" {
                     break;
                 }

@@ -156,13 +156,6 @@ struct Ctx {
     limits: Mutex<Limits>,
 }
 
-fn html_escape(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-}
-
 fn respond(stream: &mut TcpStream, code: &str, ctype: &str, body: &str) {
     let resp = format!(
         "HTTP/1.1 {code}\r\nContent-Type: {ctype}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
@@ -209,9 +202,28 @@ fn url_decode(s: &str) -> String {
 }
 
 fn handle(mut stream: TcpStream, ctx: &Ctx) {
-    let mut buf = [0u8; 4096];
-    let n = stream.read(&mut buf).unwrap_or(0);
-    let req = String::from_utf8_lossy(&buf[..n]);
+    // Bounded request read: read until the header terminator (or a cap),
+    // with a deadline — the old single 4 KiB read lost split requests and
+    // a connected-and-silent peer parked its thread forever.
+    let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(10)));
+    let _ = stream.set_write_timeout(Some(std::time::Duration::from_secs(10)));
+    let mut raw: Vec<u8> = Vec::with_capacity(2048);
+    let mut b = [0u8; 4096];
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    loop {
+        if std::time::Instant::now() > deadline || raw.len() > 16 * 1024 {
+            break;
+        }
+        let n = stream.read(&mut b).unwrap_or(0);
+        if n == 0 {
+            break;
+        }
+        raw.extend_from_slice(&b[..n]);
+        if raw.windows(4).any(|w| w == b"\r\n\r\n") {
+            break;
+        }
+    }
+    let req = String::from_utf8_lossy(&raw);
     let line = req.lines().next().unwrap_or("");
     let path = line.split_whitespace().nth(1).unwrap_or("/");
 
@@ -276,16 +288,18 @@ fn handle(mut stream: TcpStream, ctx: &Ctx) {
                     limits.save(path);
                 }
                 let txid = txid.as_str().unwrap_or("");
-                let body = format!(
-                    r#"{{"ok":true,"address":"{}","amount":{},"txid":"{}"}}"#,
-                    html_escape(&address),
-                    ctx.amount,
-                    txid
-                );
+                let body = serde_json::json!({
+                    "ok": true,
+                    "address": address,
+                    "amount": ctx.amount,
+                    "txid": txid,
+                })
+                .to_string();
                 respond(&mut stream, "200 OK", "application/json", &body);
             }
             Err(e) => {
-                let body = format!(r#"{{"ok":false,"error":"send failed: {}"}}"#, html_escape(&e));
+                let body = serde_json::json!({"ok": false, "error": format!("send failed: {e}")})
+                    .to_string();
                 respond(&mut stream, "502 Bad Gateway", "application/json", &body);
             }
         }
