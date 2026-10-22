@@ -27,8 +27,21 @@ cd ../src-tauri && cargo tauri dev   # or: cargo run (after ui is built)
 
 ```sh
 cd lm-wallet/ui && npm run build
-cd ../src-tauri && cargo build --release
+cd ../src-tauri && cargo tauri build --no-bundle
 ```
+
+The raw binary lands at `src-tauri/target/release/lucky-lode-wallet`;
+install it to `~/Applications/LuckyLodeWallet/` (desktop entry points
+there) and Xephyr-verify it renders before handing it over.
+
+**Never ship a wallet binary built with plain `cargo build`.** The raw
+`cargo` invocation resolves the `tauri` crate *without* the
+`custom-protocol` feature, so the binary loads the Vite dev URL
+(`http://localhost:5173`) instead of the embedded frontend and opens
+as a blank white "Could not connect to localhost: Connection refused"
+window (proven via strace: the broken binary dials 127.0.0.1:5173 and
+nothing else; the CLI-built one only touches the node RPC). Only
+`cargo tauri build` produces a working standalone binary.
 
 Bundles (`deb` + AppImage) are enabled (`tauri.conf.json` →
 `bundle.active`):
