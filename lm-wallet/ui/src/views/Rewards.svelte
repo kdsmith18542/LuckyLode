@@ -39,7 +39,7 @@
     ),
   );
   const prize = $derived<number | null>(
-    typeof pool?.pool?.prize_pool === "number" ? pool.pool.prize_pool : null,
+    typeof jp.prize === "number" ? jp.prize : null,
   );
   const droughtLeft = $derived(
     typeof jp.drought === "number" && typeof jp.potdrought === "number"
@@ -47,7 +47,7 @@
       : null,
   );
 
-  // Luck chart: stacked bars per recent block — prize inflow (dim),
+  // Reward chart: stacked bars per recent block — prize inflow (dim),
   // pot splash (green), jackpot bonus (gold), scaled to the window max.
   const chart = $derived.by(() => {
     const rows = (pool?.last_blocks ?? []).slice(0, 40).reverse() as any[];
@@ -63,7 +63,7 @@
 
 </script>
 
-<h2>Game state</h2>
+<h2>Rewards</h2>
 <div class="grid">
   <div class="card"><div class="k">jackpot reserve</div><div class="v gold">{api.coinU(jp.reserve)}</div></div>
   <div class="card"><div class="k">lucky pot</div><div class="v">{api.coinU(jp.pot)}</div></div>
@@ -78,7 +78,7 @@
   <div class="card"><div class="k">difficulty</div><div class="v">{mining.difficulty ?? "–"}</div></div>
 </div>
 
-<h2>Luck chart (recent blocks)</h2>
+<h2>Reward events (recent blocks)</h2>
 <div class="card">
   {#if chart.vals.length > 0}
     <svg
@@ -87,7 +87,7 @@
       height="120"
       preserveAspectRatio="none"
       role="img"
-      aria-label="game events per block"
+      aria-label="reward events per block"
     >
       {#each chart.vals as v, i}
         {@const bh = (v.bonus / chart.max) * 80}
@@ -129,7 +129,7 @@
   {/if}
 </div>
 
-<h2>Recent game events</h2>
+<h2>Recent reward events</h2>
 <table>
   <thead><tr><th>height</th><th>finder</th><th>block reward</th><th>jackpot bonus</th><th>pot splash</th><th>prize inflow</th></tr></thead>
   <tbody>

@@ -83,8 +83,7 @@ footer{margin-top:26px;color:var(--dim);font-size:12px;line-height:1.5}
 <nav>
   <button data-tab="dashboard" class="active">Dashboard</button>
   <button data-tab="start">Getting started</button>
-  <button data-tab="faq">FAQ</button>
-  <button data-tab="api">API</button>
+  <button data-tab="faq">Help</button>
   <button data-tab="miner">My miner</button>
   <a class="badge" href="https://luckylode.cc/" target="_blank" rel="noopener">luckylode.cc</a>
   <a class="badge" href="https://luckylode.cc/explorer/" target="_blank" rel="noopener">explorer</a>
@@ -121,14 +120,14 @@ footer{margin-top:26px;color:var(--dim);font-size:12px;line-height:1.5}
 <p>Stratum endpoint: <code id="stratum">:3346</code> (plaintext). <span id="gs-worthless">Testnet coins have no value &mdash; this is the public burn-in.</span></p>
 </section>
 <section id="tab-faq">
-<h2>FAQ</h2>
+<h2>Help &amp; FAQ</h2>
 <dl>
 <dt>What is a share vs a block?</dt>
 <dd>A share proves work against the pool target; the pool verifies every one against the current job. When a share also beats the network target it is a block &mdash; the pool submits it for you.</dd>
 <dt>Why do some shares get rejected?</dt>
 <dd>Usually stale (arrived after a job rotation) or duplicate (nonce already submitted). A few are normal; a rising reject rate means connectivity or clock trouble.</dd>
 <dt>How do payouts work?</dt>
-<dd>Block rewards are credited with PPLNS weights (sqrt-weighted, 25% cap) and sent from the pool wallet to your worker address once mature and above the payout threshold. Balances due and sent payouts are on the dashboard.</dd>
+<dd>Block rewards are credited with PPLNS weights (sqrt-weighted, 25% cap) and sent from the pool wallet to your worker address once mature and above the payout threshold. Sent payouts are listed on the dashboard; your own due/paid balance is on the My miner tab.</dd>
 <dt>What are the jackpot and the Lucky Pot?</dt>
 <dd>Every PoW block carries a pre-committed draw: <code>SHA256D(parent hash + height)</code> &mdash; the ticket is fixed before any grinding, so nothing can be withheld. Jackpot: roughly 1 in 100 blocks &mdash; the block's reward gains a reserve bonus (up to 5× the block reward). Pot: roughly 1 in 1000 blocks with 10/25/50% tiers and a pity timer that forces a splash after a long dry run. Both land only on PoW finds, and the whole block (bonus included) is split among contributors by PPLNS.</dd>
 <dt>What is a Luckynode Draw?</dt>
@@ -136,8 +135,7 @@ footer{margin-top:26px;color:var(--dim);font-size:12px;line-height:1.5}
 <dt>Is this real money?</dt>
 <dd id="faq-testnet">No. This is the Lucky Lode public testnet; coins are worthless by design. The point is to break things before mainnet.</dd>
 </dl>
-</section>
-<section id="tab-api">
+
 <h2>API</h2>
 <p>Endpoints are relative to this page's path, so they work behind <code>/pool/</code> too:</p>
 <table><thead><tr><th>endpoint</th><th>returns</th></tr></thead><tbody>
@@ -146,10 +144,11 @@ footer{margin-top:26px;color:var(--dim);font-size:12px;line-height:1.5}
 <tr><td><code>GET api/worker/&lt;miner&gt;</code></td><td>one worker's public row, alive or idle (streak + division rank survive workerstats age-out; 404 when never seen) — owed/paid are included on open pools, and only with the matching worker token (<code>Authorization: Bearer</code>) when the pool runs a workers file</td></tr>
 <tr><td><code>GET api/miner</code> with <code>Authorization: Bearer &lt;token&gt;</code></td><td>your own row + payout settings (worker-token auth — the token is a header, never a URL)</td></tr>
 <tr><td><code>POST api/payout/settings</code></td><td>set/clear your payout address + threshold: <code>{token,address,threshold}</code></td></tr>
-<tr><td><code>POST api/attest</code></td><td>record a device-attestation verdict (doc 03 §3.6): <code>{worker,provider:"self",detail?,token?}</code> — verdict-only, shown on division boards; a real Play Integrity verifier replaces the self-labeled stub at mainnet</td></tr>
+<tr><td><code>POST api/attest</code></td><td>optional device label for the division boards: <code>{worker,provider:"self",detail?,token?}</code> — a self-declared hint, not a security check</td></tr>
 </tbody></table>
 <p>The dashboard polls <code>api/stats</code> every 5 s; miners, bots and dashboards are welcome to do the same.</p>
 </section>
+
 <section id="tab-miner">
 <h2>My miner</h2>
 <p>Paste your worker token (the token from your pool password / the operator's <code>--workers-file</code>) to see your own stats and set where and when you get paid. The token never leaves this page except to this pool's own API.</p>
@@ -802,7 +801,7 @@ fn attest_api<P: TemplateProvider + 'static>(
         return (
             "400 Bad Request",
             serde_json::json!({
-                "error": "unsupported provider; only 'self' is accepted until a Play Integrity verifier is configured"
+                "error": "unsupported provider; only a self-declared label is accepted"
             })
             .to_string(),
         );
@@ -1753,11 +1752,11 @@ dev is claimed on dev-epoch heights (every 100th block). Both splice exact
 pinned-script outputs (node is source of truth); unclaimed amounts stay in
 their reserves. Empty node pins (mainnet until the ceremony) disable both
 legs. Pass --no-claim-faucet / --no-claim-dev to opt out.
-draws (node mode, doc 06 §6.7): the consensus Luckynode Draw claim is
-spliced from the node's prizedraw* advisories (exact remaining budget to
-the winner's registered script; old nodes have no fields and stay
-claim-free). The claim pays a third party, never the miner. Pass
---no-claim-prize to opt out.
+draws (node mode): the consensus Luckynode Draw claim is spliced from the
+node's prize-draw advisories (exact remaining budget to the winner's
+registered script; old nodes have no fields and stay claim-free). The
+claim pays a third party, never the miner. Pass --no-claim-prize to opt
+out.
 payouts (node mode,: balances at/above --payout-threshold
 (base units) are sent from the node wallet every --payout-interval seconds
 (default 60); WITHOUT --payout-exec the loop only logs what it would send.

@@ -1,6 +1,7 @@
 <script lang="ts">
   import * as api from "../lib/api";
   import { getTheme, setTheme } from "../lib/theme";
+  import Faq from "./Faq.svelte";
   let cfg = $state<any>({ rpc_url: "", rpc_user: "", rpc_pass: "", pool_url: "", node_bin: "", node_datadir: "", node_args: "-testnet" });
   let saved = $state("");
   let err = $state("");
@@ -566,7 +567,11 @@
 <div class="card muted" style="max-width:640px">
   Lucky Lode Wallet v0.1 ({api.ticker() === "LKYL" ? "mainnet" : api.ticker() === "rLKYL" ? "regtest" : "testnet"}). Open source (GPL-3.0-only); upstream attributions in NOTICE.
   This wallet holds its own 12-word seed on this machine and signs every spend locally —
-  keys never touch the node. The luckynode key is a separate ed25519 identity stored on this
-  machine only.
+  keys never touch the node. Luckynode participation is an on-chain identity; the node
+  wallet only pays registration and per-epoch update fees.
+</div>
+
+<div style="margin-top:26px">
+  <Faq />
 </div>
 
