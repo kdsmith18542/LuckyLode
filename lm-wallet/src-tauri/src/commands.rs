@@ -30,9 +30,13 @@ pub fn node_status(state: State<'_, AppState>) -> Result<serde_json::Value, Stri
         }
     };
     // Binary configured (without it Start refuses immediately)?
-    let (bin_set, shared_node) = {
+    let (bin_set, shared_node, creds_missing) = {
         let cfg = state.cfg.lock().expect("cfg");
-        (!cfg.node_bin.trim().is_empty(), is_shared_url(&cfg.rpc_url))
+        (
+            !cfg.node_bin.trim().is_empty(),
+            is_shared_url(&cfg.rpc_url),
+            cfg.rpc_pass.trim().is_empty(),
+        )
     };
     let info = node::call(&state, "getblockchaininfo", json!([])).ok();
     Ok(json!({
@@ -46,6 +50,7 @@ pub fn node_status(state: State<'_, AppState>) -> Result<serde_json::Value, Stri
         "managed_pid": managed.get("pid"),
         "node_bin_set": bin_set,
         "shared_node": shared_node,
+        "creds_missing": creds_missing,
     }))
 }
 

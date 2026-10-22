@@ -500,6 +500,12 @@
       {/if}
     </div>
     {#if nodemsg}<div class="muted" style="margin-top:8px">{nodemsg}</div>{/if}
+    {#if nodestatus?.creds_missing}
+      <div class="muted" style="margin-top:8px">
+        RPC password unavailable (your login keyring is locked) — unlock it,
+        or enter the password under Advanced.
+      </div>
+    {/if}
     {#if !cfg.node_bin}
       {#if discover?.candidates?.length}
         <div class="muted" style="margin-top:8px">
@@ -528,7 +534,7 @@
       <input id="u" bind:value={cfg.rpc_user} spellcheck="false" />
       <label for="p">RPC password</label>
       <input id="p" bind:value={cfg.rpc_pass} type="password" />
-      <label for="pool">pool API URL</label>
+      <label for="pool">pool dashboard API URL <span class="muted">(Overview/Game stats only — not a node setting, and not the miner's stratum endpoint)</span></label>
       <input id="pool" bind:value={cfg.pool_url} spellcheck="false" />
       <label for="nbin">luckyd binary path (empty = auto-detect: PATH + usual install locations; legacy verusd also detected)</label>
       <input id="nbin" bind:value={cfg.node_bin} spellcheck="false" placeholder="auto-detect" />

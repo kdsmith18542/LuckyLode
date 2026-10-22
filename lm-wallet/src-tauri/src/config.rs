@@ -127,11 +127,28 @@ impl Config {
         let mut for_disk = self.clone();
         let placeholder = for_disk.rpc_user == crate::node_proc::PLACEHOLDER_USER
             && for_disk.rpc_pass == crate::node_proc::PLACEHOLDER_PASS;
-        if for_disk.rpc_pass != KEYRING_SENTINEL && !placeholder && keyring_store(&for_disk.rpc_pass) {
-            for_disk.rpc_pass = KEYRING_SENTINEL.to_string();
+        if for_disk.rpc_pass != KEYRING_SENTINEL && !placeholder {
+            // Only move the password into the keyring when it can be read
+            // back immediately. A locked/unavailable collection can accept
+            // a store yet fail every load; writing the sentinel then would
+            // silently lose the password and break the node connection.
+            let stored = keyring_store(&for_disk.rpc_pass);
+            if stored && keyring_load().as_deref() == Some(for_disk.rpc_pass.as_str()) {
+                for_disk.rpc_pass = KEYRING_SENTINEL.to_string();
+            }
         }
         let s = serde_json::to_string_pretty(&for_disk).map_err(|e| e.to_string())?;
-        std::fs::write(path, s).map_err(|e| format!("write {}: {e}", path.display()))
+        std::fs::write(path, s).map_err(|e| format!("write {}: {e}", path.display()))?;
+        // The file may carry the RPC password in plaintext when the OS
+        // keyring is unavailable, so it must never be group/world
+        // readable (the old default umask left it 0664).
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+                .map_err(|e| format!("chmod {}: {e}", path.display()))?;
+        }
+        Ok(())
     }
 }
 
