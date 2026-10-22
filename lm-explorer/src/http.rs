@@ -698,7 +698,7 @@ fn divisions_page(idx: &Indexer) -> String {
     page(
         "divisions",
         format!(
-            "{}<div class=card>Seasonal boards by device family (30-day effective work). Phones race phones; farms are paid, not feted. Snapshot mirrored from the official pool.</div>{sections}",
+            "{}<div class=card>Seasonal boards by device family (30-day effective work). Phones race phones; farms are paid, not feted. Archive snapshot mirrored from the official pool — the pool dashboard shows the live season; this page shows the last synced copy.</div>{sections}",
             search_box(),
         ),
     )

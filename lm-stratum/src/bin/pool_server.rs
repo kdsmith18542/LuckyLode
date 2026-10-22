@@ -100,9 +100,9 @@ footer{margin-top:26px;color:var(--dim);font-size:12px;line-height:1.5}
 <div id="divisions"><span style="color:var(--dim)">no ranked workers yet</span></div>
 <h2>Blocks</h2>
 <table><thead><tr><th>height</th><th>finder</th><th>block reward</th><th>jackpot bonus</th><th>pot splash</th><th>prize inflow</th><th>draw claim</th><th>pplns payouts</th></tr></thead><tbody id="blocks"></tbody></table>
-<h2>Balances due</h2>
-<table><thead><tr><th>worker</th><th>owed</th><th>paid</th></tr></thead><tbody id="balances"></tbody></table><div class="muted" id="balances-foot"></div>
 <h2>Payouts</h2>
+<p class="muted">Sent payouts with txids. Your own due/paid balances live on the <b>My miner</b> tab (worker-token auth).</p>
+<table><thead><tr><th>time</th><th>worker</th><th>amount</th><th>txid</th></tr></thead><tbody id="payouts"></tbody></table><div class="muted" id="pool-totals"></div>
 <table><thead><tr><th>time</th><th>worker</th><th>amount</th><th>txid</th></tr></thead><tbody id="payouts"></tbody></table>
 </section>
 <section id="tab-start">
@@ -130,9 +130,9 @@ footer{margin-top:26px;color:var(--dim);font-size:12px;line-height:1.5}
 <dt>How do payouts work?</dt>
 <dd>Block rewards are credited with PPLNS weights (sqrt-weighted, 25% cap) and sent from the pool wallet to your worker address once mature and above the payout threshold. Balances due and sent payouts are on the dashboard.</dd>
 <dt>What are the jackpot and the Lucky Pot?</dt>
-<dd>Every PoW block carries a pre-committed draw: <code>SHA256D(parent hash + height)</code> &mdash; the ticket is fixed before any grinding, so nothing can be withheld. Jackpot: draw below 2^256/100 (~1%) &mdash; the block's reward gains a reserve bonus (up to 5× the block reward). Pot: draw below 2^256/1000 with 10/25/50% tiers and a pity timer that forces a splash after a long dry run. Both land only on PoW finds, and the whole block (bonus included) is split among contributors by PPLNS.</dd>
+<dd>Every PoW block carries a pre-committed draw: <code>SHA256D(parent hash + height)</code> &mdash; the ticket is fixed before any grinding, so nothing can be withheld. Jackpot: roughly 1 in 100 blocks &mdash; the block's reward gains a reserve bonus (up to 5× the block reward). Pot: roughly 1 in 1000 blocks with 10/25/50% tiers and a pity timer that forces a splash after a long dry run. Both land only on PoW finds, and the whole block (bonus included) is split among contributors by PPLNS.</dd>
 <dt>What is a Luckynode Draw?</dt>
-<dd>Luckynode Draws are consensus money now (doc 06 §6.7): every epoch the chain picks a winner from registered <code>ln-*</code> LuckyID identities and any block builder attaches the claim straight to the winner. This pool attaches the claim automatically on every block it mines — see the draw-claim column in Blocks. Registration and heartbeats are identity transactions on the node (<code>registernamecommitment</code> / <code>registeridentity</code> / <code>updateidentity</code>); the pool-era registry and cosigning are retired.</dd>
+<dd>Every epoch the chain picks a winner from registered <code>ln-*</code> identities, and the block found at the boundary pays the winner straight from the prize fund — no pool custody involved. This pool attaches the claim automatically on every block it mines; see the draw-claim column in Blocks. Registering a name and heartbeating once per epoch are small transactions on the node; the old pool-run registry is retired.</dd>
 <dt>Is this real money?</dt>
 <dd id="faq-testnet">No. This is the Lucky Lode public testnet; coins are worthless by design. The point is to break things before mainnet.</dd>
 </dl>
@@ -141,9 +141,9 @@ footer{margin-top:26px;color:var(--dim);font-size:12px;line-height:1.5}
 <h2>API</h2>
 <p>Endpoints are relative to this page's path, so they work behind <code>/pool/</code> too:</p>
 <table><thead><tr><th>endpoint</th><th>returns</th></tr></thead><tbody>
-<tr><td><code>GET api/stats</code></td><td>pool, workers, blocks, balances, payouts, game state, division boards (JSON)</td></tr>
+<tr><td><code>GET api/stats</code></td><td>pool, workers, blocks, payouts, game state, division boards (JSON) — per-worker owed/paid are NOT here; see My miner</td></tr>
 <tr><td><code>GET api/divisions</code></td><td>season division boards per device class (30-day effective work; ranks, streaks, attestation flags)</td></tr>
-<tr><td><code>GET api/worker/&lt;miner&gt;</code></td><td>one worker's public row, alive or idle (streak + division rank + owed/paid survive workerstats age-out; 404 when never seen)</td></tr>
+<tr><td><code>GET api/worker/&lt;miner&gt;</code></td><td>one worker's public row, alive or idle (streak + division rank survive workerstats age-out; 404 when never seen) — owed/paid are included on open pools, and only with the matching worker token (<code>Authorization: Bearer</code>) when the pool runs a workers file</td></tr>
 <tr><td><code>GET api/miner</code> with <code>Authorization: Bearer &lt;token&gt;</code></td><td>your own row + payout settings (worker-token auth — the token is a header, never a URL)</td></tr>
 <tr><td><code>POST api/payout/settings</code></td><td>set/clear your payout address + threshold: <code>{token,address,threshold}</code></td></tr>
 <tr><td><code>POST api/attest</code></td><td>record a device-attestation verdict (doc 03 §3.6): <code>{worker,provider:"self",detail?,token?}</code> — verdict-only, shown on division boards; a real Play Integrity verifier replaces the self-labeled stub at mainnet</td></tr>
@@ -203,7 +203,7 @@ wf.addEventListener('keydown',async e=>{
   if(!q){box.textContent='';return;}
   box.textContent='looking up '+q+' …';
   try{
-    const r=await fetch('api/worker/'+encodeURIComponent(q),{cache:'no-store'});
+    const r=await fetch('api/worker/'+encodeURIComponent(q),{cache:'no-store',headers:mtok?{Authorization:'Bearer '+mtok}:{}});
     if(!r.ok){box.textContent=q+': never seen on this pool';return;}
     const w=await r.json();
     box.textContent=`${w.name||w.miner} · ${w.online?'online':'idle'+(w.last_seen?' (last seen '+ago(w.last_seen)+')':'')} · streak ${w.streak||0}d (best ${w.best_streak||0}) · ${w.division_class?('division '+w.division_class+' #'+w.division_rank+'/'+w.division_size):'unranked this season'} · owed ${coin(w.owed)} · paid ${coin(w.paid)}`;
@@ -259,14 +259,11 @@ async function tick(){
   document.getElementById('blocks').innerHTML=(j.last_blocks||[]).map(b=>
     `<tr><td>${esc(b.height)}</td><td>${esc(b.finder_name||b.finder)}</td><td>${coin(b.value)}</td><td>${b.bonus>0?coin(b.bonus):'–'}</td><td>${b.pot>0?coin(b.pot):'–'}</td><td>${b.prize_inflow>0?coin(b.prize_inflow):'–'}</td><td>${b.prize_claim>0?coin(b.prize_claim)+' → '+esc((b.prize_winner||'').slice(0,12))+'…':'–'}</td><td>${b.pplns_total>0?coin(b.pplns_total)+' ('+esc(b.pplns_count)+')':'–'}</td></tr>`).join('')
     || '<tr><td colspan="8">no blocks yet</td></tr>';
-  document.getElementById('balances').innerHTML=(j.balances||[]).map(b=>
-    `<tr><td>${esc(b.name||b.miner)}</td><td>${coin(b.owed)}</td><td>${coin(b.paid)}</td></tr>`).join('')
-    || '<tr><td colspan="3">nothing due</td></tr>';
-  if(j.payout_totals){document.getElementById('balances-foot').textContent=
-    `total owed ${coin(j.payout_totals.owed)} ${NET.ticker} · total paid ${coin(j.payout_totals.paid)} ${NET.ticker} · tx fees ${coin(j.payout_totals.fees)} ${NET.ticker}`;}
   document.getElementById('payouts').innerHTML=(j.payouts||[]).map(p=>
     `<tr><td>${tstr(p.time)}</td><td>${esc(p.name)}</td><td>${coin(p.amount)}</td><td>${esc(p.txid)}</td></tr>`).join('')
     || '<tr><td colspan="4">no payouts sent yet</td></tr>';
+  if(j.payout_totals){document.getElementById('pool-totals').textContent=
+    `pool lifetime: ${coin(j.payout_totals.coinbases)} mined · ${coin(j.payout_totals.paid)} paid · ${coin(j.payout_totals.owed)} owed · fees ${coin(j.payout_totals.fees)}`;}
   const mode=j.mode||'';
   const claimNote = (mode.includes('pot') || mode.includes('jackpot'))
     ? 'Claim mode: draws are pre-committed per height (SHA256D of the parent hash); every find lands — no withholding.'
@@ -415,20 +412,7 @@ fn stats_json<P: TemplateProvider + 'static>(
             })
         })
         .collect();
-    let by_name: HashMap<String, String> = workers.iter().map(|w| (w.miner.clone(), w.name.clone())).collect();
     let payout_totals = server.payout_totals();
-    let balances_json: Vec<serde_json::Value> = server
-        .balances()
-        .into_iter()
-        .map(|(miner, owed)| {
-            serde_json::json!({
-                "miner": miner,
-                "name": by_name.get(&miner).cloned().unwrap_or_default(),
-                "owed": owed,
-                "paid": server.paid(&miner),
-            })
-        })
-        .collect();
     let payouts_json: Vec<serde_json::Value> = ctx
         .history
         .lock()
@@ -498,7 +482,6 @@ fn stats_json<P: TemplateProvider + 'static>(
             "hashrate24h": totals[3],
         },
         "workers": workers_json,
-        "balances": balances_json,
         "payout_totals": {
             "owed": payout_totals.0,
             "paid": payout_totals.1,
@@ -695,12 +678,37 @@ fn worker_row_json(
 /// idle: live rates when connected, streak + division rank + balances
 /// from the ledger either way (streaks survive retention pruning and
 /// workerstats age-out). The name is a URL path segment (percent-encoded;
-/// capped at 128 chars); worker names are public (they already appear on
-/// `/api/stats`), so no auth. 404 when the pool has never seen the name.
+/// capped at 128 chars). Money is token-gated: on an open pool (no
+/// `--workers-file`) the full row is public; when the pool runs worker
+/// tokens, owed/paid are served only to the matching token (Bearer) and
+/// anything else gets 403. Stats (rates, streak, division) stay public
+/// either way. 404 when the pool has never seen the name.
 fn worker_api<P: TemplateProvider + 'static>(
     server: &RunningServer<P>,
     miner_seg: &str,
+    authorization: Option<&str>,
 ) -> (&'static str, String) {
+    let miner: String = pct_decode(miner_seg).chars().take(128).collect();
+    if miner.is_empty() || miner.contains('/') {
+        return (
+            "400 Bad Request",
+            serde_json::json!({"error": "missing worker name"}).to_string(),
+        );
+    }
+    if server.worker_tokens_active() {
+        let authed = authorization
+            .and_then(|a| a.strip_prefix("Bearer ").or_else(|| a.strip_prefix("bearer ")))
+            .map(str::trim)
+            .filter(|t| !t.is_empty())
+            .and_then(|t| server.miner_for_token(t));
+        if authed.as_deref() != Some(miner.as_str()) {
+            return (
+                "403 Forbidden",
+                serde_json::json!({"error": "worker token required (see your own row on the My miner tab)"})
+                    .to_string(),
+            );
+        }
+    }
     let miner: String = pct_decode(miner_seg).chars().take(128).collect();
     if miner.is_empty() || miner.contains('/') {
         return (
@@ -992,7 +1000,8 @@ fn http_reply<P: TemplateProvider + 'static>(
             (status, "application/json", json)
         }
         ("GET", p) if p.starts_with("/api/worker/") => {
-            let (status, json) = worker_api(server, &p["/api/worker/".len()..]);
+            let (status, json) =
+                worker_api(server, &p["/api/worker/".len()..], Some(authorization.as_str()));
             (status, "application/json", json)
         }
         _ => (
@@ -3133,5 +3142,58 @@ mod tests {
             "Pixel 9"
         );
         server.stop();
+    }
+
+    /// Money is token-gated on token pools: an open pool serves the full
+    /// worker row, a `--workers-file` pool 403s strangers. Stats (rates,
+    /// streak, division) stay public either way — the gate only guards
+    /// owed/paid reads.
+    #[test]
+    fn worker_api_money_needs_matching_token_on_token_pools() {
+        let mut tokens = HashMap::new();
+        tokens.insert("w1".to_string(), "tok1".to_string());
+        let gated = spawn_server(
+            MockProvider::new([0xff; 32], [0xff; 32], 1_000, 0),
+            "127.0.0.1:0",
+            None,
+            Some(tokens),
+            None,
+        )
+        .expect("spawn");
+        // Authorize once over the wire so the token resolves to w1.
+        let mut c = lm_stratum::client::PoolClient::connect(gated.addr()).expect("connect");
+        assert!(c.subscribe("probe/0.1").expect("subscribe"));
+        assert!(c.authorize_with("w1", "tok1").expect("authorize"));
+        // No token, wrong token: 403 (money stays hidden).
+        let (status, body) = worker_api(&gated, "w1", None);
+        assert_eq!(status, "403 Forbidden");
+        assert!(body.contains("token"));
+        let (status, _) = worker_api(&gated, "w1", Some("Bearer nope"));
+        assert_eq!(status, "403 Forbidden");
+        // The matching token gets the row (with its money fields).
+        let (status, body) = worker_api(&gated, "w1", Some("Bearer tok1"));
+        assert_eq!(status, "200 OK");
+        assert!(body.contains("\"owed\""));
+        // Unknown workers also 403 on token pools (the gate runs before
+        // the existence check, so there is no known/unknown oracle).
+        let (status, _) = worker_api(&gated, "ghost", Some("Bearer tok1"));
+        assert_eq!(status, "403 Forbidden");
+        gated.stop();
+        // Open pools keep the old public behavior.
+        let open = spawn_server(
+            MockProvider::new([0xff; 32], [0xff; 32], 1_000, 0),
+            "127.0.0.1:0",
+            None,
+            None,
+            None,
+        )
+        .expect("spawn");
+        let mut c = lm_stratum::client::PoolClient::connect(open.addr()).expect("connect");
+        assert!(c.subscribe("probe/0.1").expect("subscribe"));
+        assert!(c.authorize_with("w1", "x").expect("authorize"));
+        let (status, body) = worker_api(&open, "w1", None);
+        assert_eq!(status, "200 OK");
+        assert!(body.contains("\"owed\""));
+        open.stop();
     }
 }
