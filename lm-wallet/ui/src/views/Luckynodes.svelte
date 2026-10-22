@@ -96,11 +96,11 @@
   <div class="card"><div class="k">last claim</div><div class="v">{typeof last.amount === "number" && last.amount > 0 ? `${api.coinU(last.amount)} (epoch ${last.epoch})` : "–"}</div></div>
 </div>
 <div class="muted" style="margin-top:6px">
-  draws are consensus money (doc 06 §6.7): every epoch the chain picks a winner from
-  registered <span class="addr">ln-*</span> identities and any block builder attaches the
-  claim straight to the winner. Registration is an on-chain identity; liveness is an
-  identity update each epoch; the 100 LKYL registration fee comes from the connected
-  node's wallet.
+  Every epoch the chain picks a winner from registered
+  <span class="addr">ln-*</span> identities, and the winning block pays them
+  straight from the prize fund — no pool custody involved. Registration is
+  a one-time on-chain step (100 LKYL fee from the connected node's
+  wallet); staying eligible takes a small update transaction each epoch.
 </div>
 
 <table style="margin-top:14px">

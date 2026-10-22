@@ -86,8 +86,8 @@ export const minerStart = (p: {
   gpu_batch?: number;
   max_power?: number;
 }) => invoke<void>("miner_start", p);
-/** Solo mining against the wallet's own node (GBT templates, claim-aware
- * coinbases, no pool). Requires the node coinbase to pay this wallet —
+/** Solo mining against the wallet's own node (full-reward templates:
+ * jackpot + pot + prize, no pool). Requires the node coinbase to pay this wallet —
  * point it there first or the backend refuses. */
 export const minerSoloStart = (p: {
   device: string;

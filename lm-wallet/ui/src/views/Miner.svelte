@@ -130,7 +130,7 @@
     </label>
     <label class="row" style="align-items:center;gap:6px">
       <input type="radio" name="mode" value="solo" bind:group={mode} disabled={running} style="width:auto" />
-      <span>solo <span class="muted">(your node only; claim-aware templates, rewards straight to your wallet)</span></span>
+      <span>solo <span class="muted">(your node only; full rewards straight to your wallet)</span></span>
     </label>
   </div>
   {#if mode === "pool"}
@@ -149,8 +149,8 @@
   </div>
   {:else}
   <p class="muted">
-    Solo mines getblocktemplate jobs from <strong>Node on this computer</strong> with the
-    same claim-aware coinbases the internal miner builds (jackpot + pot + prize) — no pool
+    Solo mines jobs from <strong>Node on this computer</strong> with the
+    full block reward (jackpot + pot + prize) — no pool
     in the loop. Rewards land wherever the node's coinbase pays: the miner refuses to
     start unless that is one of your wallet addresses.
   </p>

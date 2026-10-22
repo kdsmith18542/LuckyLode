@@ -16,11 +16,11 @@
     ],
     [
       "Can this app's coins win a jackpot or a pot splash?",
-      "Yes, if you mine. Jackpots and pot splashes go to the miner who finds the block (PoW finder only, decided by a pre-committed per-height ticket). Stakers participate in the Luckynode Draw raffle instead.",
+      "Yes, if you mine. Jackpots and pot splashes go to the miner who finds the block (decided by a lottery ticket fixed before the block is mined). Stakers participate in the Luckynode Draw raffle instead.",
     ],
     [
       "What is a luckynode?",
-      "A consensus-draw entrant: register an ln-* LuckyID identity, keep it heartbeating with identity updates, and get tenure-weighted tickets in each epoch's draw funded by the prize fund (doc 06 section 6.7). The embedded service in this app only runs while the app is open; for 24/7 heartbeats run the standalone daemon on an always-on machine.",
+      "A Luckynode Draw entrant: register an ln-* identity once, keep it active with a small update transaction each epoch, and earn tickets weighted by how long you have been registered. Each epoch's draw is paid from the prize fund. The embedded service in this app only runs while the app is open; for 24/7 participation run the standalone daemon on an always-on machine.",
     ],
     [
       "Why does the miner say shares accepted but no blocks?",

@@ -110,7 +110,8 @@
   {/if}
 </div>
 
-<h2>Next block draw (pre-committed)</h2>
+<h2>Next block draw</h2>
+<div class="muted">the ticket is fixed before anyone grinds, so nothing can be withheld</div>
 <div class="card" style="max-width:640px">
   {#if draw?.next}
     <div>height <strong>{draw.next.height}</strong> ·
