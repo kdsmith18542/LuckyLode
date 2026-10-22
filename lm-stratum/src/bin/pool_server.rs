@@ -218,7 +218,7 @@ async function tick(){
   add('pool hashrate 10m', hs(j.pool.hashrate10m));
   add('workers', `${j.pool.online}/${j.pool.workers}`);
   add('shares', j.pool.shares); add('rejects', j.pool.rejects);
-  add('blocks found', j.pool.blocks); add('prize fund', coin((j.jackpot||{}).prizereserve));
+  add('blocks found', j.pool.blocks); add('prize fund', coin((j.jackpot||{}).prize));
   if(j.jackpot){add('jackpot reserve', coin(j.jackpot.reserve)); add('lucky pot', coin(j.jackpot.pot)); add('pot drought', j.jackpot.drought+' / '+(j.jackpot.potdrought||4320)+' blocks');}
   // Faucet/dev reserves and stake supply are NOT pool cards: this page is the
   // miners' view (hashrate, payouts, winnable game layer). Treasury numbers
