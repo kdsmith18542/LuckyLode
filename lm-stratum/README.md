@@ -64,7 +64,9 @@ This is the reference implementation; run it on testnet knowing:
   which is authoritative when set; comparisons are constant-time); the
   dashboard's miner API takes a bearer token, never a query string.
   `--tls-cert/--tls-key` serves stratum over TLS and the miner
-  (`--tls [--tls-ca PEM]`) verifies. Still bind the dashboard to
+  (`--tls [--tls-ca PEM]`) verifies. The official public pool does not
+  serve TLS (its V1 port is plaintext) — the flags are for operators
+  running their own pools. Still bind the dashboard to
   localhost behind a reverse proxy for public deployments.
 - **Claims are automatic.** Jackpot / pot / faucet / dev outputs, plus
   the consensus Luckynode Draw claim, are spliced from the node's

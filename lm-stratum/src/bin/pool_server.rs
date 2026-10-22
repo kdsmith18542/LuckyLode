@@ -118,7 +118,7 @@ footer{margin-top:26px;color:var(--dim);font-size:12px;line-height:1.5}
 <tr><td><code>--max-temp C</code></td><td>pause when the package/GPU sensor reaches C (80 recommended)</td></tr>
 <tr><td><code>--job-timeout S</code></td><td>reconnect if no new job arrives within S seconds</td></tr>
 </tbody></table>
-<p>Stratum endpoint: <code id="stratum">:3346</code> (plaintext; TLS available on request). <span id="gs-worthless">Testnet coins have no value &mdash; this is the public burn-in.</span></p>
+<p>Stratum endpoint: <code id="stratum">:3346</code> (plaintext). <span id="gs-worthless">Testnet coins have no value &mdash; this is the public burn-in.</span></p>
 </section>
 <section id="tab-faq">
 <h2>FAQ</h2>

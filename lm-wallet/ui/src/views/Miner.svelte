@@ -3,7 +3,6 @@
   let cfg = $state<any>({ pool_stratum: "", mining_worker: "" });
   let mode = $state<"pool" | "solo">("pool");
   let device = $state("auto");
-  let useTls = $state(false);
   let threads = $state(4);
   let duty = $state(100);
   let maxTemp = $state(80);
@@ -65,7 +64,6 @@
         await api.minerStart({
           pool: cfg.pool_stratum,
           worker: cfg.mining_worker.trim(),
-          tls: useTls,
           ...knobs,
         });
       }
@@ -136,13 +134,9 @@
     </label>
   </div>
   {#if mode === "pool"}
-  <label for="st">stratum endpoint (host:port)</label>
-  <input id="st" bind:value={cfg.pool_stratum} spellcheck="false" disabled={running} />
-  <label class="row" style="align-items:center;gap:8px">
-    <input type="checkbox" bind:checked={useTls} disabled={running} style="width:auto" />
-    <span class="muted">use TLS (only if the pool serves stratum TLS on this port — the official pool's :3346 is plaintext)</span>
-  </label>
-  <label for="wk">worker name (is the payout address — the pool pays here; blank = your wallet)</label>
+    <label for="st">stratum endpoint (host:port)</label>
+    <input id="st" bind:value={cfg.pool_stratum} spellcheck="false" disabled={running} />
+    <label for="wk">worker name (is the payout address — the pool pays here; blank = your wallet)</label>
   <div class="row">
     <input
       id="wk"

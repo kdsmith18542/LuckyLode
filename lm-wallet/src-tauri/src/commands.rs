@@ -1296,7 +1296,6 @@ pub fn miner_start(
     gpu_device: Option<usize>,
     gpu_batch: Option<usize>,
     max_power: Option<u32>,
-    tls: Option<bool>,
 ) -> Result<(), String> {
     let mut slot = state.miner.lock().expect("miner");
     if let Some(m) = slot.as_ref() {
@@ -1325,7 +1324,6 @@ pub fn miner_start(
         gpu_platform.unwrap_or(0),
         gpu_device.unwrap_or(0),
         gpu_batch.unwrap_or(512),
-        tls.unwrap_or(false),
         max_power.unwrap_or(0),
     )?;
     *slot = Some(m);

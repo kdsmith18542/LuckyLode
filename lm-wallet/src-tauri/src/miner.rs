@@ -9,7 +9,7 @@
 //! so it never crosses a thread boundary).
 
 use lm_miner::gpu::GpuSearcher;
-use lm_miner::pool_loop::{Backend, Event, Outcome, PoolConfig, TlsCfg};
+use lm_miner::pool_loop::{Backend, Event, Outcome, PoolConfig};
 use lm_miner::thermal::MiningPolicy;
 use lm_stratum::node_provider::{assemble_block, build_template, SeedClaim};
 use std::collections::VecDeque;
@@ -84,7 +84,6 @@ pub fn start(
     gpu_platform: usize,
     gpu_device: usize,
     gpu_batch: usize,
-    tls: bool,
     max_power: u32,
 ) -> Result<Miner, String> {
     if worker.trim().is_empty() {
@@ -132,7 +131,6 @@ pub fn start(
                 gpu_platform,
                 gpu_device,
                 gpu_batch,
-                tls,
                 max_power,
             )
         })
@@ -154,7 +152,6 @@ fn run(
     gpu_platform: usize,
     gpu_device: usize,
     gpu_batch: usize,
-    tls: bool,
     max_power: u32,
 ) {
     let policy = match MiningPolicy::new(max_temp, duty.min(100) as i64) {
@@ -229,7 +226,7 @@ fn run(
         // window reconnects pointlessly (seen live). The CLI default 30 s
         // only reconnects when genuinely starved.
         job_timeout_secs: 30,
-        tls: tls.then_some(TlsCfg { server_name: None, ca_pem: None, insecure: false }),
+        tls: None,
         report_secs: 5,
         ..PoolConfig::new(String::new(), String::new())
     };
@@ -786,7 +783,6 @@ mod tests {
             0,
             0,
             512,
-            false,
             0,
         )
         .expect("start");
@@ -952,7 +948,6 @@ lucky-coinbase-maturity=1\n";
             0,
             0,
             512,
-            false,
             0,
         )
         .expect("start");
