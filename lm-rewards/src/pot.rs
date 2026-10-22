@@ -24,13 +24,13 @@
 //!    tier-A (10%) splash. At 0.1% draws a 3-day dry spell is ~6%
 //!    likely; the cap bounds the worst case while leaving 99%+ of events
 //!    genuinely random. Ritual/scheduled events live in the fun layer
-//!    (league pool), not consensus — scheduled consensus payouts are
+//!    (prize fund), not consensus — scheduled consensus payouts are
 //!    ambushable by rented hashrate pointed at a known height.
 //! 5. Jackpot leg is untouched ([`crate::reserve`] formulas, fed with the
 //!    jackpot slice of the levy).
 //!
 //! Conservation (single rule, asserted in tests):
-//! `miner + (reserve − reserve_before) + (pot − pot_before) + to_league
+//! `miner + (reserve − reserve_before) + (pot − pot_before) + to_prize
 //! + to_burn == R + F`.
 //!
 //! All math is `u64` integer with saturating cap/bonus intermediates —
@@ -112,7 +112,7 @@ pub struct PotPayout {
     /// Pot-levy slice burned (pot cap overflow).
     pub to_burn: u64,
     /// Jackpot-levy slice diverted to the league prize pool (cap overflow).
-    pub to_league: u64,
+    pub to_prize: u64,
     /// Jackpot reserve balance after this block.
     pub reserve: u64,
     /// Pot balance after this block.
@@ -147,7 +147,7 @@ pub fn apply_pot_block(
     // Jackpot leg (reserve formulas, jackpot slice of the levy).
     let cap = reserve_cap(base);
     let to_reserve = jackpot_levy.min(cap.saturating_sub(reserve));
-    let to_league = jackpot_levy - to_reserve;
+    let to_prize = jackpot_levy - to_reserve;
     // Invariant: to_reserve <= cap - reserve, so the credit cannot
     // overflow (cap is a saturating multiple of base).
     let credited_reserve = reserve
@@ -155,7 +155,7 @@ pub fn apply_pot_block(
         .expect("invariant: reserve credit stays under the cap");
     let jackpot = if draws.jackpot { jackpot_bonus(base, credited_reserve) } else { 0 };
 
-    // Pot leg (cap-overflow burns instead of feeding the league pool).
+    // Pot leg (cap-overflow burns instead of feeding the prize fund).
     let pcap = pot_cap(base);
     let to_pot = pot_levy.min(pcap.saturating_sub(state.pot));
     let to_burn = pot_levy - to_pot;
@@ -184,7 +184,7 @@ pub fn apply_pot_block(
         to_reserve,
         to_pot,
         to_burn,
-        to_league,
+        to_prize,
         // Invariant: jackpot <= min(5R, credited_reserve) and
         // splash <= credited_pot / 2 — debits cannot underflow.
         reserve: credited_reserve
@@ -217,7 +217,7 @@ mod tests {
         for levy in [0u64, 1, 4, 5, 7, 100, 4_000_000] {
             let p = apply_pot_block(0, PotState::default(), levy * 20, 0, draws(false, 0));
             assert_eq!(p.to_pot + p.to_burn, levy / 5, "levy={levy}");
-            assert_eq!(p.to_reserve + p.to_league, levy - levy / 5, "levy={levy}");
+            assert_eq!(p.to_reserve + p.to_prize, levy - levy / 5, "levy={levy}");
         }
     }
 
@@ -324,7 +324,7 @@ mod tests {
 
     #[test]
     fn every_block_conserves_money() {
-        // miner + Δreserve + Δpot + league + burn == R + F, across states,
+        // miner + Δreserve + Δpot + prize + burn == R + F, across states,
         // tiers, jackpots and pot events.
         let states = [
             (0u64, 0u64, 0u64, 100u64, 2u64),
@@ -344,7 +344,7 @@ mod tests {
                     let outflow = p.miner as u128
                         + p.reserve as u128
                         + p.pot as u128
-                        + p.to_league as u128
+                        + p.to_prize as u128
                         + p.to_burn as u128
                         - reserve as u128
                         - pot as u128;
@@ -409,7 +409,7 @@ mod tests {
             let p = apply_pot_block(reserve, state, 80_000_000, 0, d);
             let inflow = 80_000_000u128;
             let outflow = p.miner as u128 + p.reserve as u128 + p.pot as u128
-                + p.to_league as u128
+                + p.to_prize as u128
                 + p.to_burn as u128
                 - reserve as u128
                 - state.pot as u128;

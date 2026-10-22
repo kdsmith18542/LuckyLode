@@ -113,7 +113,7 @@ impl WorkerStats {
         }
     }
 
-    /// Last-known connect-time agent per miner (device labels for league
+    /// Last-known connect-time agent per miner (device labels for division
     /// resolution). Live authorizes keep this fresh; restored entries let
     /// idle miners keep their declared family instead of falling back to
     /// the rate-implied one. Empty agents are skipped (unlabeled miners

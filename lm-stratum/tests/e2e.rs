@@ -101,7 +101,7 @@ fn full_loop_share_block_jackpot_and_money() {
     assert_eq!(last.payouts.iter().map(|(_, p)| p).sum::<u64>(), last.bonus);
 
     // Whole-pool money reconciliation: every levied unit is bonus paid,
-    // reserve held, league overflow, or (on the mock's full pot) burned —
+    // reserve held, prize inflow, or (on the mock's full pot) burned —
     // nothing created or destroyed. The 4/1 levy split sends a fifth of
     // each levy to the pot leg; the mock chain runs the pot at "full"
     // (u64::MAX), so that fifth burns, exactly as the real rules would
@@ -111,7 +111,7 @@ fn full_loop_share_block_jackpot_and_money() {
     let burned = server.chain_blocks() * (LEVY / 5);
     assert_eq!(
         levied,
-        bonus_total + server.reserve() + server.league_balance() + burned
+        bonus_total + server.reserve() + server.prize_balance() + burned
     );
 
     // The ledger saw alice's work and ranks her.
@@ -216,7 +216,7 @@ fn blocks_credit_payout_balances() {
     );
     // Conservation identity: the lifetime credited coinbase (normal
     // value + jackpot + pot) must equal owed + paid + fees exactly.
-    // League overflow and seed-fund outputs never touch the miner
+    // Prize inflow and seed-fund outputs never touch the miner
     // ledger, so they are not part of either side.
     let (owed, paid, fees) = server.payout_totals();
     assert_eq!(server.credited_total(), owed + paid + fees);

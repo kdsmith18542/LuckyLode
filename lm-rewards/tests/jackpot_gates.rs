@@ -90,7 +90,7 @@ fn gate2_neutrality_exact_schedule() {
         bonus_total += p.bonus as u128;
         // Conservation holds on every single block.
         assert_eq!(
-            p.miner as u128 + p.reserve as u128 + p.to_league as u128 - before as u128,
+            p.miner as u128 + p.reserve as u128 + p.to_prize as u128 - before as u128,
             base as u128
         );
     }
@@ -114,7 +114,7 @@ fn gate2_neutrality_seeded_run_with_fees() {
     let mut reserve = 0u64;
     let mut bonus_total = 0u128;
     let mut levied_total = 0u128;
-    let mut league_total = 0u128;
+    let mut prize_total = 0u128;
     let mut jackpots = 0usize;
     for _ in 0..BLOCKS {
         let jackpot = rng.next() < DRAW_THRESHOLD;
@@ -124,15 +124,15 @@ fn gate2_neutrality_seeded_run_with_fees() {
         reserve = p.reserve;
         levied_total += levy_amount(BASE, FEES) as u128;
         bonus_total += p.bonus as u128;
-        league_total += p.to_league as u128;
+        prize_total += p.to_prize as u128;
         assert_eq!(
-            p.miner as u128 + p.reserve as u128 + p.to_league as u128 - before as u128,
+            p.miner as u128 + p.reserve as u128 + p.to_prize as u128 - before as u128,
             BASE as u128 + FEES as u128,
             "conservation violated"
         );
     }
-    // Exact money reconciliation: every levied unit is bonus, reserve, or league.
-    assert_eq!(levied_total, bonus_total + reserve as u128 + league_total);
+    // Exact money reconciliation: every levied unit is bonus, reserve, or prize.
+    assert_eq!(levied_total, bonus_total + reserve as u128 + prize_total);
     let neutral = 0.05 * BASE as f64 * BLOCKS as f64;
     let ratio = bonus_total as f64 / neutral;
     assert!(
@@ -166,7 +166,7 @@ fn gate3_warmup_reboot_pays_thin_then_recovers() {
         let p = apply_block(reserve, BASE, FEES, false);
         reserve = p.reserve;
         assert_eq!(
-            p.miner as u128 + p.reserve as u128 + p.to_league as u128 - before as u128,
+            p.miner as u128 + p.reserve as u128 + p.to_prize as u128 - before as u128,
             BASE as u128 + FEES as u128
         );
     }

@@ -2,9 +2,9 @@
 //!
 //! - [`streak`]: uptime-streak (+1%/day to +30%), comeback (+10% × 7 days),
 //!   overnight (+5%) share weights — doc 03 §3.4.
-//! - [`league`]: device-class leagues from observed rate — doc 03 §3.3.
+//! - [`league`]: device-class divisions from observed rate — doc 03 §3.3.
 //! - [`ledger`]: PPLNS share log, effective-share aggregation, jackpot
-//!   payouts (via `lm-rewards` sqrt/cap/dust), league-pool splits,
+//!   payouts (via `lm-rewards` sqrt/cap/dust), prize-fund splits,
 //!   seasonal leaderboard.
 //! - [`payout`]: per-miner value accounting (owed/paid/fee), threshold
 //!   selection, integer-exact coin formatting for `sendtoaddress`.
@@ -12,7 +12,7 @@
 //! Nothing here is consensus: all of it runs pool-side and replays
 //! deterministically from the share log plus an explicit timestamp.
 
-pub mod league;
+pub mod division;
 pub mod ledger;
 pub mod payout;
 pub mod streak;

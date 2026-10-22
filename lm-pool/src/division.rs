@@ -1,12 +1,12 @@
-//! Device-family leagues (doc 03 §3.3): phones race phones, not servers.
+//! Device-family divisions (doc 03 §3.3): phones race phones, not servers.
 //!
-//! The league is the miner's *declared* device family, policed by its
+//! The division is the miner's *declared* device family, policed by its
 //! observed rate (doc 03 §3.6 — self-declared + statistically policed).
 //! The declaration rides in the miner agent string on both wires (the V1
 //! subscribe agent; V2 `SetupConnection.vendor` carries the configured
 //! agent verbatim and the server prints `v2 <vendor> <device>`); the pool
 //! reads the family back out of it. Anything hashing at farm scale lands
-//! in the farm league whatever it claims, and a claim the rate
+//! in the farm division whatever it claims, and a claim the rate
 //! contradicts falls back to the rate-implied family — claims only ever
 //! get corrected *up*: a slow desktop stays a desktop, a "phone" at
 //! 50 kH/s does not.
@@ -24,7 +24,7 @@ pub const CPU_CEIL_HPS: u64 = 100_000;
 /// claims (doc 03: farms go elsewhere).
 pub const FARM_MIN_HPS: u64 = 500_000;
 
-/// A miner's league: its declared device family, unless the observed
+/// A miner's division: its declared device family, unless the observed
 /// rate contradicts the claim.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum DeviceFamily {
@@ -73,10 +73,10 @@ pub fn family_of(agent: &str) -> Option<DeviceFamily> {
     }
 }
 
-/// Resolve the league for one miner: the claim stands unless the
+/// Resolve the division for one miner: the claim stands unless the
 /// trailing rate contradicts it.
 #[must_use]
-pub fn league_for(claimed: Option<DeviceFamily>, hps: u64) -> DeviceFamily {
+pub fn division_for(claimed: Option<DeviceFamily>, hps: u64) -> DeviceFamily {
     if hps >= FARM_MIN_HPS {
         return DeviceFamily::Farm;
     }
@@ -127,13 +127,13 @@ mod tests {
     #[test]
     fn claims_stand_but_the_farm_bar_overrides_everything() {
         // Honest miners keep their labels at real rates.
-        assert_eq!(league_for(Some(DeviceFamily::Phone), 1_500), DeviceFamily::Phone);
-        assert_eq!(league_for(Some(DeviceFamily::Cpu), 8_000), DeviceFamily::Cpu);
-        assert_eq!(league_for(Some(DeviceFamily::Gpu), 21_000), DeviceFamily::Gpu);
-        // A farm cannot hide in a small league behind any label.
+        assert_eq!(division_for(Some(DeviceFamily::Phone), 1_500), DeviceFamily::Phone);
+        assert_eq!(division_for(Some(DeviceFamily::Cpu), 8_000), DeviceFamily::Cpu);
+        assert_eq!(division_for(Some(DeviceFamily::Gpu), 21_000), DeviceFamily::Gpu);
+        // A farm cannot hide in a small division behind any label.
         for claimed in [None, Some(DeviceFamily::Phone), Some(DeviceFamily::Cpu), Some(DeviceFamily::Gpu)] {
-            assert_eq!(league_for(claimed, 500_000), DeviceFamily::Farm);
-            assert_eq!(league_for(claimed, u64::MAX), DeviceFamily::Farm);
+            assert_eq!(division_for(claimed, 500_000), DeviceFamily::Farm);
+            assert_eq!(division_for(claimed, u64::MAX), DeviceFamily::Farm);
         }
     }
 
@@ -141,15 +141,15 @@ mod tests {
     fn contradicted_claims_fall_back_to_rate() {
         // A "phone" at 50 kH/s is not a phone; a "cpu" at 200 kH/s is
         // not a CPU miner. Slow miners keep their (harmless) labels.
-        assert_eq!(league_for(Some(DeviceFamily::Phone), 50_000), DeviceFamily::Cpu);
-        assert_eq!(league_for(Some(DeviceFamily::Cpu), 200_000), DeviceFamily::Gpu);
-        assert_eq!(league_for(Some(DeviceFamily::Gpu), 500), DeviceFamily::Gpu);
-        assert_eq!(league_for(Some(DeviceFamily::Cpu), 500), DeviceFamily::Cpu);
+        assert_eq!(division_for(Some(DeviceFamily::Phone), 50_000), DeviceFamily::Cpu);
+        assert_eq!(division_for(Some(DeviceFamily::Cpu), 200_000), DeviceFamily::Gpu);
+        assert_eq!(division_for(Some(DeviceFamily::Gpu), 500), DeviceFamily::Gpu);
+        assert_eq!(division_for(Some(DeviceFamily::Cpu), 500), DeviceFamily::Cpu);
         // Unlabeled miners get the rate-implied family.
-        assert_eq!(league_for(None, 0), DeviceFamily::Phone);
-        assert_eq!(league_for(None, 9_000), DeviceFamily::Phone);
-        assert_eq!(league_for(None, 15_000), DeviceFamily::Cpu);
-        assert_eq!(league_for(None, 499_999), DeviceFamily::Gpu);
+        assert_eq!(division_for(None, 0), DeviceFamily::Phone);
+        assert_eq!(division_for(None, 9_000), DeviceFamily::Phone);
+        assert_eq!(division_for(None, 15_000), DeviceFamily::Cpu);
+        assert_eq!(division_for(None, 499_999), DeviceFamily::Gpu);
     }
 
     #[test]

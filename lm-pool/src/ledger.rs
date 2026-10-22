@@ -1,5 +1,5 @@
 //! Share ledger: PPLNS windows, effective-share aggregation, jackpot and
-//! league-pool payouts, seasonal leaderboard.
+//! prize-fund payouts, seasonal leaderboard.
 //!
 //! Layering: this crate never touches consensus. It reads verified shares,
 //! applies the pool-side fun-layer weights (doc 03 §3.3–§3.4), and calls
@@ -23,7 +23,7 @@
 //! PPLNS window); comeback state replays the full ordered stream so windows
 //! never cut a 7-day boost mid-flight.
 
-use crate::league::{league_for, DeviceFamily};
+use crate::division::{division_for, DeviceFamily};
 use crate::streak::{
     best_streak, current_streak, day_index, streak_bonus_per_mille, Comeback, DAY_SECS,
     OVERNIGHT_PERMILLE,
@@ -32,7 +32,7 @@ use lm_rewards::{split_jackpot, Share};
 use std::collections::{HashMap, VecDeque};
 
 /// Recommended PPLNS window (doc 06 §6.3): trailing ~3 days of shares.
-/// Season/league query window — block credits use
+/// Season/divisions query window — block credits use
 /// [`PPLNS_WINDOW_SHARES`] instead (traditional last-N-shares).
 pub const PPLNS_WINDOW_SECS: u64 = 3 * DAY_SECS;
 /// Traditional PPLNS window: the last N accepted shares network-wide
@@ -40,9 +40,9 @@ pub const PPLNS_WINDOW_SECS: u64 = 3 * DAY_SECS;
 /// time, so a stopped miner ages out once N newer shares arrive — not
 /// after a fixed multi-day tail.
 pub const PPLNS_WINDOW_SHARES: usize = 2_000;
-/// Trailing window for hashrate (hence league) estimation.
+/// Trailing window for hashrate (hence division) estimation.
 pub const CLASS_WINDOW_SECS: u64 = DAY_SECS;
-/// Season view window for league boards (doc 03 §3.3: seasonal
+/// Season view window for division boards (doc 03 §3.3: seasonal
 /// leaderboards per device class). Covered by [`SHARE_RETENTION_SECS`].
 pub const SEASON_WINDOW_SECS: u64 = 30 * DAY_SECS;
 /// Raw-share retention (review finding G): covers the longest supported
@@ -76,11 +76,11 @@ pub struct MinerAgg {
     pub streak_days: u32,
     pub streak_per_mille: u64,
     /// Sustained trailing-24h rate (hashes/second) — the fraud-police
-    /// input for league resolution.
+    /// input for division resolution.
     pub hps: u64,
     /// Rate-implied family (the pool server re-resolves the display
-    /// league with the miner's declared agent via
-    /// [`crate::league::league_for`]).
+    /// division with the miner's declared agent via
+    /// [`crate::division::division_for`]).
     pub class: DeviceFamily,
 }
 
@@ -93,17 +93,17 @@ pub struct BoardEntry {
     pub days_active: u32,
     pub streak_days: u32,
     /// Sustained trailing-24h rate (hashes/second) — the fraud-police
-    /// input for league resolution.
+    /// input for division resolution.
     pub hps: u64,
 }
 
 /// Rank a leaderboard within each device family (doc 03 §3.3: phones
 /// race phones). Ranks are 1-based positions in the board's own order
-/// (effective work desc, miner id asc); families come back in league
+/// (effective work desc, miner id asc); families come back in division
 /// ladder order — Phone, Cpu, Gpu, Farm. Every family is present even
 /// when empty, so callers can render a stable section.
 #[must_use]
-pub fn rank_by_class(board: Vec<BoardEntry>) -> Vec<(DeviceFamily, Vec<(u32, BoardEntry)>)> {
+pub fn rank_by_division(board: Vec<BoardEntry>) -> Vec<(DeviceFamily, Vec<(u32, BoardEntry)>)> {
     const LADDER: [DeviceFamily; 4] = [
         DeviceFamily::Phone,
         DeviceFamily::Cpu,
@@ -142,11 +142,11 @@ pub struct Ledger {
     last_seen: HashMap<String, u64>,
     /// Per-miner comeback state machine, advanced at submit time.
     comeback: HashMap<String, Comeback>,
-    /// NOT persisted here (serde skip): league money round-trips through
-    /// the pool state file's own `league_pool` field, the single money
+    /// NOT persisted here (serde skip): prize money round-trips through
+    /// the pool state file's own `prize_pool` field, the single money
     /// source on load. This snapshot carries share data only.
     #[serde(skip)]
-    league_pool: u64,
+    prize_pool: u64,
 }
 
 /// One retained share plus its submit-time comeback weight (per-mille).
@@ -204,30 +204,30 @@ impl Ledger {
 
     /// League prize-pool balance (base units).
     #[must_use]
-    pub fn league_balance(&self) -> u64 {
-        self.league_pool
+    pub fn prize_balance(&self) -> u64 {
+        self.prize_pool
     }
 
     /// Credit reserve overflow into the league prize pool (doc 06 §6.2).
-    pub fn credit_league(&mut self, amount: u64) {
-        self.league_pool = self.league_pool.saturating_add(amount);
+    pub fn credit_prize(&mut self, amount: u64) {
+        self.prize_pool = self.prize_pool.saturating_add(amount);
     }
 
     /// Spend from the league prize pool (Luckynode Draw payments). Returns
     /// the amount actually debited (≤ `amount`, capped at the balance) —
     /// draws may never spend past what the pool credited, which is what
     /// keeps them from eating miner-owed funds.
-    pub fn debit_league(&mut self, amount: u64) -> u64 {
-        let take = amount.min(self.league_pool);
-        self.league_pool -= take;
+    pub fn debit_prize(&mut self, amount: u64) -> u64 {
+        let take = amount.min(self.prize_pool);
+        self.prize_pool -= take;
         take
     }
 
-    /// Restore a persisted league-pool balance (state-file load). The
+    /// Restore a persisted prize-fund balance (state-file load). The
     /// ledger itself is in-memory (share log); only this balance is
     /// durable, so restarts don't silently reset the prize pool.
-    pub fn set_league_balance(&mut self, balance: u64) {
-        self.league_pool = balance;
+    pub fn set_prize_balance(&mut self, balance: u64) {
+        self.prize_pool = balance;
     }
 
     fn in_window(ts: u64, now_ts: u64, window_secs: u64) -> bool {
@@ -300,8 +300,8 @@ impl Ledger {
             let eff_work = (e.eff_sum * (1000 + streak_pm) as u128 / 1000).min(u64::MAX as u128) as u64;
             // Sustained trailing-24h rate. The ledger resolves the
             // rate-implied family only; the pool server re-resolves the
-            // display league with the miner's declared agent
-            // (league_for): labels decide, this rate polices.
+            // display division with the miner's declared agent
+            // (division_for): labels decide, this rate polices.
             let hps = e.class_work / CLASS_WINDOW_SECS.max(1);
             out.push(MinerAgg {
                 miner,
@@ -311,7 +311,7 @@ impl Ledger {
                 streak_days,
                 streak_per_mille: streak_pm,
                 hps,
-                class: league_for(None, hps),
+                class: division_for(None, hps),
             });
         }
         out.sort_by(|a, b| a.miner.cmp(&b.miner));
@@ -345,7 +345,7 @@ impl Ledger {
     /// Seasonal board over a window: effective work desc, miner id asc.
     /// Farm-class rows are included but flagged via [`DeviceFamily`] —
     /// callers filter prizes with [`DeviceFamily::prize_eligible`]. The
-    /// pool server re-resolves each row's league with the miner's
+    /// pool server re-resolves each row's division with the miner's
     /// declared agent before display.
     pub fn leaderboard(&self, window_secs: u64, now_ts: u64) -> Vec<BoardEntry> {
         let mut rows: Vec<BoardEntry> = self
@@ -368,11 +368,11 @@ impl Ledger {
     /// effective work, using the same whale-blunted split as the jackpot
     /// (sqrt weights + 25% cap once 5+ miners qualify, doc 06 §6.3):
     /// linear pro-rata let a single large rig take almost the whole pool,
-    /// which defeats the "phones race phones" point of leagues. Drains the
+    /// which defeats the "phones race phones" point of divisions. Drains the
     /// balance to 0. Returns empty (balance kept) when there is nothing to
     /// pay or nobody eligible.
-    pub fn split_league_pool(&mut self, window_secs: u64, now_ts: u64) -> Vec<(String, u64)> {
-        let balance = self.league_pool;
+    pub fn split_prize_pool(&mut self, window_secs: u64, now_ts: u64) -> Vec<(String, u64)> {
+        let balance = self.prize_pool;
         if balance == 0 {
             return Vec::new();
         }
@@ -386,7 +386,7 @@ impl Ledger {
             return Vec::new();
         }
         let pays = split_jackpot(&shares, balance);
-        self.league_pool = 0;
+        self.prize_pool = 0;
         pays
     }
 }
@@ -492,25 +492,25 @@ mod tests {
     }
 
     #[test]
-    fn league_split_drains_and_conserves() {
+    fn prize_split_drains_and_conserves() {
         let mut l = Ledger::new();
         l.submit(rec("m1", 9, 3000));
         l.submit(rec("m2", 9, 1000));
-        l.credit_league(1000);
-        let pays = l.split_league_pool(3 * D, 9 * D + 200);
+        l.credit_prize(1000);
+        let pays = l.split_prize_pool(3 * D, 9 * D + 200);
         // Whale-blunted split (sqrt weights): 3x the work pays ~1.7x,
         // not 3x — the linear pro-rata let one big rig take almost all.
         assert_eq!(pays.iter().map(|(_, p)| p).sum::<u64>(), 1000);
         let m1 = pays.iter().find(|(m, _)| m == "m1").expect("m1").1;
         let m2 = pays.iter().find(|(m, _)| m == "m2").expect("m2").1;
         assert!(m1 > m2 && m1 < 750, "sqrt-blunted: m1={m1}, m2={m2}");
-        assert_eq!(l.league_balance(), 0);
+        assert_eq!(l.prize_balance(), 0);
         // Empty pool pays nothing and keeps nothing.
-        assert!(l.split_league_pool(3 * D, 9 * D + 200).is_empty());
+        assert!(l.split_prize_pool(3 * D, 9 * D + 200).is_empty());
     }
 
     #[test]
-    fn league_split_caps_a_dominant_rig() {
+    fn prize_split_caps_a_dominant_rig() {
         let mut l = Ledger::new();
         // One giant rig against four small miners: 5+ miners, so the
         // 25% cap applies — a farm cannot take the pool even if its
@@ -519,36 +519,36 @@ mod tests {
         for m in ["a", "b", "c", "d"] {
             l.submit(rec(m, 9, 10_000));
         }
-        l.credit_league(1_000_000);
-        let pays = l.split_league_pool(3 * D, 9 * D + 200);
+        l.credit_prize(1_000_000);
+        let pays = l.split_prize_pool(3 * D, 9 * D + 200);
         assert_eq!(pays.iter().map(|(_, p)| p).sum::<u64>(), 1_000_000);
         let whale = pays.iter().find(|(m, _)| m == "whale").expect("whale").1;
         assert!(whale <= 250_000, "dominant rig capped at 25%: {whale}");
-        assert_eq!(l.league_balance(), 0);
+        assert_eq!(l.prize_balance(), 0);
     }
 
     #[test]
-    fn league_balance_restores_and_accumulates() {
+    fn prize_balance_restores_and_accumulates() {
         // State-file load restores the durable part; new overflow credits
         // accumulate on top instead of restarting from zero.
         let mut l = Ledger::new();
-        l.set_league_balance(5000);
-        assert_eq!(l.league_balance(), 5000);
-        l.credit_league(1000);
-        assert_eq!(l.league_balance(), 6000);
+        l.set_prize_balance(5000);
+        assert_eq!(l.prize_balance(), 5000);
+        l.credit_prize(1000);
+        assert_eq!(l.prize_balance(), 6000);
     }
 
     #[test]
-    fn debit_league_is_capped_at_the_credited_balance() {
+    fn debit_prize_is_capped_at_the_credited_balance() {
         // Draw payments may only spend what was credited — never past the
         // balance (which would silently eat miner-owed wallet funds).
         let mut l = Ledger::new();
-        l.credit_league(1000);
-        assert_eq!(l.debit_league(400), 400);
-        assert_eq!(l.league_balance(), 600);
-        assert_eq!(l.debit_league(10_000), 600);
-        assert_eq!(l.league_balance(), 0);
-        assert_eq!(l.debit_league(1), 0);
+        l.credit_prize(1000);
+        assert_eq!(l.debit_prize(400), 400);
+        assert_eq!(l.prize_balance(), 600);
+        assert_eq!(l.debit_prize(10_000), 600);
+        assert_eq!(l.prize_balance(), 0);
+        assert_eq!(l.debit_prize(1), 0);
     }
 
     #[test]
@@ -557,8 +557,8 @@ mod tests {
         // 600 MH/s sustained over the class window: farm territory.
         l.submit(ShareRec { miner: "m9".to_string(), ts: 9 * D, work: 600_000_000 * D, overnight: false });
         l.submit(rec("m1", 9, 1000));
-        l.credit_league(1000);
-        let pays = l.split_league_pool(3 * D, 9 * D + 200);
+        l.credit_prize(1000);
+        let pays = l.split_prize_pool(3 * D, 9 * D + 200);
         assert_eq!(pays, vec![("m1".to_string(), 1000)]);
         let board = l.leaderboard(3 * D, 9 * D + 200);
         assert_eq!(board[0].miner, "m9"); // still ranked…
@@ -664,7 +664,7 @@ mod tests {
     }
 
     #[test]
-    fn rank_by_class_numbers_within_their_league() {
+    fn rank_by_division_numbers_within_their_league() {
         let entry = |miner: &str, class: DeviceFamily, work: u64| BoardEntry {
             miner: miner.to_string(),
             class,
@@ -680,7 +680,7 @@ mod tests {
             entry("f1", DeviceFamily::Farm, 999),
             entry("c1", DeviceFamily::Cpu, 10),
         ];
-        let ranked = rank_by_class(board);
+        let ranked = rank_by_division(board);
         // Ladder order, every family present.
         assert_eq!(ranked.len(), 4);
         assert_eq!(ranked[0].0, DeviceFamily::Phone);
@@ -695,7 +695,7 @@ mod tests {
         assert_eq!((ranked[1].1[0].0, ranked[1].1[0].1.miner.as_str()), (1, "c1"));
         assert_eq!((ranked[3].1[0].0, ranked[3].1[0].1.miner.as_str()), (1, "f1"));
         // Empty families stay present so callers render stable sections.
-        assert!(rank_by_class(Vec::new())[2].1.is_empty());
+        assert!(rank_by_division(Vec::new())[2].1.is_empty());
     }
 }
 

@@ -17,7 +17,7 @@ the *real* money rules. No async runtime — std threads only.
 - `server` — `spawn_server(provider, "127.0.0.1:0")`: per-connection
   threads, per-connection **vardiff** (20 s/share target, 8-share window,
   4×-clamped steps, conn-local jobs at `clean=false`), job broadcast on
-  template change, ledger shares, league-pool credits, jackpot splits,
+  template change, ledger shares, prize-fund credits, jackpot splits,
   block records, counters.
 - `client` — blocking client (id-matched responses, buffered notifies).
 
@@ -56,7 +56,7 @@ This is the reference implementation; run it on testnet knowing:
   miner-owed coinbase alongside owed/paid/fees, so the conservation
   identity `coinbases == owed + paid + fees` is checkable live
   (`coinbases` = normal value + jackpot bonuses + pot splashes over all
-  accepted blocks; league overflow and seed-fund faucet/dev outputs flow
+  accepted blocks; prize inflow and seed-fund faucet/dev outputs flow
   through their own ledgers, never the miner one).
 - **Auth and TLS are real but minimal.** Stratum takes a shared
   `--pool-password` (or a per-worker token map via `--workers-file`,
@@ -96,4 +96,4 @@ This is the reference implementation; run it on testnet knowing:
 Shipped: state-file persistence, the payout processor, pool auth
 (--pool-password / --workers-file), V2 multi-channel, and interop against
 `codec_sv2`'s Encoder/Decoder. Remaining follow-ups: a V2-speaking
-`lm-miner pool` mode, attestation-gated league entry.
+`lm-miner pool` mode, attestation-gated division entry.

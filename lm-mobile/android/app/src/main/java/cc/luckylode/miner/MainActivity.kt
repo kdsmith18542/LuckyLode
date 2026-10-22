@@ -30,7 +30,7 @@ import java.util.concurrent.atomic.AtomicReference
  * from the mining loop (always truthful — hashrate, shares, session),
  * device tiles (battery temp/level/charging), and pool tiles fetched
  * from the official pool's public API (this worker's pool-side shares,
- * jackpot/pot reserve, league pool, latest block). Battery honesty is
+ * jackpot/pot reserve, prize fund, latest block). Battery honesty is
  * stated, never promised around (doc 07 §7.4).
  *
  * The advanced section exposes the §7.2 thresholds; the service reads
@@ -346,11 +346,11 @@ class MainActivity : Activity() {
                     } else {
                         sb.append(" · no active streak")
                     }
-                    // League rank tile (doc 07 §7.4): the worker's season
+                    // Division rank tile (doc 07 §7.4): the worker's season
                     // rank inside its device class.
-                    val cls = me.optString("league_class", "")
+                    val cls = me.optString("division_class", "")
                     if (cls.isNotEmpty()) {
-                        sb.append(" · league $cls #${me.optInt("league_rank")}/${me.optInt("league_size")}")
+                        sb.append(" · division $cls #${me.optInt("division_rank")}/${me.optInt("division_size")}")
                     }
                     if (me.optBoolean("attested", false)) sb.append(" · attested")
                     sb.append("\n")

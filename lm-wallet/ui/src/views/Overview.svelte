@@ -308,7 +308,7 @@
 <h2>Pool blocks (recent)</h2>
 <div class="muted">source pool — set in Settings → Node → pool URL</div>
 <table>
-  <thead><tr><th>height</th><th>finder</th><th>block reward</th><th>jackpot bonus</th><th>pot splash</th><th>league inflow</th></tr></thead>
+  <thead><tr><th>height</th><th>finder</th><th>block reward</th><th>jackpot bonus</th><th>pot splash</th><th>prize inflow</th></tr></thead>
   <tbody>
     {#each recent as b}
       <tr>
@@ -317,7 +317,7 @@
         <td>{api.coinU(b.value)}</td>
         <td>{api.coinU(b.bonus)}</td>
         <td>{api.coinU(b.pot)}</td>
-        <td>{api.coinU(b.league_overflow)}</td>
+        <td>{api.coinU(b.prize_inflow)}</td>
       </tr>
     {/each}
     {#if recent.length === 0}<tr><td colspan="6" class="muted">no blocks indexed yet</td></tr>{/if}

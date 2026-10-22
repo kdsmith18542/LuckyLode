@@ -54,7 +54,7 @@ impl TemplateProvider for GatedProvider {
             height: 1,
             pool_target: [0xffu8; 32],
             net_target: [0x00u8; 32],
-            league: 0,
+            prize: 0,
         }
     }
     fn submit_block(&mut self, _header: &[u8], _height: u64, _nonce: u64) -> BlockOutcome {
@@ -66,7 +66,7 @@ impl TemplateProvider for GatedProvider {
             pot: 0,
             faucet: 0,
             dev: 0,
-            league_overflow: 0,
+            prize_inflow: 0,
             reserve: 0,
             coinbase: 0,
         }
@@ -147,7 +147,7 @@ fn background_refresh_publishes_new_templates() {
                 height: 1 + n / 5,
                 pool_target: [0xffu8; 32],
                 net_target: [0x00u8; 32],
-                league: 0,
+                prize: 0,
             }
         }
     fn submit_block(&mut self, _h: &[u8], _ht: u64, _n: u64) -> BlockOutcome {
@@ -159,7 +159,7 @@ fn background_refresh_publishes_new_templates() {
             pot: 0,
             faucet: 0,
             dev: 0,
-            league_overflow: 0,
+            prize_inflow: 0,
             reserve: 0,
             coinbase: 0,
         }
@@ -200,13 +200,13 @@ fn background_refresh_publishes_new_templates() {
     server.stop();
 }
 
-/// League overflow on externally-found blocks: the pool must credit the
+/// Prize inflow on externally-found blocks: the pool must credit the
 /// node's per-height advisory for tips it did not mine (staker/peer
 /// finds). Before the fix only the accept path credited, so every
 /// externally-found block's overflow leaked and Luckynode Draw budgets
 /// understated the chain.
 #[test]
-fn external_finds_credit_league_without_pool_submit() {
+fn external_finds_credit_prize_without_pool_submit() {
     struct ExternalChain {
         tip: Arc<Mutex<u64>>,
         per_height: u64,
@@ -220,7 +220,7 @@ fn external_finds_credit_league_without_pool_submit() {
                 height: tip + 1,
                 pool_target: [0xffu8; 32],
                 net_target: [0x00u8; 32],
-                league: self.per_height,
+                prize: self.per_height,
             }
         }
         fn submit_block(&mut self, _h: &[u8], _ht: u64, _n: u64) -> BlockOutcome {
@@ -249,18 +249,18 @@ fn external_finds_credit_league_without_pool_submit() {
         let want = PER_HEIGHT * step;
         let deadline = std::time::Instant::now() + Duration::from_secs(15);
         loop {
-            if server.league_balance() == want {
+            if server.prize_balance() == want {
                 break;
             }
             assert!(
                 std::time::Instant::now() < deadline,
                 "tip {} never credited: balance {} != {want}",
                 100 + step,
-                server.league_balance()
+                server.prize_balance()
             );
             std::thread::sleep(Duration::from_millis(50));
         }
     }
-    assert_eq!(server.league_balance(), PER_HEIGHT * 3);
+    assert_eq!(server.prize_balance(), PER_HEIGHT * 3);
     server.stop();
 }

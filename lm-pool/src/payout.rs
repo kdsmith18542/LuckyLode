@@ -2,7 +2,7 @@
 //!
 //! The pool's node wallet receives block coinbases; this ledger tracks
 //! what each miner earned — normal block value pro-rata by PPLNS weight,
-//! plus already-split distributions (jackpot/pot/league) credited
+//! plus already-split distributions (jackpot/pot/prize) credited
 //! verbatim — minus a pool fee, until a payout threshold trips and the
 //! payout loop sends via `sendtoaddress` and calls [`PayoutLedger::record_paid`].
 //!
@@ -77,7 +77,7 @@ impl PayoutLedger {
         }
     }
 
-    /// Credit an already-split distribution verbatim (jackpot/pot/league
+    /// Credit an already-split distribution verbatim (jackpot/pot/prize
     /// splits from the pool's own rules).
     pub fn credit_split(&mut self, payouts: &[(String, u64)]) {
         for (id, amount) in payouts {

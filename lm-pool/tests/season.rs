@@ -3,12 +3,12 @@
 //! A 30-day season with a phone loyalist (daily overnight shares at a
 //! phone-class ~1.5 kH/s), a weekend cpu warrior (sporadic, 10x rate),
 //! a comeback miner (15-day gap then return), and a farm. Exercises
-//! streak accrual + reset, comeback boost, overnight weighting, league
-//! classification, jackpot conservation, league-pool drain, and audit
+//! streak accrual + reset, comeback boost, overnight weighting, division
+//! classification, jackpot conservation, prize-fund drain, and audit
 //! replay — the whole doc 03 §3.3–§3.4 + doc 06 §6.3 path in one
 //! deterministic story.
 
-use lm_pool::league::DeviceFamily;
+use lm_pool::division::DeviceFamily;
 use lm_pool::ledger::{Ledger, ShareRec, PPLNS_WINDOW_SECS};
 
 const D: u64 = 86_400;
@@ -117,15 +117,15 @@ fn leaderboard_ranks_and_flags_farm() {
     assert!(board[0].eff_work > board[1].eff_work);
     assert!(board[1].eff_work > board[2].eff_work);
 
-    // League pool: farm excluded, phone loyalist + small fry split it
+    // Prize fund: farm excluded, phone loyalist + small fry split it
     // all — sqrt-blunted (the loyalist takes ~99.9%, not ~100%).
-    l.credit_league(1_000_000);
-    let pays = l.split_league_pool(PPLNS_WINDOW_SECS, now);
+    l.credit_prize(1_000_000);
+    let pays = l.split_prize_pool(PPLNS_WINDOW_SECS, now);
     assert_eq!(pays.iter().map(|(_, p)| p).sum::<u64>(), 1_000_000);
     assert!(pays.iter().all(|(m, _)| m != "m9"));
     assert_eq!(pays[0].0, "m1");
     assert!(pays[0].1 >= 999_000, "loyalist dominates: {:?}", pays[0]);
-    assert_eq!(l.league_balance(), 0);
+    assert_eq!(l.prize_balance(), 0);
 }
 
 #[test]

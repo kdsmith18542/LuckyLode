@@ -200,7 +200,7 @@ fn run(
         Backend::Gpu(g) => format!("gpu: {}", g.name()),
         Backend::Cpu { threads } => format!("cpu: {threads} threads"),
     };
-    // The agent carries the device family for pool-side league labels
+    // The agent carries the device family for pool-side division labels
     // (doc 03 §3.6): the wallet declares what it actually mines on.
     let agent = match &backend {
         Backend::Gpu(_) => "lucky-lode-wallet/0.1 opencl",

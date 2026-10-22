@@ -95,11 +95,11 @@ footer{margin-top:26px;color:var(--dim);font-size:12px;line-height:1.5}
 <h2>Workers</h2>
 <input type="search" id="wfilter" placeholder="filter by worker / payout address (Enter looks up idle workers)">
 <div id="wlook" style="color:var(--dim);font-size:12px;margin:6px 0"></div>
-<table><thead><tr><th></th><th>worker</th><th>device</th><th>60s</th><th>10m</th><th>1h</th><th>24h</th><th>shares</th><th>streak</th><th>league</th><th>rejects</th><th>last share</th></tr></thead><tbody id="workers"></tbody></table>
-<h2>League boards <span style="text-transform:none">(season = 30 days, effective work; declared device family, policed by rate)</span></h2>
-<div id="league"><span style="color:var(--dim)">no ranked workers yet</span></div>
+<table><thead><tr><th></th><th>worker</th><th>device</th><th>60s</th><th>10m</th><th>1h</th><th>24h</th><th>shares</th><th>streak</th><th>division</th><th>rejects</th><th>last share</th></tr></thead><tbody id="workers"></tbody></table>
+<h2>Division boards <span style="text-transform:none">(season = 30 days, effective work; declared device family, policed by rate)</span></h2>
+<div id="divisions"><span style="color:var(--dim)">no ranked workers yet</span></div>
 <h2>Blocks</h2>
-<table><thead><tr><th>height</th><th>finder</th><th>block reward</th><th>jackpot bonus</th><th>pot splash</th><th>league inflow</th><th>pplns payouts</th></tr></thead><tbody id="blocks"></tbody></table>
+<table><thead><tr><th>height</th><th>finder</th><th>block reward</th><th>jackpot bonus</th><th>pot splash</th><th>prize inflow</th><th>pplns payouts</th></tr></thead><tbody id="blocks"></tbody></table>
 <h2>Balances due</h2>
 <table><thead><tr><th>worker</th><th>owed</th><th>paid</th></tr></thead><tbody id="balances"></tbody></table><div class="muted" id="balances-foot"></div>
 <h2>Payouts</h2>
@@ -143,9 +143,9 @@ footer{margin-top:26px;color:var(--dim);font-size:12px;line-height:1.5}
 <h2>API</h2>
 <p>Endpoints are relative to this page's path, so they work behind <code>/pool/</code> too:</p>
 <table><thead><tr><th>endpoint</th><th>returns</th></tr></thead><tbody>
-<tr><td><code>GET api/stats</code></td><td>pool, workers, blocks, balances, payouts, game state, league boards (JSON)</td></tr>
-<tr><td><code>GET api/league</code></td><td>season league boards per device class (30-day effective work; ranks, streaks, attestation flags)</td></tr>
-<tr><td><code>GET api/worker/&lt;miner&gt;</code></td><td>one worker's public row, alive or idle (streak + league rank + owed/paid survive workerstats age-out; 404 when never seen)</td></tr>
+<tr><td><code>GET api/stats</code></td><td>pool, workers, blocks, balances, payouts, game state, division boards (JSON)</td></tr>
+<tr><td><code>GET api/divisions</code></td><td>season division boards per device class (30-day effective work; ranks, streaks, attestation flags)</td></tr>
+<tr><td><code>GET api/worker/&lt;miner&gt;</code></td><td>one worker's public row, alive or idle (streak + division rank + owed/paid survive workerstats age-out; 404 when never seen)</td></tr>
 <tr><td><code>GET api/luckynodes</code></td><td>luckynode registry + draw state</td></tr>
 <tr><td><code>GET api/luckynode/pending</code></td><td>draws/events awaiting cosigns</td></tr>
 <tr><td><code>POST api/luckynode/register</code></td><td>register a luckynode: <code>{id,address,pubkey,msg,sig,idsig,ts[,bond_utxo]}</code> (msg must rebuild canonically; sig proves payout-address ownership via node <code>verifymessage</code>; <code>idsig</code> is the ID-key ed25519 signature over the id/address/bond binding and is required — without it anyone could re-register a live ID and divert its draws)</td></tr>
@@ -153,7 +153,7 @@ footer{margin-top:26px;color:var(--dim);font-size:12px;line-height:1.5}
 <tr><td><code>POST api/luckynode/notarize</code></td><td>cosign a draw: <code>{draw_id,id,sig}</code></td></tr>
 <tr><td><code>GET api/miner</code> with <code>Authorization: Bearer &lt;token&gt;</code></td><td>your own row + payout settings (worker-token auth — the token is a header, never a URL)</td></tr>
 <tr><td><code>POST api/payout/settings</code></td><td>set/clear your payout address + threshold: <code>{token,address,threshold}</code></td></tr>
-<tr><td><code>POST api/attest</code></td><td>record a device-attestation verdict (doc 03 §3.6): <code>{worker,provider:"self",detail?,token?}</code> — verdict-only, shown on league boards; a real Play Integrity verifier replaces the self-labeled stub at mainnet</td></tr>
+<tr><td><code>POST api/attest</code></td><td>record a device-attestation verdict (doc 03 §3.6): <code>{worker,provider:"self",detail?,token?}</code> — verdict-only, shown on division boards; a real Play Integrity verifier replaces the self-labeled stub at mainnet</td></tr>
 </tbody></table>
 <p>The dashboard polls <code>api/stats</code> every 5 s; miners, bots and dashboards are welcome to do the same.</p>
 </section>
@@ -213,7 +213,7 @@ wf.addEventListener('keydown',async e=>{
     const r=await fetch('api/worker/'+encodeURIComponent(q),{cache:'no-store'});
     if(!r.ok){box.textContent=q+': never seen on this pool';return;}
     const w=await r.json();
-    box.textContent=`${w.name||w.miner} · ${w.online?'online':'idle'+(w.last_seen?' (last seen '+ago(w.last_seen)+')':'')} · streak ${w.streak||0}d (best ${w.best_streak||0}) · ${w.league_class?('league '+w.league_class+' #'+w.league_rank+'/'+w.league_size):'unranked this season'} · owed ${coin(w.owed)} · paid ${coin(w.paid)}`;
+    box.textContent=`${w.name||w.miner} · ${w.online?'online':'idle'+(w.last_seen?' (last seen '+ago(w.last_seen)+')':'')} · streak ${w.streak||0}d (best ${w.best_streak||0}) · ${w.division_class?('division '+w.division_class+' #'+w.division_rank+'/'+w.division_size):'unranked this season'} · owed ${coin(w.owed)} · paid ${coin(w.paid)}`;
   }catch(err){box.textContent='lookup failed: '+err;}
 });
 async function tick(){
@@ -225,7 +225,7 @@ async function tick(){
   add('pool hashrate 10m', hs(j.pool.hashrate10m));
   add('workers', `${j.pool.online}/${j.pool.workers}`);
   add('shares', j.pool.shares); add('rejects', j.pool.rejects);
-  add('blocks found', j.pool.blocks); add('league pool', coin(j.pool.league_pool));
+  add('blocks found', j.pool.blocks); add('prize fund', coin(j.pool.prize_pool));
   if(j.jackpot){add('jackpot reserve', coin(j.jackpot.reserve)); add('lucky pot', coin(j.jackpot.pot)); add('pot drought', j.jackpot.drought+' / '+(j.jackpot.potdrought||4320)+' blocks');}
   // Faucet/dev reserves and stake supply are NOT pool cards: this page is the
   // miners' view (hashrate, payouts, winnable game layer). Treasury numbers
@@ -252,11 +252,11 @@ async function tick(){
     : '';
   document.getElementById('updated').textContent='updated '+new Date().toLocaleTimeString();
   document.getElementById('workers').innerHTML=(j.workers||[]).map(w=>
-    `<tr class="${w.online?'':'off'}"><td><span class="dot"></span></td><td>${esc(w.name||w.miner)}</td><td>${esc(device(w.agent))}</td><td>${hs(w.rate60)}</td><td>${hs(w.rate10m)}</td><td>${hs(w.rate1h)}</td><td>${hs(w.rate24h)}</td><td>${esc(w.shares)}</td><td>${w.streak?`${esc(w.streak)}d${w.best_streak>w.streak?` <span class="dim">(best ${esc(w.best_streak)})</span>`:''}`:'—'}</td><td>${w.league_class?esc(w.league_class)+' #'+esc(w.league_rank)+'/'+esc(w.league_size)+(w.attested?' <span class="badge">attested</span>':''):'—'}</td><td>${esc(w.rejects)}</td><td>${ago(w.last_seen)}</td></tr>`).join('')
+    `<tr class="${w.online?'':'off'}"><td><span class="dot"></span></td><td>${esc(w.name||w.miner)}</td><td>${esc(device(w.agent))}</td><td>${hs(w.rate60)}</td><td>${hs(w.rate10m)}</td><td>${hs(w.rate1h)}</td><td>${hs(w.rate24h)}</td><td>${esc(w.shares)}</td><td>${w.streak?`${esc(w.streak)}d${w.best_streak>w.streak?` <span class="dim">(best ${esc(w.best_streak)})</span>`:''}`:'—'}</td><td>${w.division_class?esc(w.division_class)+' #'+esc(w.division_rank)+'/'+esc(w.division_size)+(w.attested?' <span class="badge">attested</span>':''):'—'}</td><td>${esc(w.rejects)}</td><td>${ago(w.last_seen)}</td></tr>`).join('')
     || '<tr><td colspan="11">no workers yet</td></tr>';
   applyWF();
-  const league=(j.league&&j.league.boards)||[];
-  document.getElementById('league').innerHTML=league.map(b=>{
+  const divisions=(j.divisions&&j.divisions.boards)||[];
+  document.getElementById('divisions').innerHTML=divisions.map(b=>{
     const rows=(b.entries||[]).map(e=>
       `<tr><td>${esc(e.rank)}</td><td>${esc(e.name||e.miner)}</td><td>${num(e.eff_work)}</td><td>${esc(e.days_active)}d</td><td>${e.streak?esc(e.streak)+'d':'—'}</td><td>${e.attested?esc((e.attestation&&e.attestation.provider)||'attested'):'—'}</td></tr>`).join('')
       || '<tr><td colspan="6">no qualifying workers this season</td></tr>';
@@ -264,7 +264,7 @@ async function tick(){
       `<table><thead><tr><th>rank</th><th>worker</th><th>eff. work</th><th>days</th><th>streak</th><th>device attest</th></tr></thead><tbody>${rows}</tbody></table>`;
   }).join('')||'<span style="color:var(--dim)">no ranked workers yet</span>';
   document.getElementById('blocks').innerHTML=(j.last_blocks||[]).map(b=>
-    `<tr><td>${esc(b.height)}</td><td>${esc(b.finder_name||b.finder)}</td><td>${coin(b.value)}</td><td>${b.bonus>0?coin(b.bonus):'–'}</td><td>${b.pot>0?coin(b.pot):'–'}</td><td>${b.league_overflow>0?coin(b.league_overflow):'–'}</td><td>${b.pplns_total>0?coin(b.pplns_total)+' ('+esc(b.pplns_count)+')':'–'}</td></tr>`).join('')
+    `<tr><td>${esc(b.height)}</td><td>${esc(b.finder_name||b.finder)}</td><td>${coin(b.value)}</td><td>${b.bonus>0?coin(b.bonus):'–'}</td><td>${b.pot>0?coin(b.pot):'–'}</td><td>${b.prize_inflow>0?coin(b.prize_inflow):'–'}</td><td>${b.pplns_total>0?coin(b.pplns_total)+' ('+esc(b.pplns_count)+')':'–'}</td></tr>`).join('')
     || '<tr><td colspan="7">no blocks yet</td></tr>';
   document.getElementById('balances').innerHTML=(j.balances||[]).map(b=>
     `<tr><td>${esc(b.name||b.miner)}</td><td>${coin(b.owed)}</td><td>${coin(b.paid)}</td></tr>`).join('')
@@ -355,9 +355,9 @@ fn stats_json<P: TemplateProvider + 'static>(
         .into_iter()
         .map(|s| (s.miner.clone(), s))
         .collect();
-    // Seasonal league boards (doc 03 §3.3): per-family ranks over the
+    // Seasonal division boards (doc 03 §3.3): per-family ranks over the
     // 30-day season window, plus the per-worker rank shortcut the app
-    // tiles read. The league is the miner's declared device family from
+    // tiles read. The division is the miner's declared device family from
     // its connect-time agent string, policed by the trailing rate —
     // labels decide, hashrate polices (doc 03 §3.6). The agent map covers
     // live AND restored (idle) miners, so an offline worker keeps its
@@ -368,7 +368,7 @@ fn stats_json<P: TemplateProvider + 'static>(
         .iter()
         .map(|(m, a)| (m.as_str(), a.as_str()))
         .collect();
-    let boards = lm_pool::ledger::rank_by_class(resolve_leagues(
+    let boards = lm_pool::ledger::rank_by_division(resolve_divisions(
         server.leaderboard(lm_pool::ledger::SEASON_WINDOW_SECS, now),
         &agent_map,
     ));
@@ -403,7 +403,7 @@ fn stats_json<P: TemplateProvider + 'static>(
                 Some(s) => (s.days_active, s.streak_days, s.best_streak_days),
                 None => (0, 0, 0),
             };
-            // League rank within the worker's device class (null when the
+            // Division rank within the worker's device family (null when the
             // worker has no in-window shares).
             let lg = rank_map.get(&w.miner);
             let att = fresh_attestation(&w.miner);
@@ -418,9 +418,9 @@ fn stats_json<P: TemplateProvider + 'static>(
                 "days_active": days,
                 "streak": streak,
                 "best_streak": best,
-                "league_class": lg.map(|l| l.0.clone()),
-                "league_rank": lg.map(|l| l.1),
-                "league_size": lg.map(|l| l.2),
+                "division_class": lg.map(|l| l.0.clone()),
+                "division_rank": lg.map(|l| l.1),
+                "division_size": lg.map(|l| l.2),
                 "attested": att.is_some(),
                 "attestation": att.map(|a| serde_json::json!({
                     "provider": a.provider,
@@ -482,7 +482,7 @@ fn stats_json<P: TemplateProvider + 'static>(
                 "bonus": b.bonus,
                 "pot": b.pot,
                 "value": b.value,
-                "league_overflow": b.league_overflow,
+                "prize_inflow": b.prize_inflow,
                 "faucet": b.faucet,
                 "dev": b.dev,
                 "pplns_total": total,
@@ -506,7 +506,7 @@ fn stats_json<P: TemplateProvider + 'static>(
             "rejects": s.rejects,
             "blocks": s.blocks,
             "block_rejects": s.block_rejects,
-            "league_pool": server.league_balance(),
+            "prize_pool": server.prize_balance(),
             "workers": workers.len(),
             "online": online,
             "hashrate60": totals[0],
@@ -524,14 +524,16 @@ fn stats_json<P: TemplateProvider + 'static>(
         },
         "payouts": payouts_json,
         "last_blocks": last,
-        "league": {
+        "divisions": {
             "window_secs": lm_pool::ledger::SEASON_WINDOW_SECS,
             "window_days": lm_pool::ledger::SEASON_WINDOW_SECS / 86_400,
-            "boards": league_boards_json(&boards, &names_map, &attestations, now, 20),
-            // Per-height inflow credited, including staker/peer finds the
-            // pool did not mine (the explorer's per-block game view).
+            "boards": division_boards_json(&boards, &names_map, &attestations, now, 20),
+        },
+        // Per-height prize inflow credited, including staker/peer finds
+        // the pool did not mine (the explorer's per-block game view).
+        "prize": {
             "credits": server
-                .league_credits()
+                .prize_credits()
                 .into_iter()
                 .map(|(height, amount)| serde_json::json!({"height": height, "amount": amount}))
                 .collect::<Vec<_>>(),
@@ -606,11 +608,11 @@ fn stats_json<P: TemplateProvider + 'static>(
     obj.to_string()
 }
 
-/// Resolve display leagues: the miner's declared device family from its
+/// Resolve display divisions: the miner's declared device family from its
 /// connect-time agent string decides, the trailing-24h rate polices
 /// (doc 03 §3.6 — self-declared + statistically policed). Unlabeled or
 /// contradicted miners fall back to the rate-implied family.
-fn resolve_leagues(
+fn resolve_divisions(
     board: Vec<lm_pool::ledger::BoardEntry>,
     agents: &HashMap<&str, &str>,
 ) -> Vec<lm_pool::ledger::BoardEntry> {
@@ -618,17 +620,17 @@ fn resolve_leagues(
         .into_iter()
         .map(|mut e| {
             let agent = agents.get(e.miner.as_str()).copied().unwrap_or("");
-            e.class = lm_pool::league::league_for(lm_pool::league::family_of(agent), e.hps);
+            e.class = lm_pool::division::division_for(lm_pool::division::family_of(agent), e.hps);
             e
         })
         .collect()
 }
 
-/// Per-family league boards as JSON (doc 03 §3.3: phones race phones).
+/// Per-family division boards as JSON (doc 03 §3.3: phones race phones).
 /// `cap` limits entries per family (0 = uncapped). Fresh attestation
 /// verdicts decorate rows (`attested` + the verdict's provider/time).
-fn league_boards_json(
-    boards: &[(lm_pool::league::DeviceFamily, Vec<(u32, lm_pool::ledger::BoardEntry)>)],
+fn division_boards_json(
+    boards: &[(lm_pool::division::DeviceFamily, Vec<(u32, lm_pool::ledger::BoardEntry)>)],
     names: &HashMap<String, String>,
     attestations: &lm_stratum::server::Attestations,
     now: u64,
@@ -669,10 +671,10 @@ fn league_boards_json(
         .collect()
 }
 
-/// `GET /api/league` — the full seasonal league boards (all families, up
-/// to 100 entries each), same shape as the `league` object on
+/// `GET /api/divisions` — the full seasonal division boards (all families, up
+/// to 100 entries each), same shape as the `divisions` object on
 /// `/api/stats`.
-fn league_json<P: TemplateProvider + 'static>(server: &RunningServer<P>) -> String {
+fn divisions_json<P: TemplateProvider + 'static>(server: &RunningServer<P>) -> String {
     let now = now_secs();
     // Live + restored agents: idle miners keep their declared family.
     let stored_agents = server.agents();
@@ -680,7 +682,7 @@ fn league_json<P: TemplateProvider + 'static>(server: &RunningServer<P>) -> Stri
         .iter()
         .map(|(m, a)| (m.as_str(), a.as_str()))
         .collect();
-    let boards = lm_pool::ledger::rank_by_class(resolve_leagues(
+    let boards = lm_pool::ledger::rank_by_division(resolve_divisions(
         server.leaderboard(lm_pool::ledger::SEASON_WINDOW_SECS, now),
         &agent_map,
     ));
@@ -689,7 +691,7 @@ fn league_json<P: TemplateProvider + 'static>(server: &RunningServer<P>) -> Stri
     serde_json::json!({
         "window_secs": lm_pool::ledger::SEASON_WINDOW_SECS,
         "window_days": lm_pool::ledger::SEASON_WINDOW_SECS / 86_400,
-        "boards": league_boards_json(&boards, &names_map, &attestations, now, 100),
+        "boards": division_boards_json(&boards, &names_map, &attestations, now, 100),
     })
     .to_string()
 }
@@ -737,9 +739,9 @@ fn worker_row_json(
         "days_active": days,
         "streak": streak,
         "best_streak": best,
-        "league_class": lg.map(|l| l.0.clone()),
-        "league_rank": lg.map(|l| l.1),
-        "league_size": lg.map(|l| l.2),
+        "division_class": lg.map(|l| l.0.clone()),
+        "division_rank": lg.map(|l| l.1),
+        "division_size": lg.map(|l| l.2),
         "owed": owed,
         "paid": paid,
         "attested": attestation.is_some(),
@@ -752,7 +754,7 @@ fn worker_row_json(
 }
 
 /// `GET /api/worker/<miner>` — the public row for one worker, alive or
-/// idle: live rates when connected, streak + league rank + balances
+/// idle: live rates when connected, streak + division rank + balances
 /// from the ledger either way (streaks survive retention pruning and
 /// workerstats age-out). The name is a URL path segment (percent-encoded;
 /// capped at 128 chars); worker names are public (they already appear on
@@ -782,7 +784,7 @@ fn worker_api<P: TemplateProvider + 'static>(
         .iter()
         .map(|(m, a)| (m.as_str(), a.as_str()))
         .collect();
-    let boards = lm_pool::ledger::rank_by_class(resolve_leagues(
+    let boards = lm_pool::ledger::rank_by_division(resolve_divisions(
         server.leaderboard(lm_pool::ledger::SEASON_WINDOW_SECS, now),
         &agent_map,
     ));
@@ -1021,7 +1023,7 @@ fn http_reply<P: TemplateProvider + 'static>(
             stats_json(server, node, &ctx.mode, ctx),
         ),
         ("GET", "/api/luckynodes") => ("200 OK", "application/json", luckynode_list(ctx)),
-        ("GET", "/api/league") => ("200 OK", "application/json", league_json(server)),
+        ("GET", "/api/divisions") => ("200 OK", "application/json", divisions_json(server)),
         ("GET", "/api/luckynode/pending") => {
             ("200 OK", "application/json", luckynode_pending(ctx))
         }
@@ -1359,10 +1361,11 @@ struct PoolState {
     /// so state files written before this field still load.
     #[serde(default)]
     attestations: lm_stratum::server::Attestations,
-    /// League prize-pool balance (feeds the Luckynode draw budgets).
-    /// `default` so state files written before this field still load.
-    #[serde(default)]
-    league_pool: u64,
+    /// Prize-fund balance (feeds the Luckynode draw budgets).
+    /// `default` so state files written before this field still load;
+    /// `alias` so pre-rename files (`league_pool`) load their balance.
+    #[serde(default, alias = "league_pool")]
+    prize_pool: u64,
     /// Lifetime miner-owed coinbase accepted (normal value + jackpot
     /// bonuses + pot splashes). Backs the /api/stats reconciliation
     /// identity `coinbases == owed + paid + fees`. `default` so state
@@ -1371,11 +1374,12 @@ struct PoolState {
     /// the retained block history is complete).
     #[serde(default)]
     credited_total: u64,
-    /// Per-height league inflow actually credited (height, sats),
+    /// Per-height prize inflow actually credited (height, sats),
     /// including staker/peer finds that never enter the block history.
-    /// `default` so older state files still load.
-    #[serde(default)]
-    league_credits: Vec<(u64, u64)>,
+    /// `default` so older state files still load; `alias` covers
+    /// pre-rename files (`league_credits`).
+    #[serde(default, alias = "league_credits")]
+    prize_credits: Vec<(u64, u64)>,
     /// In-flight faucet claims (height, amount) — unmatured coinbase
     /// outputs the wallet cannot see yet. Survives restarts so a reboot
     /// does not re-claim a full drip on the next template.
@@ -1383,14 +1387,14 @@ struct PoolState {
     #[serde(default)]
     faucet_unmatured: Vec<(u64, u64)>,
     /// Last-known connect-time agents (miner, agent): idle miners keep
-    /// their declared league family across restarts instead of falling
+    /// their declared division family across restarts instead of falling
     /// back to the rate-implied one. `default` so old files still load.
     #[serde(default)]
     agents: Vec<(String, String)>,
     /// Share ledger (raw shares + day rollup + comeback state): streaks,
-    /// league boards and PPLNS windows survive pool restarts. League
-    /// *money* still round-trips through `league_pool` above; the skipped
-    /// `Ledger::league_pool` is not authoritative. `default` so old
+    /// division boards and PPLNS windows survive pool restarts. League
+    /// *money* still round-trips through `prize_pool` above; the skipped
+    /// `Ledger::prize_pool` is not authoritative. `default` so old
     /// state files still load.
     #[serde(default)]
     shares: lm_pool::ledger::Ledger,
@@ -1489,9 +1493,9 @@ fn load_state<P: TemplateProvider + 'static>(
             server.restore_names(&st.names);
             server.restore_agents(&st.agents);
             server.restore_shares(st.shares);
-            server.restore_league(st.league_pool);
+            server.restore_prize(st.prize_pool);
             server.restore_credited(resolve_credited_total(st.credited_total, &st.blocks));
-            server.restore_league_credits(&st.league_credits);
+            server.restore_prize_credits(&st.prize_credits);
             let unmatured = st.faucet_unmatured.len();
             server.restore_faucet_unmatured(st.faucet_unmatured);
             let settings = st.payout_settings.len();
@@ -1524,9 +1528,9 @@ fn load_state<P: TemplateProvider + 'static>(
         }
     }
             println!(
-                "state loaded from {}: {n} blocks, owed {owed}, paid {paid}, fees {fees}, league {} {}{}",
+                "state loaded from {}: {n} blocks, owed {owed}, paid {paid}, fees {fees}, prize {} {}{}",
                 path.display(),
-                lm_pool::payout::format_coins(st.league_pool),
+                lm_pool::payout::format_coins(st.prize_pool),
                 if settings > 0 {
                     format!(", {settings} payout setting(s)")
                 } else {
@@ -1584,9 +1588,9 @@ fn save_state<P: TemplateProvider + 'static>(
         pending,
         payout_settings: server.payout_settings(),
         attestations: server.attestations(),
-        league_pool: server.league_balance(),
+        prize_pool: server.prize_balance(),
         credited_total: server.credited_total(),
-        league_credits: server.league_credits(),
+        prize_credits: server.prize_credits(),
         faucet_unmatured: server.faucet_unmatured(),
         agents: server.agents(),
         shares: server.shares_snapshot(),
@@ -1725,15 +1729,15 @@ fn payout_loop<P: TemplateProvider + 'static>(
         }
         // Spendable cap: owed keeps growing with immature blocks while the
         // wallet only holds mature funds — pay in due order up to the
-        // spendable balance (partials included), the rest waits. The league
+        // spendable balance (partials included), the rest waits. The prize
         // prize pool is reserved for Luckynode Draws, so miner payouts may
         // never eat it (draws debit the ledger; this keeps the wallet
         // honest against that claim).
-        let league_reserve = server.league_balance();
+        let prize_reserve = server.prize_balance();
         let mut budget = match rpc.call("getbalance", serde_json::json!([])) {
             Ok(v) => coins_to_base(&v)
                 .saturating_sub(FEE_BUFFER)
-                .saturating_sub(league_reserve),
+                .saturating_sub(prize_reserve),
             Err(e) => {
                 eprintln!("payout: getbalance failed: {e}; holding this round");
                 continue;
@@ -1799,7 +1803,7 @@ struct LuckynodeCfg {
     bond: u64,
     /// Blocks per draw epoch (spec 2880 ~48h; tests override shorter).
     epoch: u64,
-    /// Basis points of trailing league inflow funding each draw (spec ~500).
+    /// Basis points of trailing prize inflow funding each draw (spec ~500).
     slice_bps: u64,
     /// Heartbeat trailing window for active service (secs; spec open).
     hb_window: u64,
@@ -1864,8 +1868,8 @@ struct LuckynodeShared {
     /// already-completed epochs as drawn (no backfill); only new
     /// boundaries draw — restart-safe without persistence.
     last_epoch: Mutex<Option<u64>>,
-    /// League balance at the last draw (trailing inflow = now - snapshot).
-    league_snapshot: Mutex<u64>,
+    /// Prize balance at the last draw (trailing inflow = now - snapshot).
+    prize_snapshot: Mutex<u64>,
     /// First-tick init done (last_epoch + snapshot set once).
     init_done: Mutex<bool>,
     cfg: LuckynodeCfg,
@@ -2017,8 +2021,8 @@ fn luckynode_tick<P: TemplateProvider + 'static>(
             } else {
                 None
             };
-            let mut snap = shared.league_snapshot.lock().expect("snapshot");
-            *snap = server.league_balance();
+            let mut snap = shared.prize_snapshot.lock().expect("snapshot");
+            *snap = server.prize_balance();
             println!(
                 "luckynode: live (bond {:.8} coins epoch {} slice {}bps); next draw at height {}",
                 cfg.bond as f64 / 100_000_000.0,
@@ -2112,7 +2116,7 @@ fn luckynode_tick<P: TemplateProvider + 'static>(
                         println!(
                             "luckynode: held draw {epoch} for {winner_id} ({addr}) paid {coins} tx {t}"
                         );
-                        server.debit_league(budget);
+                        server.debit_prize(budget);
                         {
                             let mut h = history.lock().expect("payout history");
                             h.push_back(PayoutRecord {
@@ -2148,12 +2152,12 @@ fn luckynode_tick<P: TemplateProvider + 'static>(
 }
 
 /// Run the Luckynode Draw for epoch `e` §34).
-/// Default Luckynode Draw slice: 10% of trailing league inflow
+/// Default Luckynode Draw slice: 10% of trailing prize inflow
 /// (raised from 5% on 2026-10-17 — the draw is the only luckynode income).
 /// Pinned by `draw_budget_gates` so a silent revert fails CI.
 const DEFAULT_LUCKYNODE_SLICE_BPS: u64 = 1000;
 
-/// Draw budget for a trailing league inflow at `slice_bps` basis points.
+/// Draw budget for a trailing prize inflow at `slice_bps` basis points.
 /// Pure + floor (u128 intermediate): the exact cut the draw can spend.
 fn draw_budget(inflow: u64, slice_bps: u64) -> u64 {
     ((inflow as u128 * slice_bps as u128) / 10_000) as u64
@@ -2208,22 +2212,22 @@ fn run_draw<P: TemplateProvider + 'static>(
             .unwrap_or_default();
         (ent.len(), (winner, addr))
     };
-    // Budget: slice of trailing league inflow (snapshot difference), capped
-    // at the credited league balance — a draw may only spend what the pool
-    // actually credited to the league ledger, never miner-owed funds.
-    let league_now = server.league_balance();
-    let mut snap = shared.league_snapshot.lock().expect("snapshot");
-    let inflow = league_now.saturating_sub(*snap);
-    *snap = league_now;
+    // Budget: slice of trailing prize inflow (snapshot difference), capped
+    // at the credited prize balance — a draw may only spend what the pool
+    // actually credited to the prize ledger, never miner-owed funds.
+    let prize_now = server.prize_balance();
+    let mut snap = shared.prize_snapshot.lock().expect("snapshot");
+    let inflow = prize_now.saturating_sub(*snap);
+    *snap = prize_now;
     drop(snap);
     let slice = draw_budget(inflow, cfg.slice_bps);
-    let budget = slice.min(league_now);
+    let budget = slice.min(prize_now);
     let draw_id = format!("draw-{e}");
     let (winner, winner_addr) = winner_addr;
     let txid = if winner.is_empty() {
         "none (no eligible luckynodes)".to_string()
     } else if budget == 0 {
-        "none (no league inflow)".to_string()
+        "none (no prize inflow)".to_string()
     } else if !cfg.exec {
         println!(
             "luckynode: draw {e} winner {winner} ({winner_addr}) budget {} (dry-run, not sent)",
@@ -2238,9 +2242,9 @@ fn run_draw<P: TemplateProvider + 'static>(
                 println!(
                     "luckynode: draw {e} winner {winner} ({winner_addr}) paid {coins} tx {t}"
                 );
-                // Debit the league ledger only when the coins actually left
+                // Debit the prize ledger only when the coins actually left
                 // the wallet (a held draw keeps its claim until a retry pays).
-                server.debit_league(budget);
+                server.debit_prize(budget);
                 {
                     let mut h = history.lock().expect("payout history");
                     h.push_back(PayoutRecord {
@@ -2657,7 +2661,7 @@ const USAGE: &str = "usage:
   [--luckynode-bond V] [--luckynode-epoch N] [--luckynode-slice-bps BPS]
   [--luckynode-hb-window SECS] [--luckynode-exec] [--luckynode-interval SECS]
   (bond default 400 LKYL on all chains; epoch default 2880 mainnet, 3 on
-  test+regtest; slice default 1000 = 10% of trailing league inflow; draws pay
+  test+regtest; slice default 1000 = 10% of trailing prize inflow; draws pay
   the winner via sendtoaddress when --luckynode-exec, else log only)
 
 defaults: bind=127.0.0.1:3333; mock mode: reward=1000000, fees=0, both targets=max (instant blocks);
@@ -3483,7 +3487,7 @@ fn main() -> std::process::ExitCode {
                     recent_draws: VecDeque::new(),
                 }),
                 last_epoch: Mutex::new(None),
-                league_snapshot: Mutex::new(0),
+                prize_snapshot: Mutex::new(0),
                 init_done: Mutex::new(false),
                 cfg: LuckynodeCfg {
                     bond: resolved_bond,
@@ -3768,7 +3772,7 @@ mod tests {
                 }]),
             }),
             last_epoch: Mutex::new(None),
-            league_snapshot: Mutex::new(0),
+            prize_snapshot: Mutex::new(0),
             init_done: Mutex::new(false),
             cfg: LuckynodeCfg {
                 bond: 0,
@@ -3993,8 +3997,8 @@ mod tests {
         assert_eq!(row["rate60"], 1.0);
         assert_eq!(row["streak"], 2);
         assert_eq!(row["best_streak"], 9);
-        assert_eq!(row["league_class"], "cpu");
-        assert_eq!(row["league_rank"], 4);
+        assert_eq!(row["division_class"], "cpu");
+        assert_eq!(row["division_rank"], 4);
         assert_eq!(row["owed"], 50);
         assert_eq!(row["paid"], 500);
         // Offline: no live row, but the streak + rank + balances survive.
@@ -4002,7 +4006,7 @@ mod tests {
         assert_eq!(row["online"], false);
         assert!(row["last_seen"].is_null());
         assert_eq!(row["streak"], 3);
-        assert_eq!(row["league_rank"], 9);
+        assert_eq!(row["division_rank"], 9);
         assert_eq!(row["name"], "w2"); // no registered name → the miner id
         // Never seen: None (the route 404s).
         assert!(worker_row_json("ghost", None, &streaks, &ranks, 0, 0, "", None, 200).is_none());
@@ -4021,9 +4025,9 @@ mod tests {
             pending: Vec::new(),
             payout_settings: lm_stratum::server::PayoutSettings::new(),
             attestations: lm_stratum::server::Attestations::new(),
-            league_pool: 0,
+            prize_pool: 0,
             credited_total: 9_999_999,
-            league_credits: Vec::new(),
+            prize_credits: Vec::new(),
             faucet_unmatured: Vec::new(),
             agents: Vec::new(),
             shares: lm_pool::ledger::Ledger::new(),
@@ -4037,21 +4041,21 @@ mod tests {
         let seeded = resolve_credited_total(
             0,
             &[
-                BlockRecord { height: 1, finder: "a".to_string(), value: 1_000_000, bonus: 100_000, pot: 0, league_overflow: 0, faucet: 0, dev: 0, payouts: vec![] },
-                BlockRecord { height: 2, finder: "a".to_string(), value: 2_000_000, bonus: 0, pot: 300_000, league_overflow: 0, faucet: 0, dev: 0, payouts: vec![] },
+                BlockRecord { height: 1, finder: "a".to_string(), value: 1_000_000, bonus: 100_000, pot: 0, prize_inflow: 0, faucet: 0, dev: 0, payouts: vec![] },
+                BlockRecord { height: 2, finder: "a".to_string(), value: 2_000_000, bonus: 0, pot: 300_000, prize_inflow: 0, faucet: 0, dev: 0, payouts: vec![] },
             ],
         );
         assert_eq!(seeded, 3_400_000);
         // An explicit stored value always wins, even with blocks present.
         assert_eq!(resolve_credited_total(42, &[
-            BlockRecord { height: 1, finder: "a".to_string(), value: 1_000_000, bonus: 0, pot: 0, league_overflow: 0, faucet: 0, dev: 0, payouts: vec![] },
+            BlockRecord { height: 1, finder: "a".to_string(), value: 1_000_000, bonus: 0, pot: 0, prize_inflow: 0, faucet: 0, dev: 0, payouts: vec![] },
         ]), 42);
         // Fresh pool: nothing to seed from.
         assert_eq!(resolve_credited_total(0, &[]), 0);
     }
 
     #[test]
-    fn state_file_roundtrips_league_pool_and_defaults_old_files() {
+    fn state_file_roundtrips_prize_pool_and_defaults_old_files() {
         let st = PoolState {
             version: STATE_VERSION,
             ledger: lm_pool::payout::PayoutLedger::default(),
@@ -4061,9 +4065,9 @@ mod tests {
             pending: Vec::new(),
             payout_settings: lm_stratum::server::PayoutSettings::new(),
             attestations: lm_stratum::server::Attestations::new(),
-            league_pool: 260_317,
+            prize_pool: 260_317,
             credited_total: 1_234_567,
-            league_credits: vec![(290u64, 1_841_270u64)],
+            prize_credits: vec![(290u64, 1_841_270u64)],
             faucet_unmatured: vec![(12u64, 1_000u64)],
             agents: vec![("w1".to_string(), "lm-miner/0.2 cpu".to_string())],
             shares: lm_pool::ledger::Ledger::new(),
@@ -4071,16 +4075,16 @@ mod tests {
         };
         let json = serde_json::to_string(&st).expect("serialize");
         let back: PoolState = serde_json::from_str(&json).expect("deserialize");
-        assert_eq!(back.league_pool, 260_317);
+        assert_eq!(back.prize_pool, 260_317);
         assert_eq!(back.credited_total, 1_234_567);
-        assert_eq!(back.league_credits, vec![(290u64, 1_841_270u64)]);
+        assert_eq!(back.prize_credits, vec![(290u64, 1_841_270u64)]);
         assert_eq!(back.faucet_unmatured, vec![(12u64, 1_000u64)]);
         assert_eq!(back.agents, vec![("w1".to_string(), "lm-miner/0.2 cpu".to_string())]);
-        // Old state files (pre-league_pool / pre-attestations /
+        // Old state files (pre-prize_pool / pre-attestations /
         // pre-unmatured) still load.
         let old = r#"{"version":1,"ledger":{"owed":{},"fees":0,"paid":{}},"names":[],"blocks":[]}"#;
         let back: PoolState = serde_json::from_str(old).expect("old file");
-        assert_eq!(back.league_pool, 0);
+        assert_eq!(back.prize_pool, 0);
         assert_eq!(back.credited_total, 0); // pre-counter files load
         assert!(back.attestations.is_empty());
         assert!(back.faucet_unmatured.is_empty());
@@ -4098,9 +4102,9 @@ mod tests {
             pending: Vec::new(),
             payout_settings: lm_stratum::server::PayoutSettings::new(),
             attestations: lm_stratum::server::Attestations::new(),
-            league_pool: 0,
+            prize_pool: 0,
             credited_total: 0,
-            league_credits: Vec::new(),
+            prize_credits: Vec::new(),
             faucet_unmatured: Vec::new(),
             agents: Vec::new(),
             shares: led,
@@ -4124,9 +4128,9 @@ mod tests {
             pending: Vec::new(),
             payout_settings: lm_stratum::server::PayoutSettings::new(),
             attestations: lm_stratum::server::Attestations::new(),
-            league_pool: 0,
+            prize_pool: 0,
             credited_total: 9_999,
-            league_credits: Vec::new(),
+            prize_credits: Vec::new(),
             faucet_unmatured: vec![(7u64, 500u64)],
             agents: Vec::new(),
             shares: lm_pool::ledger::Ledger::new(),
@@ -4148,8 +4152,8 @@ mod tests {
     }
 
     #[test]
-    fn league_boards_json_ranks_within_family_and_flags_fresh_attestations() {
-        use lm_pool::league::DeviceFamily;
+    fn division_boards_json_ranks_within_family_and_flags_fresh_attestations() {
+        use lm_pool::division::DeviceFamily;
         use lm_pool::ledger::BoardEntry;
         let entry = |miner: &str, class: DeviceFamily, work: u64| BoardEntry {
             miner: miner.to_string(),
@@ -4159,7 +4163,7 @@ mod tests {
             streak_days: 1,
             hps: 1,
         };
-        let boards = lm_pool::ledger::rank_by_class(vec![
+        let boards = lm_pool::ledger::rank_by_division(vec![
             entry("a1", DeviceFamily::Phone, 900),
             entry("a2", DeviceFamily::Phone, 500),
             entry("g1", DeviceFamily::Gpu, 100),
@@ -4176,7 +4180,7 @@ mod tests {
             },
         );
         // 30-day TTL: `now = 200` is fresh; the JSON carries the provider.
-        let out = league_boards_json(&boards, &names, &atts, 200, 20);
+        let out = division_boards_json(&boards, &names, &atts, 200, 20);
         assert_eq!(out.len(), 4); // ladder order, farms present even if empty
         assert_eq!(out[0]["class"], "phone");
         assert_eq!(out[0]["size"], 2);
@@ -4192,7 +4196,7 @@ mod tests {
         assert_eq!(out[3]["class"], "farm");
         assert_eq!(out[3]["entries"].as_array().unwrap().len(), 0);
         // An expired verdict stops decorating rows.
-        let stale = league_boards_json(
+        let stale = division_boards_json(
             &boards,
             &names,
             &atts,
@@ -4201,7 +4205,7 @@ mod tests {
         );
         assert_eq!(stale[0]["entries"][0]["attested"], false);
         // The per-family cap holds.
-        let capped = league_boards_json(&boards, &names, &atts, 200, 1);
+        let capped = division_boards_json(&boards, &names, &atts, 200, 1);
         assert_eq!(capped[0]["entries"].as_array().unwrap().len(), 1);
     }
 
@@ -4233,7 +4237,7 @@ mod tests {
                 recent_draws: VecDeque::new(),
             }),
             last_epoch: Mutex::new(None),
-            league_snapshot: Mutex::new(0),
+            prize_snapshot: Mutex::new(0),
             init_done: Mutex::new(false),
             cfg: LuckynodeCfg {
                 bond: 400_000_000,
@@ -4300,7 +4304,7 @@ mod tests {
     }
 
     #[test]
-    fn resolve_leagues_uses_labels_and_polices_by_rate() {
+    fn resolve_divisions_uses_labels_and_polices_by_rate() {
         use lm_pool::ledger::BoardEntry;
         let agents: HashMap<&str, &str> = [
             ("honest-arm", "lm-miner-mobile/0.1 android"),
@@ -4313,13 +4317,13 @@ mod tests {
         .collect();
         let entry = |miner: &str, hps: u64| BoardEntry {
             miner: miner.to_string(),
-            class: lm_pool::league::DeviceFamily::Phone, // placeholder, resolved below
+            class: lm_pool::division::DeviceFamily::Phone, // placeholder, resolved below
             eff_work: 1,
             days_active: 1,
             streak_days: 0,
             hps,
         };
-        let resolved = resolve_leagues(
+        let resolved = resolve_divisions(
             vec![
                 entry("honest-arm", 1_500),
                 entry("honest-gpu", 21_000),
@@ -4328,7 +4332,7 @@ mod tests {
             ],
             &agents,
         );
-        let league = |m: &str| {
+        let division = |m: &str| {
             resolved
                 .iter()
                 .find(|e| e.miner == m)
@@ -4337,12 +4341,12 @@ mod tests {
                 .as_str()
                 .to_string()
         };
-        assert_eq!(league("honest-arm"), "phone");
-        assert_eq!(league("honest-gpu"), "gpu");
+        assert_eq!(division("honest-arm"), "phone");
+        assert_eq!(division("honest-gpu"), "gpu");
         // A farm cannot hide behind a cpu label.
-        assert_eq!(league("lying-farm"), "farm");
+        assert_eq!(division("lying-farm"), "farm");
         // An unlabeled miner falls back to the rate-implied family.
-        assert_eq!(league("silent"), "cpu");
+        assert_eq!(division("silent"), "cpu");
     }
 
     #[test]

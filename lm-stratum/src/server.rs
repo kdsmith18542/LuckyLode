@@ -8,7 +8,7 @@
 //! against the pool target → ledger share (work = expected max-target
 //! hashes) → on network-target hit, authoritative chain submission via the
 //! [`TemplateProvider`](crate::provider::TemplateProvider): reserve update,
-//! league-pool credit, jackpot split over the PPLNS window, block record.
+//! prize-fund credit, jackpot split over the PPLNS window, block record.
 //! A share the chain rejects (height raced) is still an accepted share —
 //! the pool's check is advisory, the chain's authoritative, and only the
 //! chain mints money.
@@ -55,7 +55,7 @@ pub struct BlockRecord {
     pub bonus: u64,
     /// Pot splash the coinbase claimed (0 without a pot event).
     pub pot: u64,
-    pub league_overflow: u64,
+    pub prize_inflow: u64,
     /// Seed-fund outputs in the coinbase (third-party, never miner-owed).
     /// `default` so state files written before this field still load.
     #[serde(default)]
@@ -69,10 +69,10 @@ pub struct BlockRecord {
 /// OOM the pool; the cap is deep enough for every UI window).
 pub const BLOCK_HISTORY_CAP: usize = 1000;
 
-/// Retained per-height league-credit entries (the explorer polls the
-/// recent window; older entries age out of the feed but the league
+/// Retained per-height prize-credit entries (the explorer polls the
+/// recent window; older entries age out of the feed but the prize
 /// balance itself is unaffected).
-pub const LEAGUE_CREDIT_LOG_CAP: usize = 256;
+pub const PRIZE_CREDIT_LOG_CAP: usize = 256;
 
 /// Pool counters.
 #[derive(Debug, Clone, Default)]
@@ -135,28 +135,28 @@ struct Shared<P> {
     /// connection's registry must reject it, so the memory lives here and
     /// is locked around each evaluate — not inside the registries.
     dedupe: Mutex<Dedupe>,
-    /// Prospective league overflow per template height (from the node's
-    /// own `leagueoverflow` advisory): credited to the league ledger when
+    /// Prospective prize inflow per template height (from the node's
+    /// own `prizeoverflow` advisory): credited to the prize ledger when
     /// the height's block lands — whether the pool mined it (accept path)
     /// or an external finder did (tip-change reconcile in the refresh
     /// loop). Without this, staker/peer-found blocks' overflow never
     /// entered any pool ledger and Luckynode Draw budgets leaked on a
     /// 50/50 chain.
     tip_overflow: Mutex<BTreeMap<u64, u64>>,
-    /// Heights whose league overflow is already credited (either path).
+    /// Heights whose prize inflow is already credited (either path).
     /// Credit-once gate: the accept thread and the refresh thread race on
     /// our own finds, and exactly one of them may credit a height.
-    league_credited: Mutex<HashSet<u64>>,
-    /// Per-height league inflow actually credited (height → sats).
+    prize_credited: Mutex<HashSet<u64>>,
+    /// Per-height prize inflow actually credited (height → sats).
     /// Persisted with the state file: staker/peer-found blocks never
     /// appear in the pool's block history, so this log is the only
     /// durable record of their game-fund inflow (the explorer mirrors
     /// it into its per-block game view). Bounded to the recent window.
-    league_credit_log: Mutex<BTreeMap<u64, u64>>,
-    /// Highest tip height reconciled for external league credit (0 =
+    prize_credit_log: Mutex<BTreeMap<u64, u64>>,
+    /// Highest tip height reconciled for external prize credit (0 =
     /// uninitialized; first tick starts from the live tip, no backfill —
     /// same restart rule as the draw loop's epoch init).
-    league_tip: Mutex<u64>,
+    prize_tip: Mutex<u64>,
     /// Live connection accounting for the accept caps (RAII-guarded).
     conn_total: std::sync::atomic::AtomicUsize,
     conn_per_ip: Mutex<std::collections::HashMap<std::net::IpAddr, usize>>,
@@ -168,7 +168,7 @@ struct Shared<P> {
     balances: Mutex<PayoutLedger>,
     /// Lifetime miner-owed coinbase accepted by this pool: the normal
     /// block value plus every jackpot bonus and pot splash, summed over
-    /// all accepted blocks. League overflow and the seed-fund faucet/dev
+    /// all accepted blocks. Prize inflow and the seed-fund faucet/dev
     /// outputs are third-party flows with their own ledgers and are NOT
     /// included — this counter must equal owed + paid + fees at all
     /// times (the /api/stats identity), and any drift is a bug.
@@ -232,7 +232,7 @@ pub struct Attestation {
 /// Per-worker attestations keyed by miner id (persisted with the pool state).
 pub type Attestations = std::collections::BTreeMap<String, Attestation>;
 
-/// How long an attestation stays fresh. Phone-league entry is per season;
+/// How long an attestation stays fresh. Phone-division entry is per season;
 /// an older verdict stops counting.
 pub const ATTESTATION_TTL_SECS: u64 = 30 * 24 * 60 * 60;
 
@@ -353,35 +353,35 @@ fn refresh_loop<P: TemplateProvider + 'static>(shared: Arc<Shared<P>>) {
                     net_target: tpl.net_target,
                 };
                 bc.version += 1;
-                // Prospective league overflow for this height (the node's
+                // Prospective prize inflow for this height (the node's
                 // own advisory): the accept path and the tip reconcile
                 // below share one credit-once gate, so recording here is
                 // safe even when our own find lands first.
                 {
                     let mut pend =
                         shared.tip_overflow.lock().expect("tip overflow");
-                    pend.insert(tpl.height, tpl.league);
+                    pend.insert(tpl.height, tpl.prize);
                     while pend.len() > 64 {
                         pend.pop_first();
                     }
                 }
             }
         }
-        // Tip-change reconcile: credit league overflow for heights the pool
+        // Tip-change reconcile: credit prize inflow for heights the pool
         // did NOT mine (staker/peer finds). The gate makes this race-free
         // against the accept path on our own blocks; heights with no
         // prospective record (pool was down/behind) are skipped and logged
         // — never guessed.
         {
             let tip = tpl.height.saturating_sub(1);
-            let mut synced = shared.league_tip.lock().expect("league tip");
+            let mut synced = shared.prize_tip.lock().expect("prize tip");
             if *synced == 0 {
                 *synced = tip;
             } else if tip > *synced {
                 let old = *synced;
                 let pend = shared.tip_overflow.lock().expect("tip overflow");
-                let done = shared.league_credited.lock().expect("league credited");
-                let missing = missing_league_credits(old, tip, &pend, &done);
+                let done = shared.prize_credited.lock().expect("prize credited");
+                let missing = missing_prize_credits(old, tip, &pend, &done);
                 // Heights neither credited nor known-prospective: the pool
                 // was down/behind for them — logged, never guessed. (Heights
                 // the accept path already credited are NOT unknown.)
@@ -392,21 +392,21 @@ fn refresh_loop<P: TemplateProvider + 'static>(shared: Arc<Shared<P>>) {
                 drop(done);
                 for (h, amount) in &missing {
                     if *amount > 0 {
-                        credit_league_once(&shared, *h, *amount, "tip");
+                        credit_prize_once(&shared, *h, *amount, "tip");
                     } else {
                         shared
-                            .league_credited
+                            .prize_credited
                             .lock()
-                            .expect("league credited")
+                            .expect("prize credited")
                             .insert(*h);
                     }
                 }
                 if unknown > 0 {
                     eprintln!(
-                        "pool: tip {old}->{tip}: {unknown} heights had no prospective league record (skipped)"
+                        "pool: tip {old}->{tip}: {unknown} heights had no prospective prize record (skipped)"
                     );
                 }
-                let mut done = shared.league_credited.lock().expect("league credited");
+                let mut done = shared.prize_credited.lock().expect("prize credited");
                 done.retain(|&h| h + 128 > tip);
                 *synced = tip;
             } else if tip < *synced {
@@ -420,17 +420,17 @@ fn refresh_loop<P: TemplateProvider + 'static>(shared: Arc<Shared<P>>) {
                     .expect("tip overflow")
                     .retain(|&h, _| h <= tip + 1);
                 *synced = tip;
-                eprintln!("pool: reorg? tip {tip} below synced {old} — prospective league map reset");
+                eprintln!("pool: reorg? tip {tip} below synced {old} — prospective prize map reset");
             }
         }
         std::thread::sleep(Duration::from_millis(REFRESH_TICK_MS));
     }
 }
 
-/// Heights in (old_tip, new_tip] whose league overflow still needs
+/// Heights in (old_tip, new_tip] whose prize inflow still needs
 /// crediting: known prospectively and not yet credited by either path.
 /// Pure (unit-tested); the caller holds no locks while computing.
-fn missing_league_credits(
+fn missing_prize_credits(
     old_tip: u64,
     new_tip: u64,
     pending: &BTreeMap<u64, u64>,
@@ -449,12 +449,12 @@ fn missing_league_credits(
         .collect()
 }
 
-/// Credit a height's league overflow exactly once (the accept thread and
+/// Credit a height's prize inflow exactly once (the accept thread and
 /// the refresh thread race on our own finds). Returns true when this
 /// call performed the credit.
-fn credit_league_once<P>(shared: &Shared<P>, height: u64, amount: u64, source: &str) -> bool {
+fn credit_prize_once<P>(shared: &Shared<P>, height: u64, amount: u64, source: &str) -> bool {
     {
-        let mut done = shared.league_credited.lock().expect("league credited");
+        let mut done = shared.prize_credited.lock().expect("prize credited");
         if !done.insert(height) {
             return false;
         }
@@ -463,23 +463,23 @@ fn credit_league_once<P>(shared: &Shared<P>, height: u64, amount: u64, source: &
         .ledger
         .lock()
         .expect("ledger")
-        .credit_league(amount);
+        .credit_prize(amount);
     if amount > 0 {
-        let mut log = shared.league_credit_log.lock().expect("league credit log");
+        let mut log = shared.prize_credit_log.lock().expect("prize credit log");
         log.insert(height, amount);
         // Keep the persisted log bounded (the explorer only needs the
-        // recent window; league money itself lives in `league_pool`).
-        while log.len() > LEAGUE_CREDIT_LOG_CAP {
+        // recent window; prize money itself lives in `prize_pool`).
+        while log.len() > PRIZE_CREDIT_LOG_CAP {
             log.pop_first();
         }
     }
-    eprintln!("pool: league +{amount} @height {height} ({source})");
+    eprintln!("pool: prize +{amount} @height {height} ({source})");
     true
 }
 
 /// Shared money path for an accepted block-finding share (V1 and V2 call
 /// this — one code path mints money): chain submission is authoritative,
-/// then the league credit, the jackpot/pot PPLNS splits, per-miner value
+/// then the prize credit, the jackpot/pot PPLNS splits, per-miner value
 /// accounting, and the block record. A share the chain rejects (height
 /// raced) is still an accepted share — the pool's check is advisory, the
 /// chain's authoritative, and only the chain mints money.
@@ -510,10 +510,10 @@ fn apply_block_found<P: TemplateProvider + 'static>(
     }
     if outcome.accepted {
         let now = now_secs();
-        // League credit goes through the credit-once gate: the refresh
+        // Prize credit goes through the credit-once gate: the refresh
         // thread may reconcile this same height if it sees the new tip
         // before this thread runs.
-        credit_league_once(shared, job.height, outcome.league_overflow, "accept");
+        credit_prize_once(shared, job.height, outcome.prize_inflow, "accept");
         let ledger = shared.ledger.lock().expect("ledger");
         // Both claimed amounts split over the PPLNS window (each with the
         // reference sqrt/cap rules); the combined list is what pays out.
@@ -551,13 +551,13 @@ fn apply_block_found<P: TemplateProvider + 'static>(
             value: outcome.coinbase,
             bonus: outcome.bonus,
             pot: outcome.pot,
-            league_overflow: outcome.league_overflow,
+            prize_inflow: outcome.prize_inflow,
             faucet: outcome.faucet,
             dev: outcome.dev,
             payouts,
         });
         // Lifetime miner-owed coinbase: every sat credited above came
-        // out of exactly these three fields (league/faucet/dev never
+        // out of exactly these three fields (prize/faucet/dev never
         // touch the miner ledger), so their running sum must always
         // equal owed + paid + fees.
         {
@@ -1237,7 +1237,7 @@ impl<P: TemplateProvider + 'static> RunningServer<P> {
     }
 
     /// Share-ledger snapshot for `--state-file` persistence (streaks,
-    /// league boards and PPLNS windows survive pool restarts).
+    /// division boards and PPLNS windows survive pool restarts).
     pub fn shares_snapshot(&self) -> Ledger {
         self.shared.ledger.lock().expect("ledger").clone()
     }
@@ -1262,7 +1262,7 @@ impl<P: TemplateProvider + 'static> RunningServer<P> {
             .restore_names(names);
     }
 
-    /// Last-known agent per miner (live + restored) for league resolution.
+    /// Last-known agent per miner (live + restored) for division resolution.
     pub fn agents(&self) -> Vec<(String, String)> {
         self.shared.workers.lock().expect("workers").agents()
     }
@@ -1296,8 +1296,8 @@ impl<P: TemplateProvider + 'static> RunningServer<P> {
             .aggregate(window_secs, now)
     }
 
-    pub fn league_balance(&self) -> u64 {
-        self.shared.ledger.lock().expect("ledger").league_balance()
+    pub fn prize_balance(&self) -> u64 {
+        self.shared.ledger.lock().expect("ledger").prize_balance()
     }
 
     /// Full-history streak state per miner (doc 07 §7.4 dashboard tile):
@@ -1306,7 +1306,7 @@ impl<P: TemplateProvider + 'static> RunningServer<P> {
         self.shared.ledger.lock().expect("ledger").streaks(now)
     }
 
-    /// Seasonal league board over `window_secs` (doc 03 §3.3), effective
+    /// Seasonal division board over `window_secs` (doc 03 §3.3), effective
     /// work desc. O(miners) over the share log's retention window.
     #[must_use]
     pub fn leaderboard(&self, window_secs: u64, now: u64) -> Vec<lm_pool::ledger::BoardEntry> {
@@ -1317,19 +1317,19 @@ impl<P: TemplateProvider + 'static> RunningServer<P> {
             .leaderboard(window_secs, now)
     }
 
-    /// Spend from the league prize pool (draw payments); returns what was
+    /// Spend from the prize fund (draw payments); returns what was
     /// actually debited, capped at the credited balance.
-    pub fn debit_league(&self, amount: u64) -> u64 {
-        self.shared.ledger.lock().expect("ledger").debit_league(amount)
+    pub fn debit_prize(&self, amount: u64) -> u64 {
+        self.shared.ledger.lock().expect("ledger").debit_prize(amount)
     }
 
-    /// Restore the persisted league-pool balance (state-file load).
-    pub fn restore_league(&self, balance: u64) {
+    /// Restore the persisted prize-fund balance (state-file load).
+    pub fn restore_prize(&self, balance: u64) {
         self.shared
             .ledger
             .lock()
             .expect("ledger")
-            .set_league_balance(balance);
+            .set_prize_balance(balance);
     }
 
     /// In-flight faucet claims for the top-up policy (state-file round
@@ -1537,23 +1537,23 @@ impl<P: TemplateProvider + 'static> RunningServer<P> {
         self.restore_names(&[(id, addr.to_string())]);
     }
 
-    /// Per-height league inflow this pool has credited (height, amount),
+    /// Per-height prize inflow this pool has credited (height, amount),
     /// ascending. Covers blocks the pool did NOT mine (staker/peer
     /// finds) — those never enter the block history. Persisted across
     /// restarts; bounded to the recent window.
-    pub fn league_credits(&self) -> Vec<(u64, u64)> {
+    pub fn prize_credits(&self) -> Vec<(u64, u64)> {
         self.shared
-            .league_credit_log
+            .prize_credit_log
             .lock()
-            .expect("league credit log")
+            .expect("prize credit log")
             .iter()
             .map(|(h, a)| (*h, *a))
             .collect()
     }
 
-    /// Restore the persisted per-height league credits (state-file load).
-    pub fn restore_league_credits(&self, credits: &[(u64, u64)]) {
-        let mut log = self.shared.league_credit_log.lock().expect("league credit log");
+    /// Restore the persisted per-height prize credits (state-file load).
+    pub fn restore_prize_credits(&self, credits: &[(u64, u64)]) {
+        let mut log = self.shared.prize_credit_log.lock().expect("prize credit log");
         log.clear();
         log.extend(credits.iter().copied());
     }
@@ -1655,9 +1655,9 @@ pub fn spawn_server<P: TemplateProvider + 'static>(
         broadcast: Mutex::new(JobState { job, version: 1 }),
         dedupe: Mutex::new(Dedupe::default()),
         tip_overflow: Mutex::new(BTreeMap::new()),
-        league_credited: Mutex::new(HashSet::new()),
-        league_credit_log: Mutex::new(BTreeMap::new()),
-        league_tip: Mutex::new(0),
+        prize_credited: Mutex::new(HashSet::new()),
+        prize_credit_log: Mutex::new(BTreeMap::new()),
+        prize_tip: Mutex::new(0),
         workers: Mutex::new(WorkerStats::default()),
         balances: Mutex::new(PayoutLedger::default()),
         credited_total: Mutex::new(0),
@@ -1673,13 +1673,13 @@ pub fn spawn_server<P: TemplateProvider + 'static>(
         conn_total: std::sync::atomic::AtomicUsize::new(0),
         conn_per_ip: Mutex::new(std::collections::HashMap::new()),
     });
-    // Seed the prospective league map with the startup template: the
+    // Seed the prospective prize map with the startup template: the
     // first block after a (re)start would otherwise have no record and
     // an external find's overflow would leak through the reconcile.
     {
         let mut pend = shared.tip_overflow.lock().expect("tip overflow");
-        pend.insert(tpl.height, tpl.league);
-        *shared.league_tip.lock().expect("league tip") = tpl.height.saturating_sub(1);
+        pend.insert(tpl.height, tpl.prize);
+        *shared.prize_tip.lock().expect("prize tip") = tpl.height.saturating_sub(1);
     }
     let accept_shared = shared.clone();
     let accept = std::thread::spawn(move || {
@@ -2190,7 +2190,7 @@ mod auth_tests {
 }
 
 #[cfg(test)]
-mod league_tests {
+mod division_tests {
     use super::*;
     use crate::provider::MockProvider;
     use crate::provider::TemplateProvider;
@@ -2205,63 +2205,63 @@ mod league_tests {
 
     #[test]
     fn missing_credits_covers_the_whole_advance() {
-        let m = missing_league_credits(100, 103, &pending(&[(101, 10), (102, 20), (103, 30)]), &credited(&[]));
+        let m = missing_prize_credits(100, 103, &pending(&[(101, 10), (102, 20), (103, 30)]), &credited(&[]));
         assert_eq!(m, vec![(101, 10), (102, 20), (103, 30)]);
     }
 
     #[test]
     fn missing_credits_skips_already_credited_heights() {
-        let m = missing_league_credits(100, 103, &pending(&[(101, 10), (102, 20)]), &credited(&[101]));
+        let m = missing_prize_credits(100, 103, &pending(&[(101, 10), (102, 20)]), &credited(&[101]));
         assert_eq!(m, vec![(102, 20)]);
     }
 
     #[test]
     fn missing_credits_skips_heights_with_no_prospective_record() {
         // Pool was down/behind for 102: never guess, leave it unmarked.
-        let m = missing_league_credits(100, 103, &pending(&[(101, 10), (103, 30)]), &credited(&[]));
+        let m = missing_prize_credits(100, 103, &pending(&[(101, 10), (103, 30)]), &credited(&[]));
         assert_eq!(m, vec![(101, 10), (103, 30)]);
     }
 
     #[test]
     fn missing_credits_never_goes_backward() {
         let p = pending(&[(99, 10)]);
-        assert!(missing_league_credits(100, 100, &p, &credited(&[])).is_empty());
-        assert!(missing_league_credits(100, 99, &p, &credited(&[])).is_empty());
+        assert!(missing_prize_credits(100, 100, &p, &credited(&[])).is_empty());
+        assert!(missing_prize_credits(100, 99, &p, &credited(&[])).is_empty());
     }
 
     #[test]
     fn missing_credits_passes_zero_amounts_through_for_marking() {
         // Zero-overflow heights still get marked done so the range never
         // rescans them (the caller inserts rather than credits).
-        let m = missing_league_credits(100, 101, &pending(&[(101, 0)]), &credited(&[]));
+        let m = missing_prize_credits(100, 101, &pending(&[(101, 0)]), &credited(&[]));
         assert_eq!(m, vec![(101, 0)]);
     }
 
     #[test]
-    fn mock_template_carries_the_prospective_league_advisory() {
+    fn mock_template_carries_the_prospective_prize_advisory() {
         let mut p = MockProvider::new([0xffu8; 32], [0xffu8; 32], 1_000_000, 0);
-        assert_eq!(p.current().league, 0);
-        p.set_league(876_192);
+        assert_eq!(p.current().prize, 0);
+        p.set_prize(876_192);
         let t = p.current();
-        assert_eq!((t.height, t.league), (1, 876_192));
+        assert_eq!((t.height, t.prize), (1, 876_192));
     }
 
-    /// League credits are exposed per height for the explorer, including
+    /// Prize credits are exposed per height for the explorer, including
     /// heights the pool did not mine (staker/peer finds). Zero-amount
     /// credits (no overflow that height) are not logged.
     #[test]
-    fn league_credits_log_credited_heights_and_survives_restore() {
+    fn prize_credits_log_credited_heights_and_survives_restore() {
         let provider = crate::provider::MockProvider::new([0xffu8; 32], [0xffu8; 32], 1_000_000, 0);
         let server = spawn_server(provider, "127.0.0.1:0", None, None, None).expect("spawn");
-        assert!(credit_league_once(&server.shared, 10, 500, "tip"));
-        assert!(credit_league_once(&server.shared, 11, 750, "tip"));
-        assert!(credit_league_once(&server.shared, 12, 0, "tip"));
+        assert!(credit_prize_once(&server.shared, 10, 500, "tip"));
+        assert!(credit_prize_once(&server.shared, 11, 750, "tip"));
+        assert!(credit_prize_once(&server.shared, 12, 0, "tip"));
         // Credit-once: a second attempt for the same height is a no-op.
-        assert!(!credit_league_once(&server.shared, 10, 500, "tip"));
-        assert_eq!(server.league_credits(), vec![(10, 500), (11, 750)]);
+        assert!(!credit_prize_once(&server.shared, 10, 500, "tip"));
+        assert_eq!(server.prize_credits(), vec![(10, 500), (11, 750)]);
         // Restore path (state-file load) replaces the log wholesale.
-        server.restore_league_credits(&[(290, 1_841_270)]);
-        assert_eq!(server.league_credits(), vec![(290, 1_841_270)]);
+        server.restore_prize_credits(&[(290, 1_841_270)]);
+        assert_eq!(server.prize_credits(), vec![(290, 1_841_270)]);
         server.stop();
     }
 }

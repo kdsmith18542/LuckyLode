@@ -34,8 +34,8 @@ pub struct SyncReport {
     pub tip: u64,
 }
 
-/// One mirrored league-board row (pool snapshot → `league_boards`).
-struct LeagueBoardRow {
+/// One mirrored division-board row (pool snapshot → `division_boards`).
+struct DivisionBoardRow {
     class: String,
     rank: i64,
     miner: String,
@@ -140,12 +140,12 @@ fn schema(db: &Connection) -> rusqlite::Result<()> {
          CREATE INDEX IF NOT EXISTS idx_outs_spent ON outs(spent_by);
          CREATE TABLE IF NOT EXISTS game_blocks(
            height INTEGER PRIMARY KEY, bonus INTEGER NOT NULL,
-           pot INTEGER NOT NULL, league INTEGER NOT NULL, finder TEXT NOT NULL);
+           pot INTEGER NOT NULL, prize INTEGER NOT NULL, finder TEXT NOT NULL);
           CREATE TABLE IF NOT EXISTS draws(
             epoch INTEGER PRIMARY KEY, height INTEGER NOT NULL, seed TEXT NOT NULL,
             winner TEXT NOT NULL, budget INTEGER NOT NULL, txid TEXT NOT NULL,
             cosigns INTEGER NOT NULL, time INTEGER NOT NULL);
-          CREATE TABLE IF NOT EXISTS league_boards(
+          CREATE TABLE IF NOT EXISTS division_boards(
             class TEXT NOT NULL, rank INTEGER NOT NULL, miner TEXT NOT NULL,
             name TEXT NOT NULL, eff_work INTEGER NOT NULL, days INTEGER NOT NULL,
             streak INTEGER NOT NULL, attested INTEGER NOT NULL DEFAULT 0,
@@ -165,6 +165,13 @@ impl Indexer {
     pub fn open(path: &str, rpc: RpcClient) -> Result<Self, String> {
         let db = Connection::open(path).map_err(|e| format!("open db {path}: {e}"))?;
         schema(&db).map_err(|e| format!("schema: {e}"))?;
+        // Migration: game_blocks `league` column renamed to `prize`
+        // (2026-10-21 Divisions/Prize Fund naming). Fresh DBs already have
+        // `prize`; the rename is a no-op error on them, ignored.
+        let _ = db.execute(
+            "ALTER TABLE game_blocks RENAME COLUMN league TO prize",
+            [],
+        );
         // Migration: older DBs predate the `pos` column (minted-block
         // badges, 2026-10-18). CREATE TABLE IF NOT EXISTS will not add it.
         let _ = db.execute(
@@ -643,7 +650,7 @@ impl Indexer {
         Ok(SyncReport { rolled_back, indexed, tip })
     }
 
-    /// Pull game events (per-block jackpot/pot/league, Luckynode Draws)
+    /// Pull game events (per-block jackpot/pot/prize, Luckynode Draws)
     /// from the pool's dashboard API into the index. Best-effort: the
     /// chain index works without it; a pool outage just leaves these
     /// tables stale (the caller decides how loudly to report that).
@@ -658,26 +665,26 @@ impl Indexer {
                 }
                 let bonus = b.get("bonus").and_then(|x| x.as_i64()).unwrap_or(0);
                 let pot = b.get("pot").and_then(|x| x.as_i64()).unwrap_or(0);
-                let league = b.get("league_overflow").and_then(|x| x.as_i64()).unwrap_or(0);
+                let prize = b.get("prize_inflow").and_then(|x| x.as_i64()).unwrap_or(0);
                 let finder = b.get("finder_name").and_then(|x| x.as_str()).unwrap_or("");
                 self.db
                     .execute(
-                        "INSERT INTO game_blocks(height, bonus, pot, league, finder)
+                        "INSERT INTO game_blocks(height, bonus, pot, prize, finder)
                          VALUES (?1, ?2, ?3, ?4, ?5)
                          ON CONFLICT(height) DO UPDATE SET
-                           bonus=?2, pot=?3, league=?4, finder=?5",
-                        params![h, bonus, pot, league, finder],
+                           bonus=?2, pot=?3, prize=?4, finder=?5",
+                        params![h, bonus, pot, prize, finder],
                     )
                     .map_err(|e| format!("game block {h}: {e}"))?;
                 n += 1;
             }
         }
-        // Per-height league inflow the pool credited. This covers blocks
+        // Per-height prize inflow the pool credited. This covers blocks
         // the pool did NOT mine (staker/peer finds): they never appear in
         // `last_blocks`, but their overflow still moved money. Upsert
-        // league only — never clobber bonus/pot/finder already recorded
+        // prize only — never clobber bonus/pot/finder already recorded
         // from a pool-found block.
-        if let Some(credits) = v.get("league").and_then(|l| l.get("credits")).and_then(|c| c.as_array()) {
+        if let Some(credits) = v.get("prize").and_then(|p| p.get("credits")).and_then(|c| c.as_array()) {
             let rows: Vec<(i64, i64)> = credits
                 .iter()
                 .filter_map(|c| {
@@ -688,7 +695,7 @@ impl Indexer {
                 })
                 .filter(|(h, a)| *h >= 0 && *a > 0)
                 .collect();
-            n += self.apply_league_credits(&rows)?;
+            n += self.apply_prize_credits(&rows)?;
         }
         if let Some(draws) = v
             .get("luckynode")
@@ -720,16 +727,16 @@ impl Indexer {
                 n += 1;
             }
         }
-        // Seasonal league boards (doc 03 §3.3: phones race phones). The
-        // pool's `league.boards` is a point-in-time snapshot, so the table
+        // Seasonal division boards (doc 03 §3.3: phones race phones). The
+        // pool's `divisions.boards` is a point-in-time snapshot, so the table
         // is replaced wholesale on each well-formed non-empty fetch (a
         // missing/empty fetch leaves the last boards in place).
-        if let Some(boards) = v.get("league").and_then(|l| l.get("boards")).and_then(|b| b.as_array()) {
+        if let Some(boards) = v.get("divisions").and_then(|d| d.get("boards")).and_then(|b| b.as_array()) {
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_secs() as i64)
                 .unwrap_or(0);
-            let mut rows: Vec<LeagueBoardRow> = Vec::new();
+            let mut rows: Vec<DivisionBoardRow> = Vec::new();
             for b in boards.iter().take(8) {
                 let class = b.get("class").and_then(|c| c.as_str()).unwrap_or("");
                 if class.is_empty() {
@@ -747,27 +754,27 @@ impl Indexer {
                     let days = e.get("days_active").and_then(|x| x.as_i64()).unwrap_or(0);
                     let streak = e.get("streak").and_then(|x| x.as_i64()).unwrap_or(0);
                     let attested = e.get("attested").and_then(|x| x.as_bool()).unwrap_or(false) as i64;
-                    rows.push(LeagueBoardRow { class: class.to_string(), rank, miner, name, eff_work: eff, days, streak, attested });
+                    rows.push(DivisionBoardRow { class: class.to_string(), rank, miner, name, eff_work: eff, days, streak, attested });
                 }
             }
             if !rows.is_empty() {
-                let tx = self.db.transaction().map_err(|e| format!("league snapshot: {e}"))?;
-                tx.execute("DELETE FROM league_boards", []).map_err(|e| format!("league snapshot: {e}"))?;
+                let tx = self.db.transaction().map_err(|e| format!("division snapshot: {e}"))?;
+                tx.execute("DELETE FROM division_boards", []).map_err(|e| format!("division snapshot: {e}"))?;
                 {
                     let mut ins = tx
                         .prepare(
-                            "INSERT INTO league_boards(class, rank, miner, name, eff_work, days, streak, attested, synced_at)
+                            "INSERT INTO division_boards(class, rank, miner, name, eff_work, days, streak, attested, synced_at)
                              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
                         )
-                        .map_err(|e| format!("league snapshot: {e}"))?;
+                        .map_err(|e| format!("division snapshot: {e}"))?;
                     for r in &rows {
                         ins.execute(params![
                             r.class, r.rank, r.miner, r.name, r.eff_work, r.days, r.streak, r.attested, now
                         ])
-                        .map_err(|e| format!("league snapshot: {e}"))?;
+                        .map_err(|e| format!("division snapshot: {e}"))?;
                     }
                 }
-                tx.commit().map_err(|e| format!("league snapshot: {e}"))?;
+                tx.commit().map_err(|e| format!("division snapshot: {e}"))?;
                 n += rows.len() as u64;
             }
         }
@@ -1038,39 +1045,39 @@ impl Indexer {
         }))
     }
 
-    /// Per-block game columns for one height (bonus/pot/league/finder).
+    /// Per-block game columns for one height (bonus/pot/divisions/finder).
     pub fn game_block(&self, height: i64) -> Result<Option<serde_json::Value>, String> {
         let row: Option<(i64, i64, i64, String)> = self
             .db
             .query_row(
-                "SELECT bonus, pot, league, finder FROM game_blocks WHERE height = ?1",
+                "SELECT bonus, pot, prize, finder FROM game_blocks WHERE height = ?1",
                 [height],
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
             )
             .map(Some)
             .unwrap_or(None);
-        Ok(row.map(|(bonus, pot, league, finder)| {
+        Ok(row.map(|(bonus, pot, prize, finder)| {
             serde_json::json!({
                 "height": height, "bonus": bonus, "pot": pot,
-                "league": league, "finder": finder,
+                "prize": prize, "finder": finder,
             })
         }))
     }
 
-    /// Apply per-height league inflow from the pool (including blocks it
-    /// did not mine). Insert-or-update league only, so a pool-found
+    /// Apply per-height prize inflow from the pool (including blocks it
+    /// did not mine). Insert-or-update prize only, so a pool-found
     /// block's bonus/pot/finder stay intact. Returns rows touched.
-    fn apply_league_credits(&mut self, credits: &[(i64, i64)]) -> Result<u64, String> {
+    fn apply_prize_credits(&mut self, credits: &[(i64, i64)]) -> Result<u64, String> {
         let mut n = 0u64;
         for (height, amount) in credits {
             self.db
                 .execute(
-                    "INSERT INTO game_blocks(height, bonus, pot, league, finder)
+                    "INSERT INTO game_blocks(height, bonus, pot, prize, finder)
                      VALUES (?1, 0, 0, ?2, 'external')
-                     ON CONFLICT(height) DO UPDATE SET league=excluded.league",
+                     ON CONFLICT(height) DO UPDATE SET prize=excluded.prize",
                     params![height, amount],
                 )
-                .map_err(|e| format!("league credit {height}: {e}"))?;
+                .map_err(|e| format!("prize credit {height}: {e}"))?;
             n += 1;
         }
         Ok(n)
@@ -1081,7 +1088,7 @@ impl Indexer {
         let mut st = self
             .db
             .prepare(
-                "SELECT height, bonus, pot, league, finder FROM game_blocks
+                "SELECT height, bonus, pot, prize, finder FROM game_blocks
                  ORDER BY height DESC LIMIT ?1",
             )
             .map_err(|e| format!("game list: {e}"))?;
@@ -1089,7 +1096,7 @@ impl Indexer {
             .query_map([limit], |r| {
                 Ok(serde_json::json!({
                     "height": r.get::<_, i64>(0)?, "bonus": r.get::<_, i64>(1)?,
-                    "pot": r.get::<_, i64>(2)?, "league": r.get::<_, i64>(3)?,
+                    "pot": r.get::<_, i64>(2)?, "prize": r.get::<_, i64>(3)?,
                     "finder": r.get::<_, String>(4)?,
                 }))
             })
@@ -1725,18 +1732,18 @@ impl Indexer {
         }))
     }
 
-    /// Seasonal league boards as last synced from the pool (ladder order:
+    /// Seasonal division boards as last synced from the pool (ladder order:
     /// phone, cpu, gpu, farm; ranks ascending within each class). Empty
     /// before the first pool sync or while the pool sends nothing.
-    pub fn league_boards(&self) -> Result<Vec<serde_json::Value>, String> {
+    pub fn division_boards(&self) -> Result<Vec<serde_json::Value>, String> {
         const LADDER: [&str; 4] = ["phone", "cpu", "gpu", "farm"];
         let mut st = self
             .db
             .prepare(
                 "SELECT rank, miner, name, eff_work, days, streak, attested, synced_at
-                 FROM league_boards WHERE class = ?1 ORDER BY rank LIMIT 100",
+                 FROM division_boards WHERE class = ?1 ORDER BY rank LIMIT 100",
             )
-            .map_err(|e| format!("league boards: {e}"))?;
+            .map_err(|e| format!("division boards: {e}"))?;
         let mut out = Vec::new();
         for class in LADDER {
             let entries = st
@@ -1749,9 +1756,9 @@ impl Indexer {
                         "synced_at": r.get::<_, i64>(7)?,
                     }))
                 })
-                .map_err(|e| format!("league boards: {e}"))?
+                .map_err(|e| format!("division boards: {e}"))?
                 .collect::<Result<Vec<_>, _>>()
-                .map_err(|e| format!("league boards: {e}"))?;
+                .map_err(|e| format!("division boards: {e}"))?;
             out.push(serde_json::json!({
                 "class": class,
                 "size": entries.len(),
@@ -1799,7 +1806,7 @@ mod tests {
         let idx = Indexer::open(dir.to_str().expect("path"), rpc).expect("open");
         idx.db
             .execute_batch(
-                "INSERT INTO game_blocks(height, bonus, pot, league, finder)
+                "INSERT INTO game_blocks(height, bonus, pot, prize, finder)
                  VALUES (8, 6349205, 0, 0, 'dbg5'), (9, 0, 0, 57143, 'dbg5'),
                         (10, 0, 0, 63492, 'dbg5');
                  INSERT INTO draws(epoch, height, seed, winner, budget, txid, cosigns, time)
@@ -1981,33 +1988,33 @@ mod tests {
     }
 
     #[test]
-    fn league_credits_cover_external_finds_without_clobbering_rewards() {
+    fn prize_credits_cover_external_finds_without_clobbering_rewards() {
         // A staker/peer-found block never appears in the pool's
-        // `last_blocks`, so its league inflow is only visible through the
-        // `league.credits` feed. Applying it must create the row (so the
+        // `last_blocks`, so its prize inflow is only visible through the
+        // `prize.credits` feed. Applying it must create the row (so the
         // block's inflow shows) and must not disturb bonus/pot/finder on
         // a block the pool DID mine.
         let rpc = RpcClient::new("127.0.0.1:1", "u", "p");
-        let dir = std::env::temp_dir().join("explorer-league-credit-test.db");
+        let dir = std::env::temp_dir().join("explorer-prize-credit-test.db");
         let _ = std::fs::remove_file(&dir);
         let mut idx = Indexer::open(dir.to_str().expect("path"), rpc).expect("open");
         idx.db
             .execute_batch(
-                "INSERT INTO game_blocks(height, bonus, pot, league, finder)
+                "INSERT INTO game_blocks(height, bonus, pot, prize, finder)
                  VALUES (7, 111, 22, 0, 'poolminer');",
             )
             .expect("fixture");
         let n = idx
-            .apply_league_credits(&[(7, 555), (290, 1_841_270)])
+            .apply_prize_credits(&[(7, 555), (290, 1_841_270)])
             .expect("apply");
         assert_eq!(n, 2);
-        // Pool-found row: league updated, rewards preserved.
+        // Pool-found row: prize updated, rewards preserved.
         let g7 = idx.game_block(7).expect("g7").expect("row");
-        assert_eq!((g7["league"].as_i64(), g7["bonus"].as_i64(), g7["pot"].as_i64()), (Some(555), Some(111), Some(22)));
+        assert_eq!((g7["prize"].as_i64(), g7["bonus"].as_i64(), g7["pot"].as_i64()), (Some(555), Some(111), Some(22)));
         assert_eq!(g7["finder"], "poolminer");
-        // External-find row: created with league only.
+        // External-find row: created with prize only.
         let g290 = idx.game_block(290).expect("g290").expect("row");
-        assert_eq!(g290["league"], 1_841_270);
+        assert_eq!(g290["prize"], 1_841_270);
         assert_eq!((g290["bonus"].as_i64(), g290["pot"].as_i64()), (Some(0), Some(0)));
         // New rows identify themselves as non-pool finds.
         assert_eq!(g290["finder"], "external");
@@ -2127,24 +2134,24 @@ mod tests {
     }
 
     #[test]
-    fn league_boards_roundtrip_in_ladder_order() {
+    fn division_boards_roundtrip_in_ladder_order() {
         let rpc = RpcClient::new("127.0.0.1:1", "u", "p");
-        let dir = std::env::temp_dir().join("explorer-league-test.db");
+        let dir = std::env::temp_dir().join("explorer-division-test.db");
         let _ = std::fs::remove_file(&dir);
         let idx = Indexer::open(dir.to_str().expect("path"), rpc).expect("open");
         // Empty before the first pool sync.
-        let boards = idx.league_boards().expect("boards");
+        let boards = idx.division_boards().expect("boards");
         assert_eq!(boards.len(), 4);
         assert!(boards.iter().all(|b| b["entries"].as_array().map(|e| e.is_empty()).unwrap_or(false)));
         idx.db
             .execute_batch(
-                "INSERT INTO league_boards(class, rank, miner, name, eff_work, days, streak, attested, synced_at)
+                "INSERT INTO division_boards(class, rank, miner, name, eff_work, days, streak, attested, synced_at)
                  VALUES ('gpu', 1, 'g1', 'g1', 400, 3, 2, 0, 7),
                         ('phone', 2, 'a2', 'addr-a2', 500, 5, 5, 1, 7),
                         ('phone', 1, 'a1', 'a1', 900, 6, 6, 0, 7);",
             )
             .expect("fixture");
-        let boards = idx.league_boards().expect("boards");
+        let boards = idx.division_boards().expect("boards");
         // Ladder order: phone first even though gpu was inserted first.
         assert_eq!(boards[0]["class"], "phone");
         assert_eq!(boards[0]["size"], 2);

@@ -6,10 +6,10 @@
 //!   /tx/<txid>             tx page           /api/tx/<txid>
 //!   /address/<addr>        address page      /api/address/<addr>
 //!   /game                  jackpot/pot/draws (pool-reported)
-//!   /league                season league boards (pool-reported)
+//!   /divisions                season division boards (pool-reported)
 //!   /mempool               pending txs (node view)
 //!   /richlist              top funded addresses (unspent only)
-//!   /search?q=             smart redirect    /api/tip  /api/stats  /api/league  /api/mempool  /api/richlist
+//!   /search?q=             smart redirect    /api/tip  /api/stats  /api/divisions  /api/mempool  /api/richlist
 
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
@@ -23,7 +23,7 @@ fn page(_title: &str, body: String) -> String {
     // Tab shows the brand only (per-page titles removed); _title is kept
     // so call sites still label what they render.
     format!(
-        "<!doctype html><html><head><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Lucky Lode explorer</title><style>{CSS}</style></head><body><h1><a href=/ style=\"color:#ffd166;text-decoration:none\">Lucky Lode explorer</a></h1><div class=dim style=\"margin:-4px 0 12px;font-size:13px\"><a href=/>blocks</a> · <a href=/charts>charts</a> · <a href=/market>market</a> · <a href=/game>game</a> · <a href=/league>leagues</a> · <a href=/mempool>mempool</a> · <a href=/richlist>rich</a></div>{body}</body></html>"
+        "<!doctype html><html><head><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Lucky Lode explorer</title><style>{CSS}</style></head><body><h1><a href=/ style=\"color:#ffd166;text-decoration:none\">Lucky Lode explorer</a></h1><div class=dim style=\"margin:-4px 0 12px;font-size:13px\"><a href=/>blocks</a> · <a href=/charts>charts</a> · <a href=/market>market</a> · <a href=/game>game</a> · <a href=/divisions>divisions</a> · <a href=/mempool>mempool</a> · <a href=/richlist>rich</a></div>{body}</body></html>"
     )
 }
 
@@ -152,7 +152,7 @@ fn home(idx: &mut Indexer) -> String {
     let mut rows = String::new();
     // Per-block game money (home columns; pool-reported, pool-mined only).
     // bonus = jackpot win, pot = splash paid to the finder (0 when no
-    // event — NOT the reserve balance), league = overflow credited.
+    // event — NOT the reserve balance), prize = inflow credited.
     let game_by_height: std::collections::HashMap<i64, (i64, i64, i64)> = idx
         .game_blocks_recent(100)
         .unwrap_or_default()
@@ -164,7 +164,7 @@ fn home(idx: &mut Indexer) -> String {
                 (
                     g.get("bonus")?.as_i64()?,
                     g.get("pot")?.as_i64()?,
-                    g.get("league")?.as_i64()?,
+                    g.get("prize")?.as_i64()?,
                 ),
             ))
         })
@@ -233,7 +233,7 @@ fn home(idx: &mut Indexer) -> String {
     page(
         "home",
         format!(
-            "{}<div class=card>height <b>{}</b> · hash <span class=dim>{}</span> · supply <b>{}</b> · difficulty {:.2} · minted (PoS) in last 20: <b>{}</b></div>{}{}{}<h2>Recent blocks</h2><table><tr><th>height</th><th>type</th><th>hash</th><th>txs</th><th>block reward</th><th>jackpot bonus</th><th>pot splash</th><th>league inflow</th></tr>{rows}</table><h2>Recent transactions</h2><table><tr><th>txid</th><th>block</th><th>time</th><th>value</th><th>fee</th><th>size</th><th>fee rate (sat/vB)</th></tr>{txrows}</table>",
+            "{}<div class=card>height <b>{}</b> · hash <span class=dim>{}</span> · supply <b>{}</b> · difficulty {:.2} · minted (PoS) in last 20: <b>{}</b></div>{}{}{}<h2>Recent blocks</h2><table><tr><th>height</th><th>type</th><th>hash</th><th>txs</th><th>block reward</th><th>jackpot bonus</th><th>pot splash</th><th>prize inflow</th></tr>{rows}</table><h2>Recent transactions</h2><table><tr><th>txid</th><th>block</th><th>time</th><th>value</th><th>fee</th><th>size</th><th>fee rate (sat/vB)</th></tr>{txrows}</table>",
             search_box(),
             if h >= 0 { link_block(h) } else { "–".to_string() },
             esc(stats.get("hash").and_then(|v| v.as_str()).unwrap_or("")),
@@ -280,7 +280,7 @@ fn game_page(idx: &Indexer) -> String {
                 link_block(h),
                 finder,
                 coins(b["bonus"].as_i64().unwrap_or(0)),
-                coins(b["league"].as_i64().unwrap_or(0)),
+                coins(b["prize"].as_i64().unwrap_or(0)),
             );
         }
         if b["pot"].as_i64().unwrap_or(0) > 0 {
@@ -326,7 +326,7 @@ fn game_page(idx: &Indexer) -> String {
     page(
         "game",
         format!(
-            "{}<div class=card>jackpot reserve <b>{}</b> · pot <b>{}</b> · pot drought <b>{}/{}</b> · faucet reserve <b>{}</b> · dev reserve <b>{}</b> · odds (PoW finds, pre-committed per height): jackpot 1-in-{} blocks,             pot 1-in-{} &mdash; forced splash after {} dry blocks max</div><h2>Luckynode Draws</h2><table><tr><th>epoch</th><th>height</th><th>winner</th><th>budget</th><th>cosigns</th><th>txid</th><th>seed (epoch-start block)</th></tr>{draws}</table><h2>Jackpot hits</h2><table><tr><th>height</th><th>finder</th><th>bonus</th><th>league inflow</th></tr>{hits}</table><h2>Pot splashes</h2><table><tr><th>height</th><th>finder</th><th>splash</th></tr>{splashes}</table>",
+            "{}<div class=card>jackpot reserve <b>{}</b> · pot <b>{}</b> · pot drought <b>{}/{}</b> · faucet reserve <b>{}</b> · dev reserve <b>{}</b> · odds (PoW finds, pre-committed per height): jackpot 1-in-{} blocks,             pot 1-in-{} &mdash; forced splash after {} dry blocks max</div><h2>Luckynode Draws</h2><table><tr><th>epoch</th><th>height</th><th>winner</th><th>budget</th><th>cosigns</th><th>txid</th><th>seed (epoch-start block)</th></tr>{draws}</table><h2>Jackpot hits</h2><table><tr><th>height</th><th>finder</th><th>bonus</th><th>prize inflow</th></tr>{hits}</table><h2>Pot splashes</h2><table><tr><th>height</th><th>finder</th><th>splash</th></tr>{splashes}</table>",
             search_box(),
             coins(reserve),
             coins(pot),
@@ -656,11 +656,11 @@ fn market_page(idx: &mut Indexer) -> String {
     page("market", format!("{}{}", search_box(), body))
 }
 
-/// Seasonal league boards (doc 03 §3.3: phones race phones), as last
+/// Seasonal division boards (doc 03 §3.3: phones race phones), as last
 /// synced from the pool's dashboard API. Snapshot data, not consensus —
 /// the pool is the board authority; the explorer mirrors it.
-fn league_page(idx: &Indexer) -> String {
-    let boards = idx.league_boards().unwrap_or_default();
+fn divisions_page(idx: &Indexer) -> String {
+    let boards = idx.division_boards().unwrap_or_default();
     let mut sections = String::new();
     for b in &boards {
         let class = esc(b["class"].as_str().unwrap_or(""));
@@ -693,10 +693,10 @@ fn league_page(idx: &Indexer) -> String {
         );
     }
     if sections.is_empty() {
-        sections = "<p class=dim>no league data yet — the explorer mirrors the pool boards on its next pool sync.</p>".to_string();
+        sections = "<p class=dim>no division data yet — the explorer mirrors the pool boards on its next pool sync.</p>".to_string();
     }
     page(
-        "leagues",
+        "divisions",
         format!(
             "{}<div class=card>Seasonal boards by device family (30-day effective work). Phones race phones; farms are paid, not feted. Snapshot mirrored from the official pool.</div>{sections}",
             search_box(),
@@ -812,10 +812,10 @@ fn block_page(idx: &Indexer, b: &serde_json::Value) -> String {    let h = b["he
     }
     let game_rows = match idx.game_block(h).unwrap_or(None) {
         Some(g) => format!(
-            "<tr><th>jackpot bonus</th><td>{}</td></tr><tr><th>pot splash</th><td>{}</td></tr><tr><th>league inflow</th><td>{}</td></tr><tr><th>finder</th><td>{}</td></tr>",
+            "<tr><th>jackpot bonus</th><td>{}</td></tr><tr><th>pot splash</th><td>{}</td></tr><tr><th>prize inflow</th><td>{}</td></tr><tr><th>finder</th><td>{}</td></tr>",
             coins(g["bonus"].as_i64().unwrap_or(0)),
             coins(g["pot"].as_i64().unwrap_or(0)),
-            coins(g["league"].as_i64().unwrap_or(0)),
+            coins(g["prize"].as_i64().unwrap_or(0)),
             addr_or_text(g["finder"].as_str().unwrap_or("")),
         ),
         None => String::new(),
@@ -1007,9 +1007,9 @@ fn handle(idx: &mut Indexer, method: &str, path: &str) -> String {
         });
         return json_resp(&out);
     }
-    if route == "/api/league" {
+    if route == "/api/divisions" {
         return json_resp(&serde_json::json!({
-            "boards": idx.league_boards().unwrap_or_default(),
+            "boards": idx.division_boards().unwrap_or_default(),
         }));
     }
     if route == "/api/charts" {
@@ -1031,8 +1031,8 @@ fn handle(idx: &mut Indexer, method: &str, path: &str) -> String {
     if route == "/game" {
         return html_resp(&game_page(idx));
     }
-    if route == "/league" {
-        return html_resp(&league_page(idx));
+    if route == "/divisions" {
+        return html_resp(&divisions_page(idx));
     }
     if route == "/mempool" {
         return html_resp(&mempool_page(idx));

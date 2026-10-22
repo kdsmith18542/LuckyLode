@@ -35,11 +35,11 @@
   const mining = $derived<any>(info?.mining ?? {});
   const events = $derived<any[]>(
     (pool?.last_blocks ?? []).filter(
-      (b: any) => b.bonus > 0 || b.pot > 0 || b.league_overflow > 0,
+      (b: any) => b.bonus > 0 || b.pot > 0 || b.prize_inflow > 0,
     ),
   );
-  const league = $derived<number | null>(
-    typeof pool?.pool?.league_pool === "number" ? pool.pool.league_pool : null,
+  const prize = $derived<number | null>(
+    typeof pool?.pool?.prize_pool === "number" ? pool.pool.prize_pool : null,
   );
   const droughtLeft = $derived(
     typeof jp.drought === "number" && typeof jp.potdrought === "number"
@@ -47,7 +47,7 @@
       : null,
   );
 
-  // Luck chart: stacked bars per recent block — league inflow (dim),
+  // Luck chart: stacked bars per recent block — prize inflow (dim),
   // pot splash (green), jackpot bonus (gold), scaled to the window max.
   const chart = $derived.by(() => {
     const rows = (pool?.last_blocks ?? []).slice(0, 40).reverse() as any[];
@@ -55,9 +55,9 @@
       h: b.height ?? 0,
       bonus: b.bonus ?? 0,
       pot: b.pot ?? 0,
-      league: b.league_overflow ?? 0,
+      prize: b.prize_inflow ?? 0,
     }));
-    const max = Math.max(1, ...vals.map((v) => v.bonus + v.pot + v.league));
+    const max = Math.max(1, ...vals.map((v) => v.bonus + v.pot + v.prize));
     return { vals, max, w: Math.max(vals.length, 1) * 12 };
   });
 
@@ -68,8 +68,8 @@
   <div class="card"><div class="k">jackpot reserve</div><div class="v gold">{api.coinU(jp.reserve)}</div></div>
   <div class="card"><div class="k">lucky pot</div><div class="v">{api.coinU(jp.pot)}</div></div>
   <div class="card">
-    <div class="k">league pool</div>
-    <div class="v">{league !== null ? api.coinU(league) : "–"}</div>
+    <div class="k">prize fund</div>
+    <div class="v">{prize !== null ? api.coinU(prize) : "–"}</div>
   </div>
   <div class="card">
     <div class="k">forced pot splash in</div>
@@ -92,7 +92,7 @@
       {#each chart.vals as v, i}
         {@const bh = (v.bonus / chart.max) * 80}
         {@const ph = (v.pot / chart.max) * 80}
-        {@const lh = (v.league / chart.max) * 80}
+        {@const lh = (v.prize / chart.max) * 80}
         <rect x={i * 12} y={80 - lh} width="10" height={lh} fill="var(--green)" opacity="0.35" />
         <rect x={i * 12} y={80 - lh - ph} width="10" height={ph} fill="var(--green)" />
         <rect x={i * 12} y={80 - lh - ph - bh} width="10" height={bh} fill="var(--gold)" />
@@ -103,7 +103,7 @@
       heights {chart.vals[0].h}–{chart.vals[chart.vals.length - 1].h} ·
       <span style="color:var(--gold)">■</span> jackpot bonus
       <span style="color:var(--green)">■</span> pot splash
-      <span style="color:var(--green);opacity:.5">■</span> league inflow
+      <span style="color:var(--green);opacity:.5">■</span> prize inflow
     </div>
   {:else}
     <div class="muted">no blocks in the pool's window</div>
@@ -130,7 +130,7 @@
 
 <h2>Recent game events</h2>
 <table>
-  <thead><tr><th>height</th><th>finder</th><th>block reward</th><th>jackpot bonus</th><th>pot splash</th><th>league inflow</th></tr></thead>
+  <thead><tr><th>height</th><th>finder</th><th>block reward</th><th>jackpot bonus</th><th>pot splash</th><th>prize inflow</th></tr></thead>
   <tbody>
     {#each events as b}
       <tr>
@@ -139,10 +139,10 @@
         <td>{api.coinU(b.value)}</td>
         <td>{api.coinU(b.bonus)}</td>
         <td>{api.coinU(b.pot)}</td>
-        <td>{api.coinU(b.league_overflow)}</td>
+        <td>{api.coinU(b.prize_inflow)}</td>
       </tr>
     {/each}
-    {#if events.length === 0}<tr><td colspan="6" class="muted">no jackpot/pot/league events in the pool's recent window</td></tr>{/if}
+    {#if events.length === 0}<tr><td colspan="6" class="muted">no jackpot/pot/prize events in the pool's recent window</td></tr>{/if}
   </tbody>
 </table>
 

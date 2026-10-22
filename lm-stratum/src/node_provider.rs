@@ -60,9 +60,9 @@ pub struct RecentTemplate {
     pub faucet: u64,
     /// Dev seed-fund output claimed by this template (0 = none).
     pub dev: u64,
-    /// Advisory league-pool overflow for this height (base units): the
+    /// Advisory prize-fund overflow for this height (base units): the
     /// jackpot-levy slice overflowing the reserve cap.
-    pub league: u64,
+    pub prize: u64,
     /// Normal net value of the template's coinbase (the pool's receipt).
     pub coinbase: u64,
     /// This template is a pity-timer claim (node drought at/over the
@@ -90,9 +90,9 @@ struct TemplateState {
     faucet_claim: u64,
     /// Dev seed-fund output claimed by this template (0 = none).
     dev_claim: u64,
-    /// Advisory league-pool overflow for the current template's height
-    /// (base units; credited to the pool's league ledger on accept).
-    league: u64,
+    /// Advisory prize-fund overflow for the current template's height
+    /// (base units; credited to the pool's prize ledger on accept).
+    prize: u64,
     /// Normal net value of the current template's coinbase (parsed from the
     /// node's own template bytes — what an accepted block pays the pool).
     coinbase: u64,
@@ -293,7 +293,7 @@ impl NodeProvider {
             serde_json::json!([{"capabilities": []}]),
         )?;
         let height = gbt.get("height").and_then(|v| v.as_u64()).unwrap_or(0);
-        let league = parse_league_overflow(&gbt);
+        let prize = parse_prize_inflow(&gbt);
         let mut unmatured: std::collections::BTreeMap<u64, u64> =
             cfg.restored_unmatured.into_iter().collect();
         let seed = decide_seed_claim(
@@ -323,7 +323,7 @@ impl NodeProvider {
                 dev,
                 coinbase,
                 pity,
-                league,
+                prize,
             });
         }
         Ok(Self {
@@ -338,7 +338,7 @@ impl NodeProvider {
                 dev_claim: dev,
                 coinbase,
                 pity,
-                league,
+                prize,
                 fetched_at: Instant::now(),
             }),
             accepted: Mutex::new(0),
@@ -385,7 +385,7 @@ impl NodeProvider {
                 serde_json::json!([{"capabilities": []}]),
             )
             .and_then(|gbt| {
-                let league = parse_league_overflow(&gbt);
+                let prize = parse_prize_inflow(&gbt);
                 // Seed-fund claims (internal/20): decided by the shared
                 // helper so the constructor's first template and every
                 // refresh apply identical policy.
@@ -401,9 +401,9 @@ impl NodeProvider {
                 );
                 drop(unm);
                 build_template(&gbt, claim_jackpots, claim_pot, jackpot_divisor, pot_divisor, &seed)
-                    .map(|bt| (bt, league))
+                    .map(|bt| (bt, prize))
             }) {
-            Ok(((tpl, txs, bonus, pot, coinbase, pity, faucet, dev), league)) => {
+            Ok(((tpl, txs, bonus, pot, coinbase, pity, faucet, dev), prize)) => {
                 let mut st = self.state.lock().expect("state");
                 if let Some(m) = header_merkle(&tpl.header) {
                     st.recent.push_front(RecentTemplate {
@@ -415,7 +415,7 @@ impl NodeProvider {
                         dev,
                         coinbase,
                         pity,
-                        league,
+                        prize,
                     });
                     // 256 refreshes (~8.5 min at 2s) covers the whole job
                     // lifetime (server registry: 16 jobs x 30s), so a slow
@@ -432,7 +432,7 @@ impl NodeProvider {
                 st.dev_claim = dev;
                 st.coinbase = coinbase;
                 st.pity = pity;
-                st.league = league;
+                st.prize = prize;
                 st.fetched_at = Instant::now();
             }
             Err(_) => {
@@ -482,7 +482,7 @@ impl TemplateProvider for NodeProvider {
                     pot: 0,
                     faucet: 0,
                     dev: 0,
-                    league_overflow: 0,
+                    prize_inflow: 0,
                     reserve: 0,
                     coinbase: 0,
                 };
@@ -492,7 +492,7 @@ impl TemplateProvider for NodeProvider {
         // assembly AND gating both need ITS claims, not the latest
         // template's. Its normal coinbase value rides along for payout
         // accounting.
-        let (txs, bonus, pot, faucet, dev, coinbase, _pity, league) = {
+        let (txs, bonus, pot, faucet, dev, coinbase, _pity, prize) = {
             let st = self.state.lock().expect("state");
             if header_merkle(&st.template.header) == Some(merkle) {
                 (
@@ -503,7 +503,7 @@ impl TemplateProvider for NodeProvider {
                     st.dev_claim,
                     st.coinbase,
                     st.pity,
-                    st.league,
+                    st.prize,
                 )
             } else {
                 match st.recent.iter().find(|r| r.merkle == merkle) {
@@ -515,7 +515,7 @@ impl TemplateProvider for NodeProvider {
                         r.dev,
                         r.coinbase,
                         r.pity,
-                        r.league,
+                        r.prize,
                     ),
                     None => {
                         // Unknown template (older than the ring): refuse
@@ -531,7 +531,7 @@ impl TemplateProvider for NodeProvider {
                             pot: 0,
                             faucet: 0,
                             dev: 0,
-                            league_overflow: 0,
+                            prize_inflow: 0,
                             reserve: 0,
                             coinbase: 0,
                         };
@@ -577,22 +577,22 @@ impl TemplateProvider for NodeProvider {
             pot: if accepted { pot } else { 0 },
             faucet: if accepted { faucet } else { 0 },
             dev: if accepted { dev } else { 0 },
-            // League credit rides on the accepted template's advisory
+            // Prize credit rides on the accepted template's advisory
             // (the node computed it with the same consensus math).
-            league_overflow: if accepted { league } else { 0 },
+            prize_inflow: if accepted { prize } else { 0 },
             reserve: 0,
             coinbase: if accepted { coinbase } else { 0 },
         }
     }
 }
 
-/// Advisory league-pool overflow for the template's height (base units):
+/// Advisory prize-fund overflow for the template's height (base units):
 /// the jackpot-levy slice that overflows the reserve cap and funds the
-/// league pool / Luckynode Draw budgets (doc 06 §6.2,.
+/// prize fund / Luckynode Draw budgets (doc 06 §6.2,.
 /// Nodes predating the field read as 0 (safe: no credit).
 #[must_use]
-pub fn parse_league_overflow(gbt: &serde_json::Value) -> u64 {
-    gbt.get("leagueoverflow").and_then(|v| v.as_u64()).unwrap_or(0)
+pub fn parse_prize_inflow(gbt: &serde_json::Value) -> u64 {
+    gbt.get("prizeoverflow").and_then(|v| v.as_u64()).unwrap_or(0)
 }
 
 // The pre-committed draw math lives in `lm-pow` (consensus-adjacent
@@ -692,10 +692,10 @@ pub fn parse_gbt(gbt: &serde_json::Value) -> Result<(JobTemplate, Vec<Vec<u8>>),
             height,
             pool_target: share_target,
             net_target: target,
-            // Prospective league overflow for this height, from the
+            // Prospective prize inflow for this height, from the
             // node's own advisory — the pool credits it when the height
             // lands, whoever found the block.
-            league: parse_league_overflow(gbt),
+            prize: parse_prize_inflow(gbt),
         },
         txs,
     ))
@@ -1480,17 +1480,17 @@ mod tests {
     }
 
     #[test]
-    fn league_overflow_parses_and_defaults_to_zero() {        let gbt: serde_json::Value = serde_json::from_str(GBT_FIXTURE).expect("fixture json");
-        // Old node (field absent): no league credit.
-        assert_eq!(parse_league_overflow(&gbt), 0);
+    fn prize_inflow_parses_and_defaults_to_zero() {        let gbt: serde_json::Value = serde_json::from_str(GBT_FIXTURE).expect("fixture json");
+        // Old node (field absent): no prize credit.
+        assert_eq!(parse_prize_inflow(&gbt), 0);
         // New node: the exact per-height overflow rides through.
         let mut gbt2 = gbt.clone();
-        gbt2["leagueoverflow"] = serde_json::json!(50794u64);
-        assert_eq!(parse_league_overflow(&gbt2), 50794);
+        gbt2["prizeoverflow"] = serde_json::json!(50794u64);
+        assert_eq!(parse_prize_inflow(&gbt2), 50794);
         // ... and into the template, where the refresh loop records it
         // per height for the tip-change reconcile.
         let (tpl, ..) = build_template(&gbt2, true, true, 100, 1000, &SeedClaim::default()).expect("tpl");
-        assert_eq!(tpl.league, 50794);
+        assert_eq!(tpl.prize, 50794);
     }
 
     #[test]

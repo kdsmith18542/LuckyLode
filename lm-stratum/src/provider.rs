@@ -18,12 +18,12 @@ pub struct JobTemplate {
     pub height: u64,
     pub pool_target: [u8; 32],
     pub net_target: [u8; 32],
-    /// Advisory league-pool overflow this height will generate (base
+    /// Advisory prize-fund overflow this height will generate (base
     /// units): the jackpot-levy slice overflowing the reserve cap. The
     /// pool credits it for EVERY new tip — mined locally or found
     /// externally (staker/peer) — so Luckynode Draw budgets track the
     /// full chain, not just pool finds.
-    pub league: u64,
+    pub prize: u64,
 }
 
 /// Result of handing a network-meeting share to the chain.
@@ -38,8 +38,8 @@ pub struct BlockOutcome {
     pub bonus: u64,
     /// Pot splash included in the coinbase (0 without a pot event).
     pub pot: u64,
-    /// Levy slice diverted to the league prize pool (cap overflow).
-    pub league_overflow: u64,
+    /// Levy slice diverted to the prize prize pool (cap overflow).
+    pub prize_inflow: u64,
     /// Seed-fund faucet output claimed by this block's coinbase (0 = none).
     pub faucet: u64,
     /// Seed-fund dev output claimed by this block's coinbase (0 = none).
@@ -83,7 +83,7 @@ pub struct MockProvider {
     fees: u64,
     reserve: u64,
     blocks: u64,
-    league: u64,
+    prize: u64,
 }
 
 impl MockProvider {
@@ -96,14 +96,14 @@ impl MockProvider {
             fees,
             reserve: 0,
             blocks: 0,
-            league: 0,
+            prize: 0,
         }
     }
 
-    /// Prospective league overflow the mock's templates advertise (the
+    /// Prospective prize inflow the mock's templates advertise (the
     /// refresh loop records it per height for the tip-change reconcile).
-    pub fn set_league(&mut self, league: u64) {
-        self.league = league;
+    pub fn set_prize(&mut self, prize: u64) {
+        self.prize = prize;
     }
 
     /// Instant-block harness: every share is a block (both targets max).
@@ -137,7 +137,7 @@ impl TemplateProvider for MockProvider {
             height: self.height,
             pool_target: self.pool_target,
             net_target: self.net_target,
-            league: self.league,
+            prize: self.prize,
         }
     }
 
@@ -155,7 +155,7 @@ impl TemplateProvider for MockProvider {
                 // a node-provider behavior proven live, not mocked).
                 faucet: 0,
                 dev: 0,
-                league_overflow: 0,
+                prize_inflow: 0,
                 reserve: self.reserve,
                 coinbase: 0,
             };
@@ -164,7 +164,7 @@ impl TemplateProvider for MockProvider {
         // The mock mirrors the live consensus rules (doc 06 rev 1.2):
         // the 4/1 levy split. No pot events on the mock chain — the pot
         // leg still takes its fifth of the levy (burning it at the cap,
-        // like a chain whose pot is full), so reserve/league/bonus all
+        // like a chain whose pot is full), so reserve/divisions/bonus all
         // match what the real chain computes for the same block.
         let draws = BlockDraws {
             jackpot,
@@ -192,7 +192,7 @@ impl TemplateProvider for MockProvider {
             // No seed claims on the mock flow (see above).
             faucet: 0,
             dev: 0,
-            league_overflow: p.to_league,
+            prize_inflow: p.to_prize,
             reserve: p.reserve,
             // Net normal (before the bonus) — the same number NodeProvider
             // parses from the template coinbase, so payout accounting

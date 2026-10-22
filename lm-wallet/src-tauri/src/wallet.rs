@@ -1575,7 +1575,7 @@ mod tests {
                 "-daemon",
                 "-listen=0",
                 "-gen=0",
-                "-verus-coinbase-maturity=1",
+                "-lucky-coinbase-maturity=1",
             ])
             .output()
             .expect("spawn luckyd");

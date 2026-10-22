@@ -60,7 +60,7 @@ pub struct BlockPayout {
     /// Levy slice credited to the reserve this block.
     pub to_reserve: u64,
     /// Levy slice diverted to the league prize pool (cap overflow).
-    pub to_league: u64,
+    pub to_prize: u64,
     /// Reserve balance after this block.
     pub reserve: u64,
 }
@@ -77,7 +77,7 @@ pub struct BlockPayout {
 ///
 /// - Normal block: `miner = R + F − levy`; `reserve += levy` (capped).
 /// - Jackpot block: `miner = (R + F − levy) + min(5R, reserve_after_levy)`.
-/// - Conservation: `miner + (reserve − reserve_before) + to_league == R + F`.
+/// - Conservation: `miner + (reserve − reserve_before) + to_prize == R + F`.
 #[must_use]
 #[deprecated(since = "0.2.0", note = "pre-split rule; use pot::apply_pot_block")]
 pub fn apply_block(reserve: u64, base: u64, fees: u64, is_jackpot: bool) -> BlockPayout {
@@ -85,7 +85,7 @@ pub fn apply_block(reserve: u64, base: u64, fees: u64, is_jackpot: bool) -> Bloc
     let normal = base.saturating_add(fees).saturating_sub(levy);
     let cap = reserve_cap(base);
     let to_reserve = levy.min(cap.saturating_sub(reserve));
-    let to_league = levy - to_reserve;
+    let to_prize = levy - to_reserve;
     // Invariant: to_reserve <= cap - reserve, so the credit cannot
     // overflow (cap is a saturating multiple of base).
     let credited = reserve
@@ -96,7 +96,7 @@ pub fn apply_block(reserve: u64, base: u64, fees: u64, is_jackpot: bool) -> Bloc
             miner: normal,
             bonus: 0,
             to_reserve,
-            to_league,
+            to_prize,
             reserve: credited,
         };
     }
@@ -105,7 +105,7 @@ pub fn apply_block(reserve: u64, base: u64, fees: u64, is_jackpot: bool) -> Bloc
         miner: normal.saturating_add(bonus),
         bonus,
         to_reserve,
-        to_league,
+        to_prize,
         // Invariant: bonus <= min(5R, credited) — the debit cannot
         // underflow.
         reserve: credited
@@ -135,10 +135,10 @@ mod tests {
         assert_eq!(p.miner, 102_000_000 - 5_100_000);
         assert_eq!(p.bonus, 0);
         assert_eq!(p.to_reserve, 5_100_000);
-        assert_eq!(p.to_league, 0);
+        assert_eq!(p.to_prize, 0);
         assert_eq!(p.reserve, 5_100_000);
-        // Conservation: miner + Δreserve + league == R + F.
-        assert_eq!(p.miner + p.reserve + p.to_league, 102_000_000);
+        // Conservation: miner + Δreserve + prize == R + F.
+        assert_eq!(p.miner + p.reserve + p.to_prize, 102_000_000);
     }
 
     #[test]
@@ -166,31 +166,31 @@ mod tests {
         // Reserve at the cap: jackpot pays exactly 5R.
         let p = apply_block(5_000, 100, 0, true);
         assert_eq!(p.bonus, 500);
-        assert_eq!(p.to_reserve, 0); // reserve full: levy flows to league pool
-        assert_eq!(p.to_league, 5);
+        assert_eq!(p.to_reserve, 0); // reserve full: levy flows to prize fund
+        assert_eq!(p.to_prize, 5);
         assert_eq!(p.miner, (100 - 5) + 500);
         assert_eq!(p.reserve, 5_000 - 500);
-        // Conservation: miner + Δreserve + league == R + F.
-        assert_eq!(p.miner as i128 + (p.reserve as i128 - 5_000) + p.to_league as i128, 100);
+        // Conservation: miner + Δreserve + prize == R + F.
+        assert_eq!(p.miner as i128 + (p.reserve as i128 - 5_000) + p.to_prize as i128, 100);
     }
 
     #[test]
-    fn cap_overflow_feeds_league_pool() {
+    fn cap_overflow_feeds_prize_pool() {
         let cap = reserve_cap(100); // 5000
         // Levy that fits entirely under the cap stays in the reserve.
         let p = apply_block(cap - 5, 100, 2, false);
         assert_eq!(p.to_reserve, 5);
-        assert_eq!(p.to_league, 0);
+        assert_eq!(p.to_prize, 0);
         assert_eq!(p.reserve, cap);
-        // Levy that would breach the cap splits: reserve fills, rest to league.
+        // Levy that would breach the cap splits: reserve fills, rest to prize.
         let p = apply_block(cap - 2, 100, 2, false);
         assert_eq!(p.to_reserve, 2);
-        assert_eq!(p.to_league, 3);
+        assert_eq!(p.to_prize, 3);
         assert_eq!(p.reserve, cap);
-        // At a full reserve the whole levy flows to the league pool.
+        // At a full reserve the whole levy flows to the prize fund.
         let p = apply_block(cap, 100, 2, true);
         assert_eq!(p.to_reserve, 0);
-        assert_eq!(p.to_league, 5);
+        assert_eq!(p.to_prize, 5);
         assert_eq!(p.bonus, 500);
         assert_eq!(p.reserve, cap - 500);
     }
@@ -202,7 +202,7 @@ mod tests {
         let p = apply_block(full_cap, 100, 0, false);
         // Reserve 10_000 already exceeds the new cap 5000: no room for levy.
         assert_eq!(p.to_reserve, 0);
-        assert_eq!(p.to_league, levy_amount(100, 0));
+        assert_eq!(p.to_prize, levy_amount(100, 0));
         assert_eq!(p.reserve, full_cap);
     }
 
@@ -219,14 +219,14 @@ mod tests {
         // assert finiteness and structural sanity, not conservation.
         let p = apply_block(u64::MAX, u64::MAX, u64::MAX, true);
         assert_eq!(p.to_reserve, 0); // reserve already at/over cap
-        assert_eq!(p.to_league, levy_amount(u64::MAX, u64::MAX));
+        assert_eq!(p.to_prize, levy_amount(u64::MAX, u64::MAX));
         assert_eq!(p.bonus, u64::MAX);
         assert_eq!(p.reserve, 0);
         assert_eq!(p.miner, u64::MAX); // (MAX − levy) + MAX saturates
         // Large-but-sane values still conserve exactly.
         let p = apply_block(1_000_000, 12_500_000_000, 500_000, true);
         assert_eq!(
-            p.miner as u128 + p.reserve as u128 + p.to_league as u128 - 1_000_000u128,
+            p.miner as u128 + p.reserve as u128 + p.to_prize as u128 - 1_000_000u128,
             12_500_000_000u128 + 500_000
         );
         let big = apply_block(0, u64::MAX / 2, 0, false);
@@ -237,7 +237,7 @@ mod tests {
 
     #[test]
     fn every_block_conserves_money() {
-        // miner + Δreserve + league == R + F for jackpot and normal blocks,
+        // miner + Δreserve + prize == R + F for jackpot and normal blocks,
         // across reserve states (empty, mid, capped) and reward levels.
         for &(reserve, base, fees) in &[
             (0u64, 100u64, 2u64),
@@ -250,7 +250,7 @@ mod tests {
                 let p = apply_block(reserve, base, fees, jackpot);
                 let inflow = base as u128 + fees as u128;
                 let outflow =
-                    p.miner as u128 + p.reserve as u128 + p.to_league as u128 - reserve as u128;
+                    p.miner as u128 + p.reserve as u128 + p.to_prize as u128 - reserve as u128;
                 assert_eq!(outflow, inflow, "reserve={reserve} base={base} jackpot={jackpot}");
             }
         }

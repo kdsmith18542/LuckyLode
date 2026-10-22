@@ -23,10 +23,10 @@ const USAGE: &str = "usage:
 
   indexes the node's chain into SQLite (./explorer.db style path) and serves
   a read-only UI + JSON API: /block/<height|hash> /tx/<txid> /address/<addr>
-  /game /league /mempool /richlist /charts /market /search?q= /api/tip /api/stats
-  /api/game /api/league /api/mempool /api/richlist /api/charts /api/market.
-  Reorg-safe (rolls back to the fork point). Game events (jackpot/pot/league per
-  block, Luckynode Draws) and the seasonal league boards come from the pool's
+  /game /divisions /mempool /richlist /charts /market /search?q= /api/tip /api/stats
+  /api/game /api/divisions /api/mempool /api/richlist /api/charts /api/market.
+  Reorg-safe (rolls back to the fork point). Game events (jackpot/pot/divisions per
+  block, Luckynode Draws) and the seasonal division boards come from the pool's
   dashboard API (best-effort).
 
   --price-url is OPTIONAL: a JSON feed returning {{\"price\": <usd per coin>}}
