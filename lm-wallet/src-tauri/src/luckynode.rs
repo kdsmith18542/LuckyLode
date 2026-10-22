@@ -47,6 +47,7 @@ pub fn start(
     let svc_name = name.clone();
     std::thread::spawn(move || {
         let mut pending = None;
+        let mut last_hb_tip: Option<u64> = None;
         loop {
             if stop_thread.load(Ordering::Relaxed) {
                 return;
@@ -89,10 +90,15 @@ pub fn start(
                 }
                 continue;
             }
-            // Heartbeat + status each interval.
-            match identity::heartbeat_if_due(&rpc, &name, epoch_len) {
-                Ok(true) => eprintln!("luckynode {name}: heartbeat submitted"),
-                Ok(false) => {}
+            // Heartbeat + status each interval. Never resubmit at the
+            // same tip height — an idle chain cannot confirm the
+            // pending update and retries would only spam the mempool.
+            match identity::heartbeat_if_due(&rpc, &name, epoch_len, last_hb_tip) {
+                Ok(Some(tip)) => {
+                    last_hb_tip = Some(tip);
+                    eprintln!("luckynode {name}: heartbeat submitted at tip {tip}");
+                }
+                Ok(None) => {}
                 Err(e) => eprintln!("luckynode {name}: heartbeat failed: {e}"),
             }
             match identity::identity_status(&rpc, &name, epoch_len) {

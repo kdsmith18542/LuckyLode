@@ -248,13 +248,21 @@ pub fn ensure_identity(
 
 /// Heartbeat when the chain moved into a new epoch since the last
 /// update (or liveness already lapsed): an `updateidentity` with the
-/// unchanged definition. Returns true when an update was submitted.
-/// Cheap and idempotent — safe to run every tick.
+/// unchanged definition.
+///
+/// `last_submitted_tip` is the tip height observed when the previous
+/// update was submitted (persist it across restarts when possible).
+/// When it equals the current tip, no update is submitted: on an idle
+/// chain the pending update cannot confirm, and re-submitting every
+/// tick would only fill the mempool with equivalent transactions.
+/// Returns `Some(tip)` when an update was submitted at that height,
+/// `None` otherwise.
 pub fn heartbeat_if_due(
     rpc: &dyn NodeRpc,
     name: &str,
     epoch_len: u64,
-) -> Result<bool, String> {
+    last_submitted_tip: Option<u64>,
+) -> Result<Option<u64>, String> {
     if epoch_len == 0 {
         return Err("epoch length must be >= 1".to_string());
     }
@@ -265,13 +273,16 @@ pub fn heartbeat_if_due(
     let crossed = st.tip_height / epoch_len != st.update_height / epoch_len;
     let lapsed = st.tip_height.saturating_sub(st.update_height) >= epoch_len;
     if !crossed && !lapsed {
-        return Ok(false);
+        return Ok(None);
+    }
+    if last_submitted_tip == Some(st.tip_height) {
+        return Ok(None);
     }
     let txid: Value = rpc.call("updateidentity", json!([{ "name": name }]))?;
     if txid.as_str().unwrap_or("").is_empty() {
         return Err(format!("updateidentity failed: {txid}"));
     }
-    Ok(true)
+    Ok(Some(st.tip_height))
 }
 
 /// Confirmations of a wallet transaction (0 when unconfirmed/unknown).
@@ -463,7 +474,7 @@ mod tests {
                 }),
             );
         // epoch 13 at both heights: no update.
-        assert!(!heartbeat_if_due(&m, "ln-test", 3).expect("hb"));
+        assert_eq!(heartbeat_if_due(&m, "ln-test", 3, None).expect("hb"), None);
         assert_eq!(m.calls.borrow().len(), 2);
     }
 
@@ -480,7 +491,51 @@ mod tests {
                 }),
             )
             .push("updateidentity", json!("txid-upd"));
-        assert!(heartbeat_if_due(&m, "ln-test", 3).expect("hb"));
+        assert_eq!(
+            heartbeat_if_due(&m, "ln-test", 3, None).expect("hb"),
+            Some(42)
+        );
+    }
+
+    #[test]
+    fn heartbeat_skips_without_tip_advance() {
+        // Epoch crossed, but the tip has not moved since the last
+        // submission: the pending update cannot confirm on an idle
+        // chain, so resubmitting would only spam the mempool.
+        let m = Mock::new()
+            .push("getblockcount", json!(42u64))
+            .push(
+                "getidentity",
+                json!({
+                    "identity": {"primaryaddresses": ["Laddr"]},
+                    "status": "active",
+                    "blockheight": 41u64,
+                }),
+            );
+        assert_eq!(
+            heartbeat_if_due(&m, "ln-test", 3, Some(42)).expect("hb"),
+            None
+        );
+        assert_eq!(m.calls.borrow().len(), 2);
+    }
+
+    #[test]
+    fn heartbeat_resubmits_after_tip_advance() {
+        let m = Mock::new()
+            .push("getblockcount", json!(43u64))
+            .push(
+                "getidentity",
+                json!({
+                    "identity": {"primaryaddresses": ["Laddr"]},
+                    "status": "active",
+                    "blockheight": 41u64,
+                }),
+            )
+            .push("updateidentity", json!("txid-upd"));
+        assert_eq!(
+            heartbeat_if_due(&m, "ln-test", 3, Some(42)).expect("hb"),
+            Some(43)
+        );
     }
 
     #[test]
@@ -488,7 +543,7 @@ mod tests {
         let m = Mock::new()
             .push("getblockcount", json!(42u64))
             .push("getidentity", json!({}));
-        assert!(heartbeat_if_due(&m, "ln-test", 3).is_err());
+        assert!(heartbeat_if_due(&m, "ln-test", 3, None).is_err());
     }
 
     #[test]

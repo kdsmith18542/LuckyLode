@@ -11,11 +11,14 @@
 //!             [--register-only] [--once]
 //!
 //! Epoch length defaults to the node's own `prizeepochlen` GBT advisory
-//! (`--epoch` pins it instead). Heartbeats land at most once per epoch,
-//! plus one catch-up pass when starting behind. The in-flight name
-//! commitment is tracked in `--state-file` (plus in-process) so a retry
-//! resumes the same commitment instead of minting another fee-paying
-//! one.
+//! (`--epoch` pins it instead). Heartbeats land at most once per epoch
+//! (plus one catch-up pass when starting behind) and never twice at the
+//! same tip height — an idle chain cannot confirm a pending update, so
+//! re-submitting per tick would only fill the mempool with equivalent
+//! transactions. The in-flight name commitment and the last heartbeat
+//! tip height are tracked in `--state-file` (plus in-process) so a
+//! retry resumes the same commitment instead of minting another
+//! fee-paying one, and a restart on an idle chain does not resubmit.
 
 use std::io::{Read, Write};
 use std::net::TcpStream;
@@ -203,40 +206,72 @@ fn main() {
     // in-process so one invocation creates at most one commitment —
     // re-running the binary while a commitment is unconfirmed must not
     // mint another fee-paying commitment each time. The in-flight
-    // commitment also persists in --state-file (when set) so a restart
-    // resumes it instead of starting over.
-    fn load_pending(path: &Option<String>) -> Option<identity::PendingCommitment> {
-        let p = path.as_ref()?;
-        let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(p).ok()?).ok()?;
-        Some(identity::PendingCommitment {
-            txid: v.get("commitment_txid")?.as_str()?.to_string(),
-            reservation: v.get("namereservation")?.clone(),
-        })
+    // commitment and the last heartbeat tip height persist in
+    // --state-file (when set) so a restart resumes them instead of
+    // starting over.
+    #[derive(Default)]
+    struct State {
+        pending: Option<identity::PendingCommitment>,
+        last_heartbeat_tip: Option<u64>,
     }
-    fn save_pending(path: &Option<String>, p: Option<&identity::PendingCommitment>) {
+    fn load_state(path: &Option<String>) -> State {
+        let mut st = State::default();
+        let Some(p) = path.as_ref() else {
+            return st;
+        };
+        let Ok(text) = std::fs::read_to_string(p) else {
+            return st;
+        };
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else {
+            return st;
+        };
+        if let (Some(txid), Some(reservation)) = (
+            v.get("commitment_txid").and_then(|t| t.as_str()),
+            v.get("namereservation"),
+        ) {
+            st.pending = Some(identity::PendingCommitment {
+                txid: txid.to_string(),
+                reservation: reservation.clone(),
+            });
+        }
+        st.last_heartbeat_tip = v.get("last_heartbeat_tip").and_then(|t| t.as_u64());
+        st
+    }
+    fn save_state(path: &Option<String>, st: &State) {
         let Some(path) = path.as_ref() else {
             return;
         };
-        let v = match p {
-            Some(c) => serde_json::json!({"commitment_txid": c.txid, "namereservation": c.reservation}),
-            None => serde_json::json!({}),
-        };
-        if let Err(e) = std::fs::write(path, v.to_string()) {
+        let mut v = serde_json::Map::new();
+        if let Some(c) = st.pending.as_ref() {
+            v.insert("commitment_txid".into(), serde_json::json!(c.txid));
+            v.insert("namereservation".into(), c.reservation.clone());
+        }
+        if let Some(tip) = st.last_heartbeat_tip {
+            v.insert("last_heartbeat_tip".into(), serde_json::json!(tip));
+        }
+        if let Err(e) = std::fs::write(path, serde_json::Value::Object(v).to_string()) {
             eprintln!("luckynode: state file write failed: {e}");
         }
     }
-    let mut pending = load_pending(&state_file);
+    let mut state = load_state(&state_file);
     let st = loop {
-        match identity::ensure_identity(&rpc, &name, &payout, epoch_len, pending.clone()) {
+        match identity::ensure_identity(
+            &rpc,
+            &name,
+            &payout,
+            epoch_len,
+            state.pending.clone(),
+        ) {
             Ok(EnsureOutcome::Ready(st)) => {
                 println!("ready: {}", show(&st));
-                save_pending(&state_file, None);
+                state.pending = None;
+                save_state(&state_file, &state);
                 break st;
             }
             Ok(EnsureOutcome::Waiting { message, commitment }) => {
                 eprintln!("waiting: {message} — mine a block (or wait for one)");
-                pending = commitment.clone();
-                save_pending(&state_file, commitment.as_ref());
+                state.pending = commitment;
+                save_state(&state_file, &state);
                 std::thread::sleep(Duration::from_secs(interval.max(5)));
             }
             Err(e) => {
@@ -252,9 +287,13 @@ fn main() {
     let _ = st;
 
     loop {
-        match identity::heartbeat_if_due(&rpc, &name, epoch_len) {
-            Ok(true) => println!("heartbeat submitted (epoch crossed)"),
-            Ok(false) => {}
+        match identity::heartbeat_if_due(&rpc, &name, epoch_len, state.last_heartbeat_tip) {
+            Ok(Some(tip)) => {
+                state.last_heartbeat_tip = Some(tip);
+                save_state(&state_file, &state);
+                println!("heartbeat submitted at tip {tip} (epoch crossed or lapsed)");
+            }
+            Ok(None) => {}
             Err(e) => eprintln!("luckynode: heartbeat failed: {e}"),
         }
         match identity::identity_status(&rpc, &name, epoch_len) {
