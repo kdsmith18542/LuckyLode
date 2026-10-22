@@ -40,6 +40,11 @@ pub struct BlockOutcome {
     pub pot: u64,
     /// Levy slice diverted to the prize prize pool (cap overflow).
     pub prize_inflow: u64,
+    /// Consensus draw claim landed in this block (0 = none; third-party
+    /// winner, never miner-owed — doc 06 §6.7).
+    pub prize_claim: u64,
+    /// Winner address the claim above paid (empty when no claim).
+    pub prize_winner: String,
     /// Seed-fund faucet output claimed by this block's coinbase (0 = none).
     pub faucet: u64,
     /// Seed-fund dev output claimed by this block's coinbase (0 = none).
@@ -156,6 +161,8 @@ impl TemplateProvider for MockProvider {
                 faucet: 0,
                 dev: 0,
                 prize_inflow: 0,
+                prize_claim: 0,
+                prize_winner: String::new(),
                 reserve: self.reserve,
                 coinbase: 0,
             };
@@ -198,6 +205,9 @@ impl TemplateProvider for MockProvider {
             // parses from the template coinbase, so payout accounting
             // totals exactly the block value on both providers.
             coinbase: p.miner.saturating_sub(p.jackpot_bonus),
+            // No consensus draw claims on the mock flow (see above).
+            prize_claim: 0,
+            prize_winner: String::new(),
         }
     }
 }

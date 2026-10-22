@@ -67,6 +67,8 @@ impl TemplateProvider for GatedProvider {
             faucet: 0,
             dev: 0,
             prize_inflow: 0,
+            prize_claim: 0,
+            prize_winner: String::new(),
             reserve: 0,
             coinbase: 0,
         }
@@ -160,6 +162,8 @@ fn background_refresh_publishes_new_templates() {
             faucet: 0,
             dev: 0,
             prize_inflow: 0,
+            prize_claim: 0,
+            prize_winner: String::new(),
             reserve: 0,
             coinbase: 0,
         }

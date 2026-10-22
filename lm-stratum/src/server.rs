@@ -65,6 +65,14 @@ pub struct BlockRecord {
     pub faucet: u64,
     #[serde(default)]
     pub dev: u64,
+    /// Consensus Luckynode Draw claim landed in this block (0 = none):
+    /// a third-party output to the epoch winner, never miner-owed
+    /// (doc 06 §6.7). `default` for old state files.
+    #[serde(default)]
+    pub prize_claim: u64,
+    /// Winner address the claim above paid ("" when no claim).
+    #[serde(default)]
+    pub prize_winner: String,
     /// PPLNS split of every claimed amount (jackpot + pot), per miner.
     pub payouts: Vec<(String, u64)>,
 }
@@ -559,14 +567,16 @@ fn apply_block_found<P: TemplateProvider + 'static>(
             bonus: outcome.bonus,
             pot: outcome.pot,
             prize_inflow: outcome.prize_inflow,
+            prize_claim: outcome.prize_claim,
+            prize_winner: outcome.prize_winner.clone(),
             faucet: outcome.faucet,
             dev: outcome.dev,
             payouts,
         });
         // Lifetime miner-owed coinbase: every sat credited above came
-        // out of exactly these three fields (prize/faucet/dev never
-        // touch the miner ledger), so their running sum must always
-        // equal owed + paid + fees.
+        // out of exactly these three fields (prize inflow, the draw
+        // claim, and faucet/dev never touch the miner ledger), so their
+        // running sum must always equal owed + paid + fees.
         {
             let mut credited = shared.credited_total.lock().expect("credited total");
             *credited = credited
@@ -586,6 +596,16 @@ fn apply_block_found<P: TemplateProvider + 'static>(
             println!(
                 "seed claim landed: height {} faucet {} dev {}",
                 job.height, outcome.faucet, outcome.dev
+            );
+        }
+        // Consensus draw claims likewise ride along for the record: the
+        // winner is a third party, never miner-owed, so no ledger impact
+        // and no entry in the payout identity (the node validated and
+        // debited the prize fund).
+        if outcome.prize_claim > 0 {
+            println!(
+                "prize claim landed: height {} winner {} amount {}",
+                job.height, outcome.prize_winner, outcome.prize_claim
             );
         }
     }

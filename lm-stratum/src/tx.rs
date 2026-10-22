@@ -149,6 +149,28 @@ pub fn coinbase_outputs_total(tx: &[u8]) -> Result<u64, TxError> {
     Ok(total)
 }
 
+/// All output scripts in vout order (for the prize-claim collision
+/// check: the directed-sum rule counts every output paying the winner's
+/// script, so the pool must not append a claim when the script is
+/// already paid — same builder rule as the internal miner).
+pub fn output_scripts(tx: &[u8]) -> Result<Vec<Vec<u8>>, TxError> {
+    let layout = parse_coinbase_layout(tx)?;
+    let mut p = layout.vout_count_at;
+    let n = read_compact(tx, &mut p)?;
+    debug_assert_eq!(n, layout.vout_count);
+    let mut out = Vec::with_capacity(layout.vout_count as usize);
+    for _ in 0..layout.vout_count {
+        let v = tx.get(p..p + 8).ok_or(TxError::Truncated)?;
+        let _ = u64::from_le_bytes(v.try_into().map_err(|_| TxError::Truncated)?);
+        p += 8;
+        let script_len = read_compact(tx, &mut p)? as usize;
+        let script = tx.get(p..p + script_len).ok_or(TxError::Truncated)?;
+        out.push(script.to_vec());
+        p += script_len;
+    }
+    Ok(out)
+}
+
 /// Append one output (`value`, same script as the last output) and fix the
 /// count. Only valid for counts < 0xfd (same CompactSize width); the
 /// coinbase never approaches that, and we refuse rather than mis-encode.

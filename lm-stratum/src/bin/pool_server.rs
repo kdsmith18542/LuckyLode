@@ -4,11 +4,11 @@
 //! pool-server [--bind HOST:PORT] [--reward R] [--fees F]
 //!             [--pool-target (HEX64|max)] [--net-target (HEX64|max)]
 //! pool-server --node-rpc HOST:PORT [--rpc-user U] [--rpc-pass P] [--bind HOST:PORT]
-//!             [--no-claim-jackpots] [--no-claim-pot] [--no-claim-faucet] [--no-claim-dev]
+//!             [--no-claim-jackpots] [--no-claim-pot] [--no-claim-faucet] [--no-claim-dev] [--no-claim-prize]
 //! ```
 //!
 //! Node mode claims everything the node advertises by default (jackpot
-//! bonus, pot splash, faucet/dev seed drips) — the exact pre-committed
+//! bonus, pot splash, faucet/dev seed drips, consensus draw claims) — the exact pre-committed
 //! amounts, every find submittable. The `--claim-*` flags are deprecated
 //! aliases (accepted, no-op); use `--no-claim-*` to opt out. Draw divisors
 //! are read from the node (`getjackpotinfo`); `--pot-divisor` /
@@ -99,7 +99,7 @@ footer{margin-top:26px;color:var(--dim);font-size:12px;line-height:1.5}
 <h2>Division boards <span style="text-transform:none">(season = 30 days, effective work; declared device family, policed by rate)</span></h2>
 <div id="divisions"><span style="color:var(--dim)">no ranked workers yet</span></div>
 <h2>Blocks</h2>
-<table><thead><tr><th>height</th><th>finder</th><th>block reward</th><th>jackpot bonus</th><th>pot splash</th><th>prize inflow</th><th>pplns payouts</th></tr></thead><tbody id="blocks"></tbody></table>
+<table><thead><tr><th>height</th><th>finder</th><th>block reward</th><th>jackpot bonus</th><th>pot splash</th><th>prize inflow</th><th>draw claim</th><th>pplns payouts</th></tr></thead><tbody id="blocks"></tbody></table>
 <h2>Balances due</h2>
 <table><thead><tr><th>worker</th><th>owed</th><th>paid</th></tr></thead><tbody id="balances"></tbody></table><div class="muted" id="balances-foot"></div>
 <h2>Payouts</h2>
@@ -264,8 +264,8 @@ async function tick(){
       `<table><thead><tr><th>rank</th><th>worker</th><th>eff. work</th><th>days</th><th>streak</th><th>device attest</th></tr></thead><tbody>${rows}</tbody></table>`;
   }).join('')||'<span style="color:var(--dim)">no ranked workers yet</span>';
   document.getElementById('blocks').innerHTML=(j.last_blocks||[]).map(b=>
-    `<tr><td>${esc(b.height)}</td><td>${esc(b.finder_name||b.finder)}</td><td>${coin(b.value)}</td><td>${b.bonus>0?coin(b.bonus):'–'}</td><td>${b.pot>0?coin(b.pot):'–'}</td><td>${b.prize_inflow>0?coin(b.prize_inflow):'–'}</td><td>${b.pplns_total>0?coin(b.pplns_total)+' ('+esc(b.pplns_count)+')':'–'}</td></tr>`).join('')
-    || '<tr><td colspan="7">no blocks yet</td></tr>';
+    `<tr><td>${esc(b.height)}</td><td>${esc(b.finder_name||b.finder)}</td><td>${coin(b.value)}</td><td>${b.bonus>0?coin(b.bonus):'–'}</td><td>${b.pot>0?coin(b.pot):'–'}</td><td>${b.prize_inflow>0?coin(b.prize_inflow):'–'}</td><td>${b.prize_claim>0?coin(b.prize_claim)+' → '+esc((b.prize_winner||'').slice(0,12))+'…':'–'}</td><td>${b.pplns_total>0?coin(b.pplns_total)+' ('+esc(b.pplns_count)+')':'–'}</td></tr>`).join('')
+    || '<tr><td colspan="8">no blocks yet</td></tr>';
   document.getElementById('balances').innerHTML=(j.balances||[]).map(b=>
     `<tr><td>${esc(b.name||b.miner)}</td><td>${coin(b.owed)}</td><td>${coin(b.paid)}</td></tr>`).join('')
     || '<tr><td colspan="3">nothing due</td></tr>';
@@ -483,6 +483,8 @@ fn stats_json<P: TemplateProvider + 'static>(
                 "pot": b.pot,
                 "value": b.value,
                 "prize_inflow": b.prize_inflow,
+                "prize_claim": b.prize_claim,
+                "prize_winner": b.prize_winner,
                 "faucet": b.faucet,
                 "dev": b.dev,
                 "pplns_total": total,
@@ -2647,7 +2649,7 @@ fn luckynode_loop<P: TemplateProvider + 'static>(
 const USAGE: &str = "usage:
   pool-server [--bind HOST:PORT] [--reward R] [--fees F] [--pool-password PASS] [--pool-target (HEX64|max)] [--net-target (HEX64|max)]
   pool-server --node-rpc HOST:PORT [--rpc-user U] [--rpc-pass P] [--pool-password PASS] [--bind HOST:PORT]
-  [--no-claim-jackpots] [--no-claim-pot] [--no-claim-faucet] [--no-claim-dev]   (all claims ON by default; these opt out)
+  [--no-claim-jackpots] [--no-claim-pot] [--no-claim-faucet] [--no-claim-dev] [--no-claim-prize]   (all claims ON by default; these opt out)
   both forms accept [--http HOST:PORT] to serve the live dashboard (/ and /api/stats)
   node mode accepts [--payout-threshold V] [--payout-interval SECS] [--payout-exec]
   [--pot-divisor N] [--jackpot-divisor N]   (regtest-only overrides; otherwise read from the node)
@@ -2688,6 +2690,11 @@ dev is claimed on dev-epoch heights (every 100th block). Both splice exact
 pinned-script outputs (node is source of truth); unclaimed amounts stay in
 their reserves. Empty node pins (mainnet until the ceremony) disable both
 legs. Pass --no-claim-faucet / --no-claim-dev to opt out.
+draws (node mode, doc 06 §6.7): the consensus Luckynode Draw claim is
+spliced from the node's prizedraw* advisories (exact remaining budget to
+the winner's registered script; old nodes have no fields and stay
+claim-free). The claim pays a third party, never the miner. Pass
+--no-claim-prize to opt out.
 payouts (node mode,: balances at/above --payout-threshold
 (base units) are sent from the node wallet every --payout-interval seconds
 (default 60); WITHOUT --payout-exec the loop only logs what it would send.
@@ -2789,6 +2796,7 @@ fn main() -> std::process::ExitCode {
     let mut claim_pot = true;
     let mut claim_faucet = true;
     let mut claim_dev = true;
+    let mut claim_prize = true;
     let mut http: Option<String> = None;
     let mut claim_pot_tier = 10u64; // obsolete no-op (kept for old scripts)
     let mut pot_divisor: Option<u64> = None; // None = read from the node
@@ -2930,6 +2938,17 @@ fn main() -> std::process::ExitCode {
             }
             "--no-claim-dev" => {
                 claim_dev = false;
+                i += 1; // valueless flag: do not skip the next argument
+                continue;
+            }
+            "--claim-prize" => {
+                // Deprecated alias, see --claim-jackpots.
+                claim_prize = true;
+                i += 1; // valueless flag: do not skip the next argument
+                continue;
+            }
+            "--no-claim-prize" => {
+                claim_prize = false;
                 i += 1; // valueless flag: do not skip the next argument
                 continue;
             }
@@ -3387,6 +3406,7 @@ fn main() -> std::process::ExitCode {
             claim_pot,
             claim_faucet,
             claim_dev,
+            claim_prize,
             resolved_jackpot_divisor,
             resolved_pot_divisor,
         )
@@ -3479,6 +3499,10 @@ fn main() -> std::process::ExitCode {
             (false, false) => "",
         };
         let claims = format!("{claims}{pot_label}{seed_label}");
+        let claims = match claim_prize {
+            false => claims,
+            true => format!("{claims}, serving consensus draw claims"),
+        };
         let mode = match (claim_jackpots, claim_pot) {
             (true, true) => "claiming jackpots+pot",
             (true, false) => "claiming jackpots",
@@ -4078,14 +4102,14 @@ mod tests {
         let seeded = resolve_credited_total(
             0,
             &[
-                BlockRecord { height: 1, finder: "a".to_string(), value: 1_000_000, bonus: 100_000, pot: 0, prize_inflow: 0, faucet: 0, dev: 0, payouts: vec![] },
-                BlockRecord { height: 2, finder: "a".to_string(), value: 2_000_000, bonus: 0, pot: 300_000, prize_inflow: 0, faucet: 0, dev: 0, payouts: vec![] },
+                BlockRecord { height: 1, finder: "a".to_string(), value: 1_000_000, bonus: 100_000, pot: 0, prize_inflow: 0, faucet: 0, dev: 0, prize_claim: 0, prize_winner: String::new(), payouts: vec![] },
+                BlockRecord { height: 2, finder: "a".to_string(), value: 2_000_000, bonus: 0, pot: 300_000, prize_inflow: 0, faucet: 0, dev: 0, prize_claim: 0, prize_winner: String::new(), payouts: vec![] },
             ],
         );
         assert_eq!(seeded, 3_400_000);
         // An explicit stored value always wins, even with blocks present.
         assert_eq!(resolve_credited_total(42, &[
-            BlockRecord { height: 1, finder: "a".to_string(), value: 1_000_000, bonus: 0, pot: 0, prize_inflow: 0, faucet: 0, dev: 0, payouts: vec![] },
+            BlockRecord { height: 1, finder: "a".to_string(), value: 1_000_000, bonus: 0, pot: 0, prize_inflow: 0, faucet: 0, dev: 0, prize_claim: 0, prize_winner: String::new(), payouts: vec![] },
         ]), 42);
         // Fresh pool: nothing to seed from.
         assert_eq!(resolve_credited_total(0, &[]), 0);
