@@ -239,6 +239,13 @@ controller). Registering `ln-<yourname>@` **is** registration:
   Credit-once per epoch. Whoever builds the block (pool, solo miner,
   staker, wallet) attaches it; it costs the builder nothing and pays
   the winner, so there is no withholding incentive.
+- **Dedicated claim output (builder rule):** the directed-sum check
+  counts every coinbase output paying the winner's script, so the claim
+  must ride its own output. A builder whose normal payout already uses
+  the winner's script (e.g. `-mineraddress` set to the registered
+  primary address) skips the claim for that block instead of building a
+  block validation will refuse; the budget stays available to another
+  block in the epoch.
 - PoS-mined blocks carry claims exactly like PoW blocks — the draw is
   the stakers' layer.
 
