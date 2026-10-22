@@ -3747,6 +3747,29 @@ mod tests {
         assert_eq!(coins_to_base(&serde_json::json!(null)), 0);
     }
 
+    /// Pre-rename state files (written before the Divisions/Prize Fund
+    /// rename) must load: top-level `league_pool`/`league_credits` and
+    /// per-block `league_overflow` all map onto the new field names via
+    /// serde aliases. This exact shape failed the live cutover restart
+    /// once — pinned here so it can never regress.
+    #[test]
+    fn pre_rename_state_file_loads_via_aliases() {
+        let old = r#"{"version":2,"ledger":{"owed":{"m1":5},"paid":{},"fees":0},
+          "names":[],"blocks":[{"height":3,"finder":"m1","value":100,"bonus":0,"pot":0,
+          "league_overflow":77,"faucet":0,"dev":0,"payouts":[]}],
+          "league_pool":1234,"credited_total":100,"league_credits":[[3,77]],
+          "agents":[],"shares":{"shares":[],"days":{},"last_seen":{},"comeback":{}}}"#;
+        let st: PoolState = serde_json::from_str(old).expect("pre-rename state loads");
+        assert_eq!(st.prize_pool, 1234);
+        assert_eq!(st.prize_credits, vec![(3u64, 77u64)]);
+        assert_eq!(st.blocks[0].prize_inflow, 77);
+        // New spelling round-trips too.
+        let new = serde_json::to_string(&st).expect("serialize");
+        let back: PoolState = serde_json::from_str(&new).expect("reload");
+        assert_eq!(back.prize_pool, st.prize_pool);
+        assert!(new.contains("\"prize_pool\""));
+    }
+
     #[test]
     fn luckynode_routes_share_one_lock_without_deadlock() {
         // Regression: the registry/pending/draws triple mutex deadlocked

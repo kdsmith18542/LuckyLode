@@ -55,6 +55,9 @@ pub struct BlockRecord {
     pub bonus: u64,
     /// Pot splash the coinbase claimed (0 without a pot event).
     pub pot: u64,
+    /// `default` + `alias`: pre-rename state files named this field
+    /// `league_overflow`; both spellings load (0 when absent).
+    #[serde(default, alias = "league_overflow")]
     pub prize_inflow: u64,
     /// Seed-fund outputs in the coinbase (third-party, never miner-owed).
     /// `default` so state files written before this field still load.
