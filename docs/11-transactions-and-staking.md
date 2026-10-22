@@ -93,8 +93,10 @@ for provable misbehavior (double-notarization, forged verdicts).
 
 Why it's interesting: it entangles PoS security with *game integrity* — the
 dealers are bonded by the same stake that secures consensus. No chain does
-exactly this. [consensus?]: only if notarization must live on-chain; first
-version stays pool/sidecar.
+exactly this. [consensus?]: the **draw itself is consensus since doc 06
+rev 1.3 §6.7** (LuckyID-namespace registration, pre-committed epoch draw,
+directed coinbase claims — no pool required); on-chain notarization
+remains optional spectator evidence, not a gate.
 
 ### Direction B — Season stakes (governance-lite)
 

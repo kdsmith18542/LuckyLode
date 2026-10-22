@@ -1,4 +1,4 @@
-# 06 — Jackpot Lottery Blocks + Lucky Pot (spec, rev 1.2)
+# 06 — Jackpot Lottery Blocks + Lucky Pot (spec, rev 1.3)
 
 **Status:** rev 1.0 (2026-10-10) froze the jackpot — the one consensus
 change in doc 02 §2.4(1): a deterministic per-block lottery with
@@ -10,7 +10,11 @@ the rev 1.0 digest-based trigger forced claim pools to commit a
 bonus-bearing coinbase before knowing the draw and withhold ~99% of
 their finds — uneconomic at real odds, so the reserve could never pay
 . The payout math, caps, tiers, and levy are
-unchanged.
+unchanged. **Rev 1.3 (2026-10-21)** makes the prize fund real consensus
+money and moves the Luckynode Draw from pool-side v1 into consensus
+(§6.7) — stakers' game-layer income must not depend on any pool
+(owner direction: the pool is hashrate aggregation; users choose pool,
+wallet, or local node).
 
 ## 6.1 Trigger (pre-committable, no new cryptography)
 
@@ -61,8 +65,10 @@ positive-sum — fine, fees feed the spectacle).
   launch miners proportionally to hash. Organic levy takes over as it
   drains.
 - **Overflow:** levy that would push the reserve past the cap flows to the
-  **prize fund** (doc 03 §3.3) instead of burning — the two fun
-  systems fund each other. Fully traceable on the dashboard (doc 04 §4.2).
+  **prize fund** (§6.7). Before rev 1.3 the overflow was unspendable
+  bookkeeping that pools tracked privately; rev 1.3 mints it into the
+  consensus prize fund, spendable only by Luckynode Draw claims. Fully
+  traceable on the dashboard (doc 04 §4.2).
 - **Reorgs:** reserve accounting reverts with blocks like any state. No
   special casing.
 - **Replay-derivability invariant (added 2026-10-17, after two live
@@ -158,3 +164,94 @@ issuance. Executable spec: `lm-rewards/src/pot.rs`; consensus:
 - **Testnet gates (extend §6.5):** ≥20,000 blocks with the pot event rate
   inside [0.05%, 0.2%], pity-timer firings as expected, and exact
   reserve/pot conservation (already KAT-pinned).
+
+## 6.7 Prize Fund + consensus Luckynode Draw (added rev 1.3, 2026-10-21)
+
+The stakers' game layer, promoted from pool-side v1 to consensus. No
+pool, website, or third party sits between a staker and their draw
+tickets; pools become pure hashrate aggregation and may attach claims
+like any other block builder.
+
+### 6.7.1 The fund
+
+- Third consensus fund on the block index (`nPrizeReserve`), alongside
+  the jackpot reserve and the Lucky Pot.
+- **Credited** every block with the jackpot-levy slice that overflows
+  the reserve cap (the 4% overflow — previously unspendable). No cap
+  of its own: draws are the drain, and the per-epoch budget slice
+  bounds outflow.
+- **Genesis seed:** 1,000 LKYL at height 0, same consensus-locked
+  pattern as the other game funds (no keys, no address; spendable only
+  through draw claims). Mainnet value is finalized at the ceremony.
+- **Debited** only by draw claims, exactly as claimed. Unclaimed
+  budgets roll forward — the fund accumulates, it never vaporizes.
+- New conservation identity (extends §6.2):
+  `miner + Δreserve + Δpot + Δprize + to_burn == R + F`, where the
+  coinbase ceiling grows to
+  `normal + jackpot bonus + pot splash + prize claim`.
+
+### 6.7.2 Registration (LuckyID namespace — no new chainstate)
+
+A luckynode is an **on-chain identity** in a reserved top-level
+namespace: names beginning `ln-` (exact pattern enforced in identity
+name validation; the prefix is reserved by the protocol, not by a
+controller). Registering `ln-<yourname>@` **is** registration:
+
+- **Payout address:** the identity's primary address.
+- **Liveness (heartbeat):** an `updateidentity` that bumps a heartbeat
+  counter in the content map under the reserved key. The daemon sends
+  one on cadence (the update tx **is** the approved heartbeat tx).
+  Liveness window: last update within one epoch. Identities already
+  revert with reorgs by construction — zero new index machinery.
+- **Tenure:** first `ln-` registration height; tiers unchanged
+  (1× <30d, 1.5× 30–90d, 2× ≥90d, in weight-millis).
+- **Sybil economics:** identity registration + renewal + update fees
+  are the entry cost (the pool-era refundable bond is retired at the
+  consensus level — a refundable escrow would need new chainstate for
+  no integrity gain; name fees are real, non-refundable cost).
+- **Eligibility at a boundary:** namespace identities whose latest
+  update is within the liveness window, sorted by identity ID.
+
+### 6.7.3 The draw (pre-committed, per epoch)
+
+- Epoch `E` spans heights `[E·epoch, (E+1)·epoch)`; `epoch = 2880`
+  mainnet (~48 h), 3 on testnet — unchanged from the v1 cadence.
+- **Seed:** `SHA256D(blockhash(E·epoch − epoch) ‖ (E+1)·epoch)` — the
+  epoch-start block hash plus the boundary height, fixed a full epoch
+  before the draw. Same pre-commitment posture as §6.1: nothing to
+  withhold, no grind surface.
+- **Winner:** `u64(seed[..8]) % Σweights`, walked id-ascending — the
+  exact v1 `draw_winner` math (mirrored in `lm-luckynode`), computed
+  over the entrant set as of the boundary's parent state.
+- **Budget:** `floor(trailing-epoch prize inflow × 1000 / 10000)`
+  (10% slice, frozen — v1's `DEFAULT_LUCKYNODE_SLICE_BPS`), capped at
+  the fund balance. Zero inflow → zero budget: self-throttling, no
+  pity timer needed.
+- **Claim (directed, like the seed funds):** any block in epoch
+  `E+1` may carry a coinbase output paying the **winner's registered
+  primary-address script**, up to the epoch budget. `ConnectBlock`
+  recomputes the winner from parent identity state and validates the
+  script and amount — a computed pin, not a chainparams one.
+  Credit-once per epoch. Whoever builds the block (pool, solo miner,
+  staker, wallet) attaches it; it costs the builder nothing and pays
+  the winner, so there is no withholding incentive.
+- PoS-mined blocks carry claims exactly like PoW blocks — the draw is
+  the stakers' layer.
+
+### 6.7.4 Gates and migration
+
+- **KAT gate 7** (`lucky_prize_kat`): pure-math pins — fund
+  transitions (credit/claim/rollover conservation across epochs),
+  budget math, and winner-selection vectors, mirrored in
+  `lm-rewards::prize` (Rust) and the C++ header.
+- **Replay-derivability invariant (§6.2) applies in full:** the fund
+  balance, per-epoch claim state, and the identity-derived entrant set
+  must rebuild byte-for-byte from a reindex.
+- **Migration:** testnet chain reset (new block-index fields), same
+  procedure as prior resets. Pool-side prize ledger + draw loop are
+  **deleted** (the pool attaches consensus claims from GBT advisories
+  exactly as it does jackpot/pot). The luckynode daemon and wallet
+  switch registration/heartbeat to identity RPCs; the pool's HTTP
+  register/heartbeat/notarize routes retire (draws are self-verifying
+  from chain state — notarization remains optional spectator
+  evidence).

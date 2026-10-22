@@ -37,9 +37,10 @@ commits a coinbase.
 > reserve / 1% Lucky Pot; jackpot pays base + up to `5×R` bonus
 > (expectation-neutral, reserve-capped); pot splash `draw < 2²⁵⁶/1000`
 > with tiered draws (10/25/50%) and a 4,320-block pity timer; pot
-> cap-overflow burns, reserve overflow feeds the prize fund
+> cap-overflow burns, reserve overflow feeds the consensus prize fund
 > (§3.3); **PoW-finder-only** — PoS blocks never claim (stakers get the
-> Luckynode Draw instead, doc 06 §6.6); pools split progressively
+> Luckynode Draw instead, doc 06 §6.7 — consensus since rev 1.3, no
+> pool required); pools split progressively
 > (sqrt-weight, 25% cap, PPLNS window), solo miners keep everything.
 > Pool dashboards celebrate draws loudly — spectacle is specified in
 > doc 06 §6.4.
