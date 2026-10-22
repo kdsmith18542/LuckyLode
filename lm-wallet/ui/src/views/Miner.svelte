@@ -1,6 +1,7 @@
 <script lang="ts">
   import * as api from "../lib/api";
   let cfg = $state<any>({ pool_stratum: "", mining_worker: "" });
+  let mode = $state<"pool" | "solo">("pool");
   let device = $state("auto");
   let useTls = $state(false);
   let threads = $state(4);
@@ -13,6 +14,7 @@
   let st = $state<any>(null);
   let log = $state<string[]>([]);
   let err = $state("");
+  let msgSolo = $state("");
   let busy = $state(false);
 
   $effect(() => {
@@ -45,12 +47,8 @@
     err = "";
     busy = true;
     try {
-      await api.setMiningConfig(cfg.pool_stratum, cfg.mining_worker.trim());
       const [gp, gd] = gpuSel.split(":").map((x) => Number(x) || 0);
-      await api.minerStart({
-        pool: cfg.pool_stratum,
-        worker: cfg.mining_worker.trim(),
-        tls: useTls,
+      const knobs = {
         device,
         threads: Number(threads) || 1,
         duty: Number(duty) || 100,
@@ -59,11 +57,33 @@
         gpu_device: gd,
         gpu_batch: Number(gpuBatch) || 512,
         max_power: Number(maxPower) || 0,
-      });
+      };
+      if (mode === "solo") {
+        await api.minerSoloStart(knobs);
+      } else {
+        await api.setMiningConfig(cfg.pool_stratum, cfg.mining_worker.trim());
+        await api.minerStart({
+          pool: cfg.pool_stratum,
+          worker: cfg.mining_worker.trim(),
+          tls: useTls,
+          ...knobs,
+        });
+      }
     } catch (e) {
       err = String(e);
     } finally {
       busy = false;
+    }
+  }
+
+  async function pointPayouts() {
+    err = "";
+    msgSolo = "";
+    try {
+      const r: any = await api.minerSoloPointPayouts();
+      msgSolo = `node payouts → ${r.mineraddress} (restart the node to apply)`;
+    } catch (e) {
+      err = String(e);
     }
   }
 
@@ -103,9 +123,19 @@
 <div class="card" style="max-width:640px">
   <p class="muted" style="margin-top:0">
     Mine from the wallet — same engine as the reference <code>lm-miner</code>, with duty
-    pacing and a temperature guard. Payouts go to the worker address below; leave it
-    blank to mine straight to your wallet's current receive address.
+    pacing and a temperature guard.
   </p>
+  <div class="row" style="gap:16px;margin-bottom:8px">
+    <label class="row" style="align-items:center;gap:6px">
+      <input type="radio" name="mode" value="pool" bind:group={mode} disabled={running} style="width:auto" />
+      <span>pool <span class="muted">(any node + stratum pool; payouts to the worker address)</span></span>
+    </label>
+    <label class="row" style="align-items:center;gap:6px">
+      <input type="radio" name="mode" value="solo" bind:group={mode} disabled={running} style="width:auto" />
+      <span>solo <span class="muted">(your node only; claim-aware templates, rewards straight to your wallet)</span></span>
+    </label>
+  </div>
+  {#if mode === "pool"}
   <label for="st">stratum endpoint (host:port)</label>
   <input id="st" bind:value={cfg.pool_stratum} spellcheck="false" disabled={running} />
   <label class="row" style="align-items:center;gap:8px">
@@ -123,6 +153,18 @@
     />
     <button class="btn" onclick={freshAddress} disabled={running}>new address</button>
   </div>
+  {:else}
+  <p class="muted">
+    Solo mines getblocktemplate jobs from <strong>Node on this computer</strong> with the
+    same claim-aware coinbases the internal miner builds (jackpot + pot + prize) — no pool
+    in the loop. Rewards land wherever the node's coinbase pays: the miner refuses to
+    start unless that is one of your wallet addresses.
+  </p>
+  <div class="row" style="margin-top:4px">
+    <button class="btn" onclick={pointPayouts} disabled={running}>point node payouts at my wallet</button>
+  </div>
+  {#if msgSolo}<div class="muted" style="margin-top:6px">{msgSolo}</div>{/if}
+  {/if}
   <label for="dv">device</label>
   <select id="dv" bind:value={device} disabled={running}>
     <option value="auto">auto (GPU when present, else CPU)</option>
@@ -182,7 +224,9 @@
     <div class="card"><div class="k">hashrate</div><div class="v">{hs(st.hashrate)}</div></div>
     <div class="card"><div class="k">accepted</div><div class="v">{st.accepted}</div></div>
     <div class="card"><div class="k">rejected</div><div class="v">{st.rejected}</div></div>
+    {#if !String(st.pool ?? "").startsWith("solo")}
     <div class="card" title="resubmitted shares the pool already counted — not extra work"><div class="k">duplicates</div><div class="v">{st.duplicates}</div></div>
+    {/if}
     <div class="card"><div class="k">hashes</div><div class="v">{st.hashes}</div></div>
     <div class="card"><div class="k">uptime</div><div class="v">{uptime(st.uptime_secs)}</div></div>
     {#if st.temp_c > 0}

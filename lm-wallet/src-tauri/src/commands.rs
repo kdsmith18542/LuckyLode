@@ -1289,6 +1289,106 @@ pub fn miner_gpus() -> Vec<serde_json::Value> {
         .collect()
 }
 
+/// Solo mining against the wallet's own node: GBT templates with
+/// claim-aware coinbases (jackpot + pot + prize), no pool in the loop
+/// (item 51). Rewards land wherever the node's GBT coinbase pays, so
+/// this refuses unless that script is one of this wallet's addresses —
+/// otherwise solo finds would pay a stranger (node wallet, a stale
+/// `-mineraddress`, ...). Point the node at this wallet first with
+/// `miner_solo_point_payouts` (or `-mineraddress` in Node flags by
+/// hand). Loopback nodes only: a shared node can never pay this wallet.
+#[tauri::command]
+#[allow(clippy::too_many_arguments)] // Tauri command surface: one arg per UI field.
+pub fn miner_solo_start(
+    state: State<'_, AppState>,
+    device: String,
+    threads: usize,
+    duty: u32,
+    max_temp: i64,
+    gpu_platform: Option<usize>,
+    gpu_device: Option<usize>,
+    gpu_batch: Option<usize>,
+    max_power: Option<u32>,
+) -> Result<(), String> {
+    {
+        let slot = state.miner.lock().expect("miner");
+        if let Some(m) = slot.as_ref() {
+            if m.status.lock().expect("miner status").running {
+                return Err("miner already running".to_string());
+            }
+        }
+    }
+    let host = {
+        let cfg = state.cfg.lock().expect("cfg");
+        node_host(&cfg.rpc_url)
+    };
+    if !is_loopback_host(&host) {
+        return Err("solo mining needs Node on this computer (pool mode works with any node)".to_string());
+    }
+    let rpc = node::client(&state)?;
+    let seed = session_seed(&state)?;
+    let net = wallet::network_of(&rpc)?;
+    let (recv_next, change_next) = {
+        let cfg = state.cfg.lock().expect("cfg");
+        (cfg.recv_next, cfg.change_next)
+    };
+    let label = {
+        let cfg = state.cfg.lock().expect("cfg");
+        node_host(&cfg.rpc_url)
+    };
+    let m = miner::start_solo(
+        rpc,
+        label,
+        device,
+        threads,
+        duty,
+        max_temp,
+        gpu_platform.unwrap_or(0),
+        gpu_device.unwrap_or(0),
+        gpu_batch.unwrap_or(512),
+        max_power.unwrap_or(0),
+        seed,
+        net,
+        recv_next,
+        change_next,
+    )?;
+    *state.miner.lock().expect("miner") = Some(m);
+    Ok(())
+}
+
+/// Point the managed node's coinbase at this wallet: writes
+/// `-mineraddress=<current receive address>` into the Node flags
+/// (replacing any stale one). Takes effect on the next node (re)start —
+/// the solo-mining readiness check tells the operator when a restart is
+/// due. Loopback only; refuses on a shared node.
+#[tauri::command]
+pub fn miner_solo_point_payouts(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
+    let host = {
+        let cfg = state.cfg.lock().expect("cfg");
+        node_host(&cfg.rpc_url)
+    };
+    if !is_loopback_host(&host) {
+        return Err("that only makes sense for Node on this computer".to_string());
+    }
+    let seed = session_seed(&state)?;
+    let rpc = node::client(&state)?;
+    let net = wallet::network_of(&rpc)?;
+    let recv_next = state.cfg.lock().expect("cfg").recv_next;
+    let addr = wallet::current_receive(&seed, net, recv_next)?;
+    let mut cfg = state.cfg.lock().expect("cfg");
+    let mut kept: Vec<String> = cfg
+        .node_args
+        .split_whitespace()
+        .filter(|t| !t.starts_with("-mineraddress") && !t.starts_with("-minetolocalwallet"))
+        .map(str::to_string)
+        .collect();
+    kept.push(format!("-mineraddress={addr}"));
+    kept.push("-minetolocalwallet=0".to_string());
+    cfg.node_args = kept.join(" ");
+    cfg.save(&state.cfg_path)?;
+    Ok(json!({ "mineraddress": addr }))
+}
+
 /// Ask the miner to stop (returns immediately; status flips when the
 /// search loop reaches a chunk boundary).
 #[tauri::command]

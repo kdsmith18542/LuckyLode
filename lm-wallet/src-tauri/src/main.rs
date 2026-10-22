@@ -110,6 +110,8 @@ fn main() {
             commands::set_mining_config,
             commands::test_rpc,
             commands::miner_start,
+            commands::miner_solo_start,
+            commands::miner_solo_point_payouts,
             commands::miner_stop,
             commands::miner_status,
             commands::miner_log,

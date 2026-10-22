@@ -86,6 +86,22 @@ export const minerStart = (p: {
   gpu_batch?: number;
   max_power?: number;
 }) => invoke<void>("miner_start", p);
+/** Solo mining against the wallet's own node (GBT templates, claim-aware
+ * coinbases, no pool). Requires the node coinbase to pay this wallet —
+ * point it there first or the backend refuses. */
+export const minerSoloStart = (p: {
+  device: string;
+  threads: number;
+  duty: number;
+  max_temp: number;
+  gpu_platform?: number;
+  gpu_device?: number;
+  gpu_batch?: number;
+  max_power?: number;
+}) => invoke<void>("miner_solo_start", p);
+/** Write -mineraddress=<current receive address> into the Node flags
+ * (takes effect on the next node restart). */
+export const minerSoloPointPayouts = () => invoke<Json>("miner_solo_point_payouts");
 export const minerGpus = () => invoke<Json>("miner_gpus");
 export const minerStop = () => invoke<void>("miner_stop");
 export const minerStatus = () => invoke<Json>("miner_status");

@@ -2,13 +2,23 @@
 
 **Status:** testnet guide. Solo mining is fully supported from day one —
 it uses the same open-source stack as pools, run locally. You keep every
-coin: block reward, fees, and any jackpot or pot bonus. No fee, no split,
+coin the chain pays you: block reward, fees, and any jackpot or pot
+bonus. (Luckynode Draw claims ride along in the coinbase but pay the
+draw winner, not you — consensus money, doc 06 §6.7.) No fee, no split,
 no third party.
 
 ## What "solo" means here
 
-Two solo paths exist:
+Three solo paths exist:
 
+0. **The Lucky Lode wallet** (easiest) — Miner tab → **solo** mode:
+   the wallet grinds getblocktemplate jobs from your own node with
+   claim-aware coinbases, no pool in the loop. Rewards land wherever the
+   node's coinbase pays, so the wallet refuses to start unless that is
+   one of your addresses — point the node at your wallet first (Miner
+   tab → *point node payouts at my wallet*, then restart the node), or
+   start the managed node with `-mineraddress=<YOUR-L-ADDRESS>
+   -minetolocalwallet=0`.
 1. **The node's own miner** (`luckyd -gen=1`, or `generate` on a local
    node) — claim-aware since 2026-10-21: on jackpot/pot draw heights the
    coinbase claims the exact bonus/splash for the miner. Point
@@ -17,8 +27,8 @@ Two solo paths exist:
 2. **The reference stack** — you run all three pieces yourself (below);
    useful when you want vardiff, dashboards, or several workers.
 
-Either way you keep every coin: block reward, fees, and any jackpot or
-pot bonus. No fee, no split, no third party.
+Either way you keep every coin the chain pays you: block reward, fees,
+and any jackpot or pot bonus. No fee, no split, no third party.
 
 1. **Node** (`luckyd`) — holds the chain, builds block templates, pays the
    coinbase to *your* address.
@@ -46,12 +56,14 @@ is paid in the coinbase to the block finder — you.
 
 ```sh
 ./luckyd -ac_algo=luckyhash -datadir=$HOME/.luckylode \
-  -mineraddress=<YOUR-R-ADDRESS> -daemon -listen=1
+  -mineraddress=<YOUR-L-ADDRESS> -daemon -listen=1
 ```
 
-**2. Local pool** — node mode against your node; the `--claim-*` flags are
-what make jackpot/pot templates pay the bonus (without them you mine base
-reward only):
+**2. Local pool** — node mode against your node; claims are automatic
+(jackpot/pot/prize from the node's exact advertisements — every find
+lands; `--no-claim-*` opts out). The pool splices the claim amounts
+into the coinbase and validates nothing itself: a template the node
+would refuse is a loud rejected block, never silent bad money:
 
 ```sh
 ./pool_server --node-rpc 127.0.0.1:42253 --rpc-user <U> --rpc-pass <P> \
@@ -59,15 +71,18 @@ reward only):
   --payout-threshold 0 --payout-interval 60 --payout-exec
 ```
 
-Claims are automatic (jackpot/pot/faucet/dev from the node's
-advertisements — no `--claim-*` flags needed; `--no-claim-*` opts out).
+Claims are automatic (jackpot/pot/prize/faucet/dev from the node's
+exact advertisements — no `--claim-*` flags needed; `--no-claim-*`
+opts out). Faucet/dev legs are pool-claimed seed drips, not miner
+income; the prize claim pays the draw winner (consensus money), never
+you — jackpot + pot are yours in full.
 `--payout-threshold 0 --payout-exec` pays every balance straight through
 (no dust held back). Omit `--payout-exec` for a dry run that only logs.
 
 **3. Miner** — pointed at your pool, worker name = your payout address:
 
 ```sh
-./lm-miner pool --pool 127.0.0.1:3344 --worker <YOUR-R-ADDRESS> \
+./lm-miner pool --pool 127.0.0.1:3344 --worker <YOUR-L-ADDRESS> \
   --threads <N> --max-temp 80 --duty 50
 ```
 
