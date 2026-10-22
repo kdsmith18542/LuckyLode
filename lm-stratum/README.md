@@ -47,11 +47,12 @@ This is the reference implementation; run it on testnet knowing:
   not durability).
 - **Payouts are v1.** `--payout-threshold/--payout-interval` drive a
   `sendtoaddress` loop from the node wallet (dry-run unless
-  `--payout-exec`); worker names double as payout addresses. Not yet
-  tracked: coinbase maturity/confirmations (payouts execute on accept —
-  sends fail safe with "insufficient funds" while coinbases mature, so
-  run a mature chain or lower expectations), fee splits beyond the
-  per-block skim. The payout ledger itself now survives restarts with
+  `--payout-exec`); worker names double as payout addresses. The loop
+  budgets from the wallet's spendable balance (`getbalance`, which
+  excludes immature coinbases), so payouts execute on accept while
+  immature funds are held and partials are paid as they mature. Not yet
+  implemented: fee splits beyond the per-block skim, RBF/priority
+  handling. The payout ledger itself now survives restarts with
   `--state-file`; `payout_totals` in `/api/stats` carries the lifetime
   miner-owed coinbase alongside owed/paid/fees, so the conservation
   identity `coinbases == owed + paid + fees` is checkable live
@@ -65,16 +66,19 @@ This is the reference implementation; run it on testnet knowing:
   `--tls-cert/--tls-key` serves stratum over TLS and the miner
   (`--tls [--tls-ca PEM]`) verifies. Still bind the dashboard to
   localhost behind a reverse proxy for public deployments.
-- **Claims are automatic.** Jackpot / pot / faucet / dev outputs are
-  spliced from the node's pre-committed per-height advertisements into
-  every template by default (draws are fixed by `SHA256D(parent || height)`
-  before grinding), so every find lands — the old claim-mode withholding
-  economics no longer apply. `--no-claim-jackpots / --no-claim-pot /
-  --no-claim-faucet / --no-claim-dev` opt out; the old `--claim-*` flags
-  are deprecated no-ops. Draw divisors are read from the node
-  (`getjackpotinfo`); `--pot-divisor / --jackpot-divisor` are regtest-only
-  overrides. The node must run the matching build
-  (GBT advertises `jackpotbonus`/`potcredited`).
+- **Claims are automatic.** Jackpot / pot / faucet / dev outputs, plus
+  the consensus Luckynode Draw claim, are spliced from the node's
+  pre-committed per-height advertisements into every template by default
+  (draws are fixed by `SHA256D(parent || height)` before grinding), so
+  every find lands — the old claim-mode withholding economics no longer
+  apply. Prize claims pay the consensus-computed winner's script exactly
+  and are recorded outside the miner payout identity. `--no-claim-jackpots
+  / --no-claim-pot / --no-claim-faucet / --no-claim-dev / --no-claim-prize`
+  opt out; the old `--claim-*` flags are deprecated no-ops. Draw divisors
+  are read from the node (`getjackpotinfo`); `--pot-divisor /
+  --jackpot-divisor` are regtest-only overrides. The node must run the
+  matching build (GBT advertises `jackpotbonus`/`potcredited` and the
+  `prizedraw*` advisories).
 - **Work-identity dedupe is windowed** (2^16 identities). A replay older
   than the window can pass; accepted as the reference trade-off.
 - **Stratum V1 is the default wire; V2 serves alongside it** behind flags

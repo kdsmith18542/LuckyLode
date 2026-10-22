@@ -122,7 +122,8 @@ consensus; the frozen strings below are called out precisely because they
     stats object `league.boards` → `divisions.boards`, explorer
     `/league` page + `league_boards` table → divisions.
   - The staker-side game money is the **Prize Fund** (funds the
-    Luckynode Draw; consensus-tracked in the planned fund). Money
+    Luckynode Draw; consensus-tracked since testnet reset #5, with the
+    rules live in doc 06 §6.7 and mainnet activation at the ceremony). Money
     identifiers renamed: `to_league` → `to_prize` (node + Rust
     mirror), GBT `leagueoverflow` → `prizeoverflow`, pool
     `league_pool` → `prize_pool` (serde alias loads pre-rename state
