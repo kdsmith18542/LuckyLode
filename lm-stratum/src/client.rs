@@ -139,7 +139,14 @@ impl PoolClient {
                     if e.kind() == std::io::ErrorKind::WouldBlock
                         || e.kind() == std::io::ErrorKind::TimedOut =>
                 {
-                    return Ok(None)
+                    // Stash the partial line: read_line consumed it from
+                    // the socket buffer before the timeout hit, and
+                    // dropping `chunk` here would eat it (the server-side
+                    // twin of this bug ate submits under Nagle/delayed-ACK
+                    // gaps). It holds no newline (a complete line returns
+                    // Ok), so appending is always safe.
+                    self.rx_buf.push_str(&chunk);
+                    return Ok(None);
                 }
                 Err(e) => return Err(e),
             }
@@ -243,8 +250,63 @@ mod tests {
     use std::net::TcpListener;
 
     #[test]
-    fn eof_on_dead_connection_is_an_error_not_a_wait() {
-        // Regression (live 2026-10-12): a pool restart left the miner in
+    fn split_line_across_read_timeout_is_not_discarded() {
+        // Twin of the server-side split-line regression: a line arriving
+        // in two TCP writes separated by longer than the read timeout must
+        // still assemble. The WouldBlock arm used to drop the partial
+        // chunk read_line had already consumed from the socket, eating
+        // the message (lost submit responses -> reconnect loops).
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let line =
+            serde_json::json!({"id": 7, "result": true, "error": null}).to_string();
+        let (first, rest) = line.split_at(line.len() / 2);
+        let first = first.to_string();
+        let rest = format!("{rest}\n");
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept");
+            stream.write_all(first.as_bytes()).expect("write1");
+            stream.flush().expect("flush");
+            // Gap longer than the client's read timeout below: the first
+            // read times out holding the partial line.
+            std::thread::sleep(Duration::from_millis(300));
+            stream.write_all(rest.as_bytes()).expect("write2");
+            stream.flush().expect("flush");
+            // Keep the socket open briefly so EOF can't mask the assertion.
+            std::thread::sleep(Duration::from_secs(2));
+        });
+        let sock = TcpStream::connect(addr).expect("connect");
+        sock.set_read_timeout(Some(Duration::from_millis(100)))
+            .expect("timeout");
+        sock.set_nodelay(true).ok();
+        let io: Box<dyn ReadWrite> = Box::new(sock.try_clone().expect("clone"));
+        let mut client = PoolClient {
+            stream: BufReader::new(io),
+            sock,
+            next_id: 1,
+            pending: Vec::new(),
+            rpc_deadline: Duration::from_secs(10),
+            rx_buf: String::new(),
+        };
+        // Poll like a real client: the first read times out holding the
+        // partial line, the second half completes it after the gap.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let m = loop {
+            if let Some(m) = client.read_message().expect("read") {
+                break m;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "split line never assembled"
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        };
+        assert_eq!(m.id, Some(serde_json::json!(7)));
+        handle.join().expect("join");
+    }
+
+    #[test]
+    fn eof_on_dead_connection_is_an_error_not_a_wait() {        // Regression (live 2026-10-12): a pool restart left the miner in
         // CLOSE-WAIT until the job deadline because EOF mapped to
         // Ok(None) ("no data yet"). It must surface immediately so the
         // miner's reconnect path runs.

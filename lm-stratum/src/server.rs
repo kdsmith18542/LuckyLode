@@ -130,6 +130,13 @@ const MAX_CONNS: usize = 2048;
 const MAX_CONNS_PER_IP: usize = 64;
 /// Legitimate stratum messages are well under 2 KiB; 64 KiB is generous.
 const MAX_LINE_BYTES: usize = 64 * 1024;
+/// Worker names double as payout addresses (≤ 35 chars) and persist into
+/// WorkerStats, per-miner payout settings lookups, and the state file.
+/// Cap them far below the line cap: an unbounded name is RAM/state bloat
+/// on an open pool (payout safety is unaffected — non-address names just
+/// hold). V2's codec already bounds user identities to 255 bytes; this
+/// is the tighter uniform ceiling.
+pub const MAX_WORKER_NAME_LEN: usize = 128;
 /// A client must authorize within this many seconds of connecting.
 const AUTH_DEADLINE_SECS: u64 = 30;
 /// Any connection silent this long (no complete line) is dropped.
@@ -747,6 +754,14 @@ fn handle_conn<P: TemplateProvider + 'static>(stream: TcpStream, shared: Arc<Sha
                     .and_then(|a| a.get(1))
                     .and_then(|w| w.as_str())
                     .unwrap_or("");
+                if worker.len() > MAX_WORKER_NAME_LEN {
+                    let _ = writeln!(
+                        stream.get_mut(),
+                        "{}",
+                        error_response(&id, -32600, "worker name too long (max 128 chars)")
+                    );
+                    continue;
+                }
                 if !auth_ok(
                     shared.worker_tokens.as_ref(),
                     shared.pool_password.as_deref(),
@@ -1070,6 +1085,13 @@ fn handle_v2_conn<P: TemplateProvider + 'static>(
                     let _ = session.send(&to_frame(&OpenMiningChannelError {
                         request_id: open.request_id,
                         error_code: "invalid credentials".to_string(),
+                    }));
+                    continue;
+                }
+                if open.user_identity.len() > MAX_WORKER_NAME_LEN {
+                    let _ = session.send(&to_frame(&OpenMiningChannelError {
+                        request_id: open.request_id,
+                        error_code: "worker name too long (max 128 chars)".to_string(),
                     }));
                     continue;
                 }
@@ -2296,6 +2318,66 @@ mod auth_tests {
             .expect("decode refusal");
         assert_eq!(err.request_id, over);
         assert_eq!(err.error_code, "too many channels");
+
+        drop(session);
+        server.stop();
+    }
+
+    /// Regression (audit finding: open-pool worker names unbounded up to
+    /// the 64 KiB line cap). A 129-char user_identity is refused with an
+    /// explicit error and the session stays up.
+    #[test]
+    fn v2_overlong_worker_name_is_refused() {
+        use crate::v2::{OpenMiningChannelError, OpenStandardMiningChannel, SetupConnection, PROTOCOL_MINING};
+        use std::net::TcpStream;
+        use std::time::Duration;
+
+        let provider = crate::provider::MockProvider::new(
+            [0xffu8; 32],
+            [0x00u8; 32],
+            1_000_000,
+            0,
+        );
+        let mut server = spawn_server(provider, "127.0.0.1:0", None, None, None)
+            .expect("spawn");
+        let authority = crate::v2_session::generate_authority();
+        let v2_addr = server
+            .spawn_v2_listener("127.0.0.1:0", authority, Duration::from_secs(3600))
+            .expect("v2 listen");
+        let stream = TcpStream::connect(v2_addr).expect("connect");
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .expect("timeout");
+        let mut session =
+            crate::v2_session::V2Session::connect(stream, Some(authority.0)).expect("handshake");
+        crate::v2_session::setup_connection(
+            &mut session,
+            &SetupConnection {
+                protocol: PROTOCOL_MINING,
+                min_version: 2,
+                max_version: 2,
+                flags: 0,
+                endpoint_host: "x".to_string(),
+                endpoint_port: 1,
+                vendor: "t".to_string(),
+                hardware_version: "cpu".to_string(),
+                firmware: "0.2".to_string(),
+                device_id: "x".to_string(),
+            },
+        )
+        .expect("negotiate");
+        session
+            .send(&crate::v2::to_frame(&OpenStandardMiningChannel {
+                request_id: 1,
+                user_identity: "w".repeat(129),
+                nominal_hash_rate: 0.0,
+                max_target: [0xffu8; 32],
+            }))
+            .expect("send overlong open");
+        let err = crate::v2::from_frame::<OpenMiningChannelError>(&session.recv().expect("refusal"))
+            .expect("decode refusal");
+        assert_eq!(err.request_id, 1);
+        assert_eq!(err.error_code, "worker name too long (max 128 chars)");
 
         drop(session);
         server.stop();

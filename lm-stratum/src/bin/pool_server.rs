@@ -1358,6 +1358,41 @@ fn resolve_game_chain(node_chain: Option<&str>) -> Result<GameChain, String> {
     }
 }
 
+/// --force-fresh recovery: move the state file aside (never delete —
+/// the operator may need its balances) and boot with an empty ledger.
+/// Pure + unit-tested; the only impure step is the rename itself.
+fn force_fresh_target(path: &std::path::Path) -> std::path::PathBuf {
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let mut s = path.as_os_str().to_owned();
+    s.push(format!(".pre-fresh-{stamp}"));
+    std::path::PathBuf::from(s)
+}
+
+fn apply_force_fresh(state_file: &Option<std::path::PathBuf>) {
+    let Some(path) = state_file.as_ref() else {
+        eprintln!("note: --force-fresh with no --state-file is a no-op");
+        return;
+    };
+    if !path.exists() {
+        return;
+    }
+    let aside = force_fresh_target(path);
+    match std::fs::rename(path, &aside) {
+        Ok(()) => eprintln!(
+            "warning: --force-fresh moved {} aside to {} — starting with an empty ledger",
+            path.display(),
+            aside.display()
+        ),
+        Err(e) => {
+            eprintln!("error: --force-fresh could not move {} aside: {e}", path.display());
+            std::process::exit(1);
+        }
+    }
+}
+
 /// In-flight faucet claims restored from the state file, read BEFORE the
 /// provider connects — so the FIRST template's top-up math already
 /// accounts for them, instead of waiting for the first refresh (up to
@@ -1687,7 +1722,8 @@ const USAGE: &str = "usage:
   over TLS on the bound port; miners connect with --tls)
   both modes accept [--state-file PATH]: owed/paid ledger, worker names and
   block history persist across restarts (atomic save every 10 s); delete the
-  file to intentionally clear
+  file to intentionally clear. [--force-fresh] moves a present-or-corrupt
+  state file aside (*.pre-fresh-TIMESTAMP, never deleted) and boots empty.
 
 defaults: bind=127.0.0.1:3333; mock mode: reward=1000000, fees=0, both targets=max (instant blocks);
 node mode: jobs from the node's getblocktemplate; claims ON by default (exact
@@ -1819,6 +1855,11 @@ fn main() -> std::process::ExitCode {
     let mut payout_interval = 60u64;
     let mut payout_exec = false;
     let mut state_file: Option<PathBuf> = None;
+    // Start fresh even if the state file exists or is corrupt: the old
+    // file is moved aside (never deleted), then the pool boots with an
+    // empty ledger. This is the documented recovery from a corrupt
+    // state file ("restore the file or start with --force-fresh").
+    let mut force_fresh = false;
     let mut pool_password: Option<String> = None;
     let mut workers_file: Option<String> = None;
     let mut pool_fee_pp: u16 = 0;
@@ -1989,6 +2030,11 @@ fn main() -> std::process::ExitCode {
                     eprintln!("error: {e}");
                     std::process::exit(2);
                 })));
+            }
+            "--force-fresh" => {
+                force_fresh = true;
+                i += 1; // valueless flag: do not skip the next argument
+                continue;
             }
             "--claim-pot-tier" => {
                 let v = next("claim-pot-tier").unwrap_or_else(|e| {
@@ -2195,6 +2241,9 @@ fn main() -> std::process::ExitCode {
             }
         }
         i += 2;
+    }
+    if force_fresh {
+        apply_force_fresh(&state_file);
     }
     let addr: SocketAddr = match bind.parse() {
         Ok(a) => a,
@@ -2802,6 +2851,36 @@ mod tests {
         ]), 42);
         // Fresh pool: nothing to seed from.
         assert_eq!(resolve_credited_total(0, &[]), 0);
+    }
+
+    #[test]
+    fn force_fresh_moves_state_aside_never_deletes() {
+        // The corrupt-state error message names --force-fresh, so it must
+        // exist and must not destroy the file it refuses to boot from.
+        let dir = std::env::temp_dir().join(format!("pf-force-fresh-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("tmpdir");
+        let path = dir.join("pool-state.json");
+        std::fs::write(&path, r#"{"version":2}"#).expect("write state");
+        // No state file: no-op, no crash.
+        apply_force_fresh(&None);
+        apply_force_fresh(&Some(dir.join("missing.json")));
+        // Present file: moved aside with a timestamp suffix, payload intact.
+        apply_force_fresh(&Some(path.clone()));
+        assert!(!path.exists(), "original must be gone");
+        let mut moved: Vec<_> = std::fs::read_dir(&dir)
+            .expect("readdir")
+            .filter_map(|e| e.ok().map(|x| x.path()))
+            .filter(|p| p != &path)
+            .collect();
+        assert_eq!(moved.len(), 1, "exactly one backup: {moved:?}");
+        let kept = moved.pop().expect("backup");
+        assert!(
+            kept.to_string_lossy().contains(".pre-fresh-"),
+            "timestamped suffix: {kept:?}"
+        );
+        assert_eq!(std::fs::read_to_string(&kept).expect("read backup"), r#"{"version":2}"#);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

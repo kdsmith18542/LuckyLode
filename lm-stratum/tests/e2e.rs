@@ -285,3 +285,19 @@ fn per_worker_tokens_are_enforced() {
     assert!(c3.subscribe("lm-miner/0.2").expect("subscribe"));
     assert!(!c3.authorize_with("mallory", "tok-alice").expect("authorize"));
 }
+
+#[test]
+fn overlong_worker_name_is_refused_at_authorize() {
+    // Audit MED: worker names were unbounded up to the 64 KiB line cap
+    // and persist into WorkerStats + the state file — open-pool
+    // RAM/state bloat. 129 chars must fail closed with a clear error.
+    let server = spawn_server(MockProvider::instant(BASE), "127.0.0.1:0", None, None, None).expect("bind");
+    let mut c = PoolClient::connect(server.addr()).expect("connect");
+    assert!(c.subscribe("lm-miner/0.2").expect("subscribe"));
+    assert!(!c.authorize(&"w".repeat(129)).expect("authorize"));
+    // A 128-char name still authorizes (the cap is inclusive).
+    let mut c2 = PoolClient::connect(server.addr()).expect("connect");
+    assert!(c2.subscribe("lm-miner/0.2").expect("subscribe"));
+    assert!(c2.authorize(&"w".repeat(128)).expect("authorize"));
+    server.stop();
+}
