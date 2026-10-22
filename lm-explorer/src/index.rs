@@ -465,7 +465,7 @@ impl Indexer {
         let pot = ji.get("pot").and_then(|v| v.as_u64()).unwrap_or(0) as i64;
         let drought = ji.get("drought").and_then(|v| v.as_u64()).unwrap_or(0) as i64;
         // Exact PoS marker from the node (getblock "pos": the same
-        // IsVerusPOSBlock() the validator uses). Missing on old nodes → 0.
+        // IsLuckyPOSBlock() the validator uses). Missing on old nodes → 0.
         let pos = b.get("pos").and_then(|v| v.as_bool()).unwrap_or(false) as i64;
         let size = b.get("size").and_then(|v| v.as_i64()).unwrap_or(0);
         let merkleroot = b.get("merkleroot").and_then(|v| v.as_str()).unwrap_or("");

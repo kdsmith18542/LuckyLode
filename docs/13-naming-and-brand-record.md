@@ -143,3 +143,29 @@ consensus; the frozen strings below are called out precisely because they
   name (real algorithm foreign chains use), `.verus`/`.verustest`
   PBaaS datadir paths, the wallet's `verusd` fallback detection, and
   cross-chain import strings (Verus Desktop / Agama / Verus Mobile).
+- **Deep identifier pass — 2026-10-21 (owner direction: rename
+  everything renameable, provided it does not lie or misdescribe).**
+  The fork's own consensus machinery now carries Lucky names:
+  `CLuckySolutionVector`/`CConstLuckySolutionVector` (was CVerus*),
+  `SOLUTION_Vn` (was SOLUTION_VERUSVn), `ACTIVATE_LUCKYVAULT` (was
+  ACTIVATE_VERUSVAULT), `LUCKY_V1`/`LUCKY_V2` (block/nonce format
+  versions, was VERUS_V1/V2), `LUCKY_MINTBLOCKS`, `LUCKY_MIN_STAKEAGE`,
+  the PoS steering knobs `LUCKY_[PBAAS_]CONSECUTIVE_POS_THRESHOLD` /
+  `LUCKY_[PBAAS_]NOPOS_THRESHOLD` (typo fixed), the PoS path
+  `IsLuckyPOSBlock` / `GetLuckyPOSTarget` / `SetLuckyPOSTarget` /
+  `GetRawLuckyPOSHash` / `_GetLuckyPOSHash` / `GetLuckyPOSHash` /
+  `GetLuckyEntropyHashComponent`, the staker `LuckyStaker` /
+  `LuckyStakeTransaction` / `LuckySelectStakeOutput` / `LuckyPoP`,
+  `LUCKYD_VERSION`, and the miner's notary-currency fee labels
+  (`notaryFees`). Deliberately still Verus-named because the names are
+  TRUE: the VerusHash algorithm and its implementation
+  (`CVerusHash*`, `verusclhash*`, `verus_hash.*`, `mine_verus_v2` —
+  foreign chains mine it), external-chain machinery
+  (`IsVerusActive` family, `VERUS_CHAINID`/`CHAINNAME`/`NOTARYID`/
+  `DEFAULTID`/`DEFAULT_ZADDR`/`DEFAULT_ARBADDRESS`/`NODEID`/
+  `ARBITRAGE_CURRENCIES`/`PRIVATECHANGE`, `veruslaunch.*` — the
+  external ID-launch whitelist), VRSC-mainnet history
+  (`VERUS_STAKE_EXPLOIT_*` heights, `VerusEthBridgeExceptionExportTxes`),
+  the frozen `verusDataSignaturePrefix`, and the PBaaS datadir paths.
+  Upstream copyright and license notices are retained throughout, per
+  the MIT license — names were never the license's property.
