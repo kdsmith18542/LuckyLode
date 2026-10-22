@@ -24,6 +24,7 @@
 pub mod luck;
 pub mod pot;
 pub mod reserve;
+pub mod prize;
 pub mod seed;
 
 /// Per-mille cap denominator base.
