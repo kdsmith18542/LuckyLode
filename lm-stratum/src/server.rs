@@ -123,6 +123,10 @@ const MAX_LINE_BYTES: usize = 64 * 1024;
 const AUTH_DEADLINE_SECS: u64 = 30;
 /// Any connection silent this long (no complete line) is dropped.
 const IDLE_DEADLINE_SECS: u64 = 120;
+/// Open V2 standard channels per Noise session. A proxy may legitimately
+/// serve several workers down one session; nobody needs thousands, and an
+/// uncapped open-flood grew memory per channel forever.
+const MAX_CHANNELS_PER_SESSION: usize = 64;
 
 struct Shared<P> {
     provider: Mutex<P>,
@@ -621,6 +625,16 @@ fn handle_conn<P: TemplateProvider + 'static>(stream: TcpStream, shared: Arc<Sha
         if shared.shutdown.load(Ordering::Relaxed) {
             break;
         }
+        // Line cap applies to PARTIAL lines too: read_line appends bytes
+        // even when it returns a timeout error, and the post-read check
+        // below only runs after a COMPLETE line — a peer that streams
+        // bytes without ever sending a newline grew `line` without bound
+        // (audit finding: slowloris OOM on the public port). Checking at
+        // the top of every tick bounds memory no matter how the bytes
+        // arrive.
+        if line.len() > MAX_LINE_BYTES {
+            break;
+        }
         // Broadcast check first: fresh jobs must reach miners promptly.
         let (cur, cur_version) = broadcast_job(&shared);
         if authorized.is_some() && cur_version != seen_version {
@@ -1035,6 +1049,13 @@ fn handle_v2_conn<P: TemplateProvider + 'static>(
                     let _ = session.send(&to_frame(&OpenMiningChannelError {
                         request_id: open.request_id,
                         error_code: "invalid credentials".to_string(),
+                    }));
+                    continue;
+                }
+                if channels.len() >= MAX_CHANNELS_PER_SESSION {
+                    let _ = session.send(&to_frame(&OpenMiningChannelError {
+                        request_id: open.request_id,
+                        error_code: "too many channels".to_string(),
                     }));
                     continue;
                 }
@@ -1591,11 +1612,39 @@ impl<P: TemplateProvider + 'static> RunningServer<P> {
         let local = listener.local_addr()?;
         let shared = Arc::clone(&self.shared);
         let handle = std::thread::spawn(move || {
+            use std::sync::atomic::Ordering as AtomicOrdering;
             while !shared.shutdown.load(Ordering::Relaxed) {
                 match listener.accept() {
-                    Ok((stream, _)) => {
+                    Ok((stream, peer)) => {
+                        // Same caps as the V1 accept loop, against the SAME
+                        // counters: V1 and V2 sockets draw on one budget,
+                        // so a flood on one wire cannot bypass the other's
+                        // cap (audit finding: the V2 listener used to
+                        // spawn a thread per connection with no bound —
+                        // thread exhaustion + one Noise handshake's CPU
+                        // per socket on a public port).
+                        let ip = peer.ip();
+                        let total = shared.conn_total.load(AtomicOrdering::SeqCst);
+                        let per_ip = shared
+                            .conn_per_ip
+                            .lock()
+                            .expect("per-ip")
+                            .get(&ip)
+                            .copied()
+                            .unwrap_or(0);
+                        if total >= MAX_CONNS || per_ip >= MAX_CONNS_PER_IP {
+                            drop(stream);
+                            continue;
+                        }
+                        shared.conn_total.fetch_add(1, AtomicOrdering::SeqCst);
+                        {
+                            let mut m = shared.conn_per_ip.lock().expect("per-ip");
+                            *m.entry(ip).or_insert(0) += 1;
+                        }
                         let s = shared.clone();
                         std::thread::spawn(move || {
+                            // RAII: the counters release on every exit path.
+                            let _guard = ConnGuard { shared: s.clone(), ip };
                             handle_v2_conn(stream, s, authority, cert_validity)
                         });
                     }
@@ -2054,6 +2103,202 @@ mod auth_tests {
     /// Several channels share one Noise session: two workers open, submit,
     /// and accrue independently; closing one channel answers later submits
     /// with "unknown channel" while the other keeps mining.
+    /// Regression (audit finding: unbounded `line` growth): a peer that
+    /// streams bytes WITHOUT ever sending a newline used to grow the
+    /// partial-line buffer past MAX_LINE_BYTES unchecked — the cap only
+    /// ran after a complete line. The pool must disconnect it instead of
+    /// letting memory grow without bound.
+    #[test]
+    fn newlineless_flood_is_disconnected_at_the_line_cap() {
+        use std::io::{Read, Write};
+        use std::net::TcpStream;
+        use std::time::Duration;
+
+        let provider = crate::provider::MockProvider::new(
+            [0xffu8; 32],
+            [0x00u8; 32],
+            1_000_000,
+            0,
+        );
+        let server = spawn_server(provider, "127.0.0.1:0", None, None, None)
+            .expect("spawn");
+        let mut stream = TcpStream::connect(server.addr()).expect("connect");
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .expect("timeout");
+
+        // Authorize first (the guard applies at every tick either way, but
+        // this proves it is not an auth-deadline disconnect).
+        stream
+            .write_all(b"{\"id\":1,\"method\":\"mining.authorize\",\"params\":[\"flood\",\"\"]}\n")
+            .expect("authorize");
+
+        // More than MAX_LINE_BYTES with no newline, in dribbles: every
+        // write lands below the read tick's appetite, so the server sees
+        // only ever-growing partials.
+        let chunk = [b'x'; 8 * 1024];
+        for _ in 0..10 {
+            stream.write_all(&chunk).expect("dribble");
+            std::thread::sleep(Duration::from_millis(120));
+        }
+
+        // The server must hit the cap and close the connection. Some
+        // frames are already in flight (authorize response + notify), so
+        // drain: every read must make progress toward EOF, never stall.
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let mut buf = [0u8; 4096];
+        loop {
+            if std::time::Instant::now() > deadline {
+                panic!("server still talking to a newlineless flood");
+            }
+            match stream.read(&mut buf) {
+                Ok(0) => break, // clean EOF — the guard tripped
+                Ok(_) => continue,
+                Err(e) => panic!("expected EOF after the line cap, got {e}"),
+            }
+        }
+        drop(stream);
+        server.stop();
+    }
+
+    /// Regression (audit finding: V2 had no connection caps). The V2
+    /// listener draws on the same MAX_CONNS / MAX_CONNS_PER_IP budget as
+    /// V1 against the same counters; a per-IP flood is dropped at accept.
+    /// (2048 total sockets is too heavy for a unit test; the per-IP cap
+    /// is the one exercised here with loopback sockets.)
+    #[test]
+    fn v2_flood_beyond_the_per_ip_cap_is_dropped() {
+        use std::io::Read;
+        use std::net::TcpStream;
+        use std::time::Duration;
+
+        let provider = crate::provider::MockProvider::new(
+            [0xffu8; 32],
+            [0x00u8; 32],
+            1_000_000,
+            0,
+        );
+        let mut server = spawn_server(provider, "127.0.0.1:0", None, None, None)
+            .expect("spawn");
+        let authority = crate::v2_session::generate_authority();
+        let v2_addr = server
+            .spawn_v2_listener("127.0.0.1:0", authority, Duration::from_secs(3600))
+            .expect("v2 listen");
+
+        // Park MAX_CONNS_PER_IP sockets mid-handshake (connected, no
+        // bytes: each holds a thread inside its handshake timeout).
+        let mut parked = Vec::new();
+        for _ in 0..MAX_CONNS_PER_IP {
+            parked.push(TcpStream::connect(v2_addr).expect("park connect"));
+        }
+        std::thread::sleep(Duration::from_millis(300));
+
+        // The next one from the same IP is dropped at accept: closed
+        // without a handshake reply. A kept socket would sit silent for
+        // its whole 10 s handshake window; the dropped one EOFs fast.
+        let mut extra = TcpStream::connect(v2_addr).expect("extra connect");
+        extra
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .expect("timeout");
+        let mut buf = [0u8; 1];
+        match extra.read(&mut buf) {
+            Ok(0) => {} // dropped at accept, as designed
+            Ok(_) => panic!("v2 accepted beyond the per-IP cap"),
+            Err(e) => panic!("expected the over-cap v2 socket to drop, got {e}"),
+        }
+        drop(parked);
+        drop(extra);
+        server.stop();
+    }
+
+    /// Regression (audit finding: uncapped channels per session). Opening
+    /// past MAX_CHANNELS_PER_SESSION answers OpenMiningChannelError and
+    /// keeps the session alive.
+    #[test]
+    fn v2_open_beyond_the_channel_cap_is_refused() {
+        use crate::v2::{OpenMiningChannelError, OpenStandardMiningChannel, SetupConnection, PROTOCOL_MINING};
+        use std::net::TcpStream;
+        use std::time::Duration;
+
+        let provider = crate::provider::MockProvider::new(
+            [0xffu8; 32],
+            [0x00u8; 32],
+            1_000_000,
+            0,
+        );
+        let mut server = spawn_server(provider, "127.0.0.1:0", None, None, None)
+            .expect("spawn");
+        let authority = crate::v2_session::generate_authority();
+        let v2_addr = server
+            .spawn_v2_listener("127.0.0.1:0", authority, Duration::from_secs(3600))
+            .expect("v2 listen");
+        let stream = TcpStream::connect(v2_addr).expect("connect");
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .expect("timeout");
+        let mut session =
+            crate::v2_session::V2Session::connect(stream, Some(authority.0)).expect("handshake");
+        crate::v2_session::setup_connection(
+            &mut session,
+            &SetupConnection {
+                protocol: PROTOCOL_MINING,
+                min_version: 2,
+                max_version: 2,
+                flags: 0,
+                endpoint_host: "x".to_string(),
+                endpoint_port: 1,
+                vendor: "t".to_string(),
+                hardware_version: "cpu".to_string(),
+                firmware: "0.2".to_string(),
+                device_id: "x".to_string(),
+            },
+        )
+        .expect("negotiate");
+
+        // Fill the session to the cap: each open answers success + one
+        // LuckyJob. (Noise handshake CPU per channel is the real-world
+        // cost; here we only need the frames.)
+        let mut last_req = 0u32;
+        for i in 0..MAX_CHANNELS_PER_SESSION {
+            let req = (i + 1) as u32;
+            session
+                .send(&crate::v2::to_frame(&OpenStandardMiningChannel {
+                    request_id: req,
+                    user_identity: format!("cap-{req}"),
+                    nominal_hash_rate: 0.0,
+                    max_target: [0xffu8; 32],
+                }))
+                .expect("open");
+            // Drain this channel's success + first job so the refusal
+            // below reads the very next frame deterministically.
+            let _ = crate::v2::from_frame::<crate::v2::OpenStandardMiningChannelSuccess>(
+                &session.recv().expect("open success"),
+            )
+            .expect("decode success");
+            let _job = session.recv().expect("job");
+            last_req = req;
+        }
+
+        // One past the cap: an explicit error, and the session stays up
+        // (a later valid frame still answers).
+        let over = last_req + 1;
+        session
+            .send(&crate::v2::to_frame(&OpenStandardMiningChannel {
+                request_id: over,
+                user_identity: "cap-overflow".to_string(),
+                nominal_hash_rate: 0.0,
+                max_target: [0xffu8; 32],
+            }))
+            .expect("send over-cap open");
+        let err = crate::v2::from_frame::<OpenMiningChannelError>(&session.recv().expect("refusal"))
+            .expect("decode refusal");
+        assert_eq!(err.request_id, over);
+        assert_eq!(err.error_code, "too many channels");
+
+        drop(session);
+        server.stop();
+    }
+
     #[test]
     fn v2_multi_channel_routing_and_close() {
         use crate::v2::{
