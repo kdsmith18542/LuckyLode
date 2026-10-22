@@ -66,8 +66,9 @@ webkit/gtk; needs `libfuse2`).
   custom setups — `http://`, `https://`, and URL path prefixes are all
   supported.
 - Pool API: `https://luckylode.cc/pool`.
-- The luckynode ed25519 key is stored 0600 in the app config dir; it is
-  separate from wallet funds and never leaves the machine.
+- Luckynode identities are on-chain `ln-` names (doc 06 §6.7) — no local
+  key files; registration and heartbeats are node transactions driven
+  from the Luckynodes tab or the standalone `luckynode` daemon.
 
 ## Status (M1+)
 
@@ -80,5 +81,7 @@ engine as the reference `lm-miner`; live-verified CPU 846 H/s and GPU
 10.9 kH/s with accepted shares), luckynode list + register + embedded
 service, game stats (**live emission phase**, **luck chart**, draws,
 league read-only), settings (**dark/light theme**). Packaged: deb +
-AppImage (click-to-run verified). Next (M3–M5 in the spec): luckynode
-wizard, OS notifications, FAQ, OS keyring.
+AppImage (click-to-run verified). Luckynodes tab drives consensus
+draws (doc 06 §6.7): on-chain identity registration + heartbeat
+service, current-epoch draw, last landed claim. Next (M3–M5 in the
+spec): OS notifications, FAQ, OS keyring.

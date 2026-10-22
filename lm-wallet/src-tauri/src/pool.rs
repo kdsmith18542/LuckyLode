@@ -73,15 +73,6 @@ pub fn get(pool_url: &str, path: &str) -> Result<String, String> {
     request("GET", &format!("{}/{}", pool_url.trim_end_matches('/'), path), None)
 }
 
-/// POST JSON to `<pool_url>/<path>`.
-pub fn post(pool_url: &str, path: &str, json: &str) -> Result<String, String> {
-    request(
-        "POST",
-        &format!("{}/{}", pool_url.trim_end_matches('/'), path),
-        Some(json),
-    )
-}
-
 #[cfg(test)]
 mod live_tests {
     // Live-network checks (ignored in CI; run explicitly to verify the

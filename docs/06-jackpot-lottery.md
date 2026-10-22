@@ -198,11 +198,11 @@ name validation; the prefix is reserved by the protocol, not by a
 controller). Registering `ln-<yourname>@` **is** registration:
 
 - **Payout address:** the identity's primary address.
-- **Liveness (heartbeat):** an `updateidentity` that bumps a heartbeat
-  counter in the content map under the reserved key. The daemon sends
-  one on cadence (the update tx **is** the approved heartbeat tx).
-  Liveness window: last update within one epoch. Identities already
-  revert with reorgs by construction — zero new index machinery.
+- **Liveness (heartbeat):** any `updateidentity` for the name landing
+  inside the window — the update height is the liveness signal, no
+  content change required. The daemon/wallet send one per epoch. Liveness
+  window: last update within one epoch. Identities already revert with
+  reorgs by construction — zero new index machinery.
 - **Tenure:** first `ln-` registration height; tiers unchanged
   (1× <30d, 1.5× 30–90d, 2× ≥90d, in weight-millis).
 - **Sybil economics:** identity registration + renewal + update fees
@@ -221,7 +221,7 @@ controller). Registering `ln-<yourname>@` **is** registration:
   before the draw. Same pre-commitment posture as §6.1: nothing to
   withhold, no grind surface.
 - **Winner:** `u64(seed[..8]) % Σweights`, walked id-ascending — the
-  exact v1 `draw_winner` math (mirrored in `lm-luckynode`), computed
+  exact v1 `draw_winner` math (mirrored in `lm-rewards::prize`), computed
   over the entrant set as of the boundary's parent state.
 - **Budget:** `floor(trailing-epoch prize inflow × 1000 / 10000)` (10%
   slice, frozen — v1's `DEFAULT_LUCKYNODE_SLICE_BPS`) **plus a fixed
@@ -273,6 +273,9 @@ controller). Registering `ln-<yourname>@` **is** registration:
   `/api/stats` + the dashboard. Pool-side prize money, the v1 draw
   loop/registry/routes, and `--luckynode*` flags are deleted;
   per-height prize inflow stays as the explorer's display feed.
-  Pending: daemon/wallet identity-RPC flows (registration +
-  heartbeats + a consensus-draw history surface for the wallet tab),
-  testnet reset #5, VPS redeploy.
+- **Daemon + wallet shipped (unit 3c):** both drive the same
+  node-RPC identity flows (commit → register → per-epoch heartbeat
+  updates) through a shared `lm_luckynode::identity` module — no pool,
+  no side-identities, no bonds. The Luckynodes tab shows the consensus
+  draw (current epoch + winner), the last landed claim, and per-identity
+  chain state. Pending: testnet reset #5, VPS redeploy.

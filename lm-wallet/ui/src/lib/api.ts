@@ -45,18 +45,14 @@ export const sendConfirm = (txid: string) => invoke<Json>("send_confirm", { txid
 export const gameInfo = () => invoke<Json>("game_info");
 export const emission = () => invoke<Json>("emission_info");
 export const nextDraw = () => invoke<Json>("next_draw");
-export const luckynodes = () => invoke<Json>("luckynodes");
+export const luckynodes = (names: string[]) => invoke<Json>("luckynodes", { names });
 export const poolStats = () => invoke<Json>("pool_stats");
-// Tauri v2 lower-camelCases Rust command args (bond_utxo -> bondUtxo) and a
-// missing Option silently deserializes as None — snake_case here would drop
-// the value with no error.
-export const luckynodeRegister = (address: string, bondUtxo?: string) =>
-  invoke<Json>("luckynode_register", { address, bondUtxo: bondUtxo ?? null });
-export const serviceStart = (id: string, address: string, bondUtxo?: string | null) =>
-  invoke<Json>("luckynode_service_start", { id, address, bondUtxo: bondUtxo ?? null });
-export const serviceStop = (id: string) => invoke<Json>("luckynode_service_stop", { id });
+export const luckynodeRegister = (name: string, address: string) =>
+  invoke<Json>("luckynode_register", { name, address });
+export const serviceStart = (name: string, address: string) =>
+  invoke<Json>("luckynode_service_start", { name, address });
+export const serviceStop = (name: string) => invoke<Json>("luckynode_service_stop", { name });
 export const serviceStatus = () => invoke<Json>("luckynode_service_status");
-export const lockBonds = () => invoke<Json>("luckynode_lock_bonds");
 export const getConfig = () => invoke<Json>("get_config");
 export const testRpc = () => invoke<Json>("test_rpc");
 export const protectAddress = (address: string) =>

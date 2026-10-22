@@ -3,6 +3,7 @@
 use crate::node;
 use crate::node_proc;
 use crate::{luckynode, miner, pool, wallet, AppState};
+use lm_luckynode::identity::NodeRpc;
 use lm_keys::chain::Network;
 use lm_stratum::rpc::RpcClient;
 use serde_json::json;
@@ -172,12 +173,6 @@ pub fn node_start(state: State<'_, AppState>) -> Result<serde_json::Value, Strin
     let rpc = node::client(&state)?;
     match node_proc::wait_for_rpc(&rpc, &datadir, std::time::Duration::from_secs(180)) {
         Ok(height) => {
-            // Fresh process forgot its locks: re-arm tripwires (best-effort).
-            if let Ok(locked) = luckynode_lock_bonds_inner(&state) {
-                if !locked.is_empty() {
-                    eprintln!("node_start: re-locked bond coins {locked:?}");
-                }
-            }
             Ok(json!({"pid": pid, "height": height, "node_bin": bin, "auto_bin": auto_bin, "datadir": datadir}))
         }
         Err(e) => {
@@ -494,23 +489,6 @@ fn app_dir(state: &State<'_, AppState>) -> std::path::PathBuf {
         .parent()
         .map(|p| p.to_path_buf())
         .unwrap_or_else(|| std::path::PathBuf::from("."))
-}
-
-/// Key file for a luckynode payout address. The name is the address's
-/// full SHA-256 — the legacy first-8-chars scheme could collide across
-/// addresses (two payout addresses sharing a key silently share a node
-/// identity). A legacy file is kept when present so existing installs
-/// retain their node identity and tenure.
-fn luckynode_key_path(dir: &std::path::Path, address: &str) -> std::path::PathBuf {
-    let legacy = dir.join(format!("luckynode-{}.key", &address[..8.min(address.len())]));
-    if legacy.exists() {
-        return legacy;
-    }
-    use sha2::{Digest, Sha256};
-    dir.join(format!(
-        "luckynode-{}.key",
-        lm_luckynode::notarize::hex(&Sha256::digest(address.as_bytes()))
-    ))
 }
 
 fn wctx(state: &State<'_, AppState>) -> Result<WCtx, String> {
@@ -1041,12 +1019,53 @@ pub fn next_draw(state: State<'_, AppState>) -> Result<serde_json::Value, String
     Ok(json!({ "tip_height": height, "next": next }))
 }
 
-/// Luckynode registry + recent draws (pool API).
+/// Consensus Luckynode Draw status (doc 06 §6.7): the current-epoch
+/// draw from the node's GBT advisories, the last landed claim, and the
+/// chain state of the caller's known `ln-` identities.
 #[tauri::command(async)]
-pub fn luckynodes(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
-    let url = state.cfg.lock().expect("cfg").pool_url.clone();
-    let body = pool::get(&url, "api/luckynodes")?;
-    serde_json::from_str(&body).map_err(|e| format!("pool json: {e}"))
+pub fn luckynodes(
+    state: State<'_, AppState>,
+    names: Vec<String>,
+) -> Result<serde_json::Value, String> {
+    use lm_luckynode::identity;
+    let rpc = node::client(&state)?;
+    let rpc = luckynode::NodeClient(rpc);
+    let epoch_len = identity::resolve_epoch_len(&rpc, None)?;
+    let gbt: serde_json::Value = rpc.call("getblocktemplate", json!([{"capabilities": []}]))?;
+    let draw = serde_json::json!({
+        "epoch": gbt.get("prizedrawepoch").and_then(|v| v.as_u64()).unwrap_or(0),
+        "budget": gbt.get("prizedrawbudget").and_then(|v| v.as_u64()).unwrap_or(0),
+        "remaining": gbt.get("prizedrawremaining").and_then(|v| v.as_u64()).unwrap_or(0),
+        "valid": gbt.get("prizedrawvalid").and_then(|v| v.as_bool()).unwrap_or(false),
+        "winner": gbt.get("prizedrawwinner").and_then(|v| v.as_str()).unwrap_or(""),
+    });
+    let ji: serde_json::Value = rpc.call("getjackpotinfo", json!([]))?;
+    let last_claim = serde_json::json!({
+        "prize": ji.get("prize").and_then(|v| v.as_u64()).unwrap_or(0),
+        "epoch": ji.get("prizeclaimepoch").and_then(|v| v.as_u64()).unwrap_or(0),
+        "amount": ji.get("prizeclaimamount").and_then(|v| v.as_u64()).unwrap_or(0),
+    });
+    let mut identities = Vec::new();
+    for name in &names {
+        match identity::identity_status(&rpc, name, epoch_len) {
+            Ok(st) => identities.push(json!({
+                "name": st.name,
+                "address": st.address,
+                "exists": st.exists,
+                "update_height": st.update_height,
+                "tip_height": st.tip_height,
+                "epoch": st.epoch,
+                "eligible": st.eligible,
+            })),
+            Err(e) => identities.push(json!({ "name": name, "error": e })),
+        }
+    }
+    Ok(json!({
+        "epoch_len": epoch_len,
+        "draw": draw,
+        "last_claim": last_claim,
+        "identities": identities,
+    }))
 }
 
 /// Pool dashboard stats (blocks, hashrate, workers, payouts, draws).
@@ -1057,162 +1076,78 @@ pub fn pool_stats(state: State<'_, AppState>) -> Result<serde_json::Value, Strin
     serde_json::from_str(&body).map_err(|e| format!("pool json: {e}"))
 }
 
-/// Generate (or load) a luckynode identity and register it with the pool.
-/// The payout address MUST be one this wallet controls: registration signs a
-/// canonical message with the address's key, and the pool proves ownership
-/// via the node's `verifymessage` (Sybil control: no key, no node).
-/// `bond_utxo` ("txid:vout", optional) designates the locked collateral —
-/// the mainnet form. Without it the bond is a plain balance check.
+/// Register a `ln-` Luckynode identity on chain (doc 06 §6.7): name
+/// commitment → confirmation → identity registration, all funded from
+/// the connected node's own wallet. The payout address may be app-held
+/// or node-held — the node never needs its key. Winners are paid by
+/// directed coinbase claims, so no ownership proof, bond, or pool
+/// account is involved.
 #[tauri::command(async)]
 pub fn luckynode_register(
     state: State<'_, AppState>,
+    name: String,
     address: String,
-    bond_utxo: Option<String>,
 ) -> Result<serde_json::Value, String> {
+    use lm_luckynode::identity::{self, EnsureOutcome};
+    if !identity::is_ln_name(&name) {
+        return Err(format!("identity name must live in the ln- namespace (got {name:?})"));
+    }
     if !lm_pool::payout::valid_payout_address(&address) {
         return Err(format!("'{address}' is not a valid payout address"));
     }
-    // Identity: one key file per address (stable across restarts).
-    let dir = state
-        .cfg_path
-        .parent()
-        .ok_or("no config dir")?
-        .to_path_buf();
-    let key_path = luckynode_key_path(&dir, &address);
-    let key = luckynode::load_or_gen_key(&key_path)?;
-    let id = {
-        use ed25519_dalek::SigningKey;
-        lm_luckynode::notarize::hex(&SigningKey::from_bytes(&key).verifying_key().to_bytes())
-    };
-    let url = state.cfg.lock().expect("cfg").pool_url.clone();
-    // Payout-address key: scan this wallet's HD derivations (both chains,
-    // out past the used cursors by the gap limit).
-    let seed = session_seed(&state)?;
-    let (recv_next, change_next) = {
-        let cfg = state.cfg.lock().expect("cfg");
-        (cfg.recv_next, cfg.change_next)
-    };
-    let net = {
-        let rpc = node::client(&state)?;
-        wallet::network_of(&rpc)?
-    };
-    let addr_secret = address_key(&seed, net, &address, recv_next, change_next)?;
-    let reg = lm_luckynode::register_body(&id, &address, &addr_secret, bond_utxo.as_deref(), &key)?;
-    let body = pool::post(
-        &url,
-        "api/luckynode/register",
-        &serde_json::to_string(&reg).map_err(|e| format!("json: {e}"))?,
-    )?;
-    // Never let a requested lock silently vanish pool-side (JSON keys are
-    // easy to get wrong, and an absent optional arg is undetectable here).
-    if let Some(utxo) = bond_utxo.as_deref() {
-        let acked = serde_json::from_str::<serde_json::Value>(&body)
-            .ok()
-            .and_then(|v| v.get("bond_locked").and_then(|b| b.as_bool()))
-            .unwrap_or(false);
-        if !acked {
-            return Err(format!(
-                "pool accepted the registration but did not lock bond {utxo} (response: {body})"
-            ));
-        }
+    let rpc = node::client(&state)?;
+    let rpc = luckynode::NodeClient(rpc);
+    let epoch_len = identity::resolve_epoch_len(&rpc, None)?;
+    match identity::ensure_identity(&rpc, &name, &address, epoch_len, None)? {
+        EnsureOutcome::Ready(st) => Ok(json!({
+            "name": st.name,
+            "address": st.address,
+            "update_height": st.update_height,
+            "eligible": st.eligible,
+        })),
+        EnsureOutcome::Waiting { message, .. } => Err(format!(
+            "{message} — mine a block on the node (or wait for one) and retry"
+        )),
     }
-    // Bond lock: this payout address now holds a draw-eligible bond — Send
-    // must not touch it (release in Settings → Wallet).
-    {
-        let mut cfg = state.cfg.lock().expect("cfg");
-        if !cfg.protected_addrs.iter().any(|a| a == &address) {
-            cfg.protected_addrs.push(address.clone());
-            let _ = cfg.save(&state.cfg_path);
-        }
-    }
-    Ok(json!({ "id": id, "key_path": key_path.display().to_string(), "pool": body }))
 }
 
-/// Find this wallet's private key for `address` (scans receive+change
-/// chains out to the gap limit past the cursors). Proves app-side control
-/// of the address.
-fn address_key(
-    seed: &[u8; 64],
-    net: lm_keys::chain::Network,
-    address: &str,
-    recv_next: u32,
-    change_next: u32,
-) -> Result<[u8; 32], String> {
-    let mut chains = [
-        (0u32, recv_next),
-        (1u32, change_next),
-    ];
-    for (chain, used) in &mut chains {
-        let count = used.saturating_add(wallet::GAP);
-        for d in wallet::derive_range(seed, net, *chain, 0, count)? {
-            if d.address == address {
-                let kp = lm_keys::hd::external_key(seed, net, 0, *chain, d.index)?;
-                return Ok(*kp.secret());
-            }
-        }
-    }
-    Err("payout address is not one of this wallet's addresses".to_string())
-}
-
-/// Start the embedded heartbeat/cosign service for a node id.
-/// `bond_utxo` is re-sent on (re-)registration so the lock survives even a
-/// pool state wipe; the pool also keeps it across bare re-registers.
+/// Start the embedded heartbeat service for an `ln-` identity: it keeps
+/// the registration live (update when the chain crosses into a new
+/// epoch) so the consensus draw can pick it. The service runs while the
+/// app is open; for 24/7 heartbeats run the standalone daemon.
 #[tauri::command]
 pub fn luckynode_service_start(
     state: State<'_, AppState>,
-    id: String,
+    name: String,
     address: String,
-    bond_utxo: Option<String>,
 ) -> Result<serde_json::Value, String> {
-    let url = state.cfg.lock().expect("cfg").pool_url.clone();
-    let dir = state
-        .cfg_path
-        .parent()
-        .ok_or("no config dir")?
-        .to_path_buf();
-    let key_path = luckynode_key_path(&dir, &address);
-    let key = luckynode::load_or_gen_key(&key_path)?;
-    // Confirm the id matches the key (no mismatched service).
-    let derived = {
-        use ed25519_dalek::SigningKey;
-        lm_luckynode::notarize::hex(&SigningKey::from_bytes(&key).verifying_key().to_bytes())
-    };
-    if derived != id {
-        return Err("node id does not match the stored key for this address".to_string());
+    use lm_luckynode::identity;
+    if !identity::is_ln_name(&name) {
+        return Err(format!("identity name must live in the ln- namespace (got {name:?})"));
+    }
+    if !lm_pool::payout::valid_payout_address(&address) {
+        return Err(format!("'{address}' is not a valid payout address"));
     }
     let mut services = state.services.lock().expect("services");
-    if services.contains_key(&id) {
+    if services.contains_key(&name) {
         return Ok(json!({ "running": true, "already": true }));
     }
-    let seed = session_seed(&state)?;
-    let (recv_next, change_next) = {
-        let cfg = state.cfg.lock().expect("cfg");
-        (cfg.recv_next, cfg.change_next)
-    };
-    let net = {
-        let rpc = node::client(&state)?;
-        wallet::network_of(&rpc)?
-    };
-    let addr_secret = address_key(&seed, net, &address, recv_next, change_next)?;
-    let svc = luckynode::start(url, id.clone(), address, key, addr_secret, bond_utxo);
-    services.insert(id, svc);
+    let rpc = node::client(&state)?;
+    let rpc = luckynode::NodeClient(rpc);
+    let epoch_len = identity::resolve_epoch_len(&rpc, None)?;
+    let svc = luckynode::start(rpc, name.clone(), address, epoch_len, 60);
+    services.insert(name, svc);
     drop(services);
-    // Service (re)start re-registers bare: re-arm locks (best-effort).
-    if let Ok(locked) = luckynode_lock_bonds_inner(&state) {
-        if !locked.is_empty() {
-            eprintln!("service_start: re-locked bond coins {locked:?}");
-        }
-    }
     Ok(json!({ "running": true }))
 }
 
 #[tauri::command]
 pub fn luckynode_service_stop(
     state: State<'_, AppState>,
-    id: String,
+    name: String,
 ) -> Result<serde_json::Value, String> {
     let mut services = state.services.lock().expect("services");
-    if let Some(svc) = services.remove(&id) {
+    if let Some(svc) = services.remove(&name) {
         svc.stop.store(true, Ordering::Relaxed);
         return Ok(json!({ "running": false }));
     }
@@ -1224,39 +1159,6 @@ pub fn luckynode_service_status(state: State<'_, AppState>) -> Result<serde_json
     let services = state.services.lock().expect("services");
     let ids: Vec<&String> = services.keys().collect();
     Ok(json!({ "running": ids }))
-}
-
-/// Re-lock every locally-registered designated bond coin in the connected
-/// node (`lockunspent`). Locks die with the node process, so this runs
-/// after node/service (re)starts and on demand from the Luckynodes view.
-/// Loopback nodes only — never fire wallet writes at a shared node.
-#[tauri::command(async)]
-pub fn luckynode_lock_bonds(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
-    let locked = luckynode_lock_bonds_inner(&state)?;
-    Ok(json!({ "locked": locked }))
-}
-
-fn luckynode_lock_bonds_inner(state: &AppState) -> Result<Vec<String>, String> {
-    let (pool_url, dir, rpc_url) = {
-        let cfg = state.cfg.lock().expect("cfg");
-        (
-            cfg.pool_url.clone(),
-            state
-                .cfg_path
-                .parent()
-                .ok_or("no config dir")?
-                .to_path_buf(),
-            cfg.rpc_url.clone(),
-        )
-    };
-    if !is_loopback_host(&node_host(&rpc_url)) {
-        return Err(
-            "bond locking targets your own node — switch Settings → Node to \"this computer\" first"
-                .to_string(),
-        );
-    }
-    let rpc = node::client(state)?;
-    luckynode::lock_local_bonds(&pool_url, &rpc, &dir)
 }
 
 #[tauri::command]
@@ -1450,34 +1352,4 @@ pub fn notify(
 
 #[cfg(test)]
 mod tests {
-    use super::luckynode_key_path;
-
-    /// New addresses get a full-hash filename; two addresses sharing the
-    /// first 8 chars must NOT share a key file.
-    #[test]
-    fn key_paths_are_unique_per_full_address() {
-        let dir = std::env::temp_dir().join(format!("lk-keypath-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("tmpdir");
-        let a = luckynode_key_path(&dir, "mx5tDPWsWxhC7EVkJXGCR14dUoMdps8fLy");
-        let b = luckynode_key_path(&dir, "mx5tDPWsZzzzzzzzzzzzzzzzzzzzzzzzzzz");
-        assert_ne!(a, b, "same-prefix addresses must not share a key file");
-        assert!(a.to_string_lossy().contains("luckynode-"));
-        assert!(!a.to_string_lossy().contains("mx5tDPWs"), "no address prefix in the name");
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    /// An existing legacy file (first-8-chars name) keeps being used so
-    /// pre-rename installs retain their node identity and tenure.
-    #[test]
-    fn key_path_prefers_existing_legacy_file() {
-        let dir = std::env::temp_dir().join(format!("lk-keypath-legacy-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("tmpdir");
-        let legacy = dir.join("luckynode-mx5tDPWs.key");
-        std::fs::write(&legacy, [0u8; 32]).expect("write legacy");
-        let p = luckynode_key_path(&dir, "mx5tDPWsWxhC7EVkJXGCR14dUoMdps8fLy");
-        assert_eq!(p, legacy);
-        let _ = std::fs::remove_dir_all(&dir);
-    }
 }

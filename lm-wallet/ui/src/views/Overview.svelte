@@ -54,7 +54,8 @@
           const mine = blocks.find((x: any) => Number(x?.height ?? 0) === top && ((x?.finder_name ?? x?.finder) === miningWorker));
           if (mine) {
             const bonus = Number(mine?.bonus ?? 0);
-            notifyOnce(`block-${top}`, "Block found", `your worker found block ${top}${bonus > 0 ? ` (+${api.coin(bonus)} bonus)` : ""}`);
+            const claim = Number(mine?.prize_claim ?? 0);
+            notifyOnce(`block-${top}`, "Block found", `your worker found block ${top}${bonus > 0 ? ` (+${api.coin(bonus)} bonus)` : ""}${claim > 0 ? ` (attached ${api.coin(claim)} draw claim)` : ""}`);
           }
         }
       }

@@ -1,205 +1,121 @@
-//! Embedded luckynode service: heartbeat + draw cosigning from the wallet
-//! (replaces the CLI daemon for desktop users; v1).
+//! Embedded luckynode service: register + heartbeat one `ln-` LuckyID
+//! identity via the wallet's node, so the consensus Luckynode Draw
+//! (doc 06 §6.7) can pick it.
+//!
+//! Same shared flows as the standalone daemon
+//! ([`lm_luckynode::identity`]): name commitment → registration →
+//! per-epoch identity-update heartbeats. All spending comes from the
+//! connected node's own wallet; the payout address may be app-held or
+//! node-held. There are no ed25519 side-identities, no pool endpoints,
+//! no bonds, and no cosigning — the chain is the registry.
 
-use lm_luckynode::notarize;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+use lm_luckynode::identity::{self, EnsureOutcome, NodeRpc};
+
+/// NodeRpc over the wallet's node client. Newtype because the orphan
+/// rule forbids implementing the shared trait for `RpcClient` directly.
+pub struct NodeClient(pub lm_stratum::rpc::RpcClient);
+
+impl NodeRpc for NodeClient {
+    fn call(&self, method: &str, params: serde_json::Value) -> Result<serde_json::Value, String> {
+        self.0.call(method, params)
+    }
+}
+
 /// Service handle held in app state.
 pub struct Service {
     pub stop: Arc<AtomicBool>,
-    /// Payout-address key (proves ownership at each registration).
-    pub addr_secret: [u8; 32],
-    /// Locked bond collateral, re-sent on every registration so the lock
-    /// survives even a pool state wipe.
-    pub bond_utxo: Option<String>,
+    pub name: String,
 }
 
-fn now_secs() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
-}
-
-/// Load or generate the 32-byte ed25519 secret for a node id at `path`.
-pub fn load_or_gen_key(path: &std::path::Path) -> Result<[u8; 32], String> {
-    if let Ok(data) = std::fs::read(path) {
-        if data.len() == 32 {
-            let mut k = [0u8; 32];
-            k.copy_from_slice(&data);
-            return Ok(k);
-        }
-        return Err(format!("key file {} is not 32 bytes", path.display()));
-    }
-    let mut key = [0u8; 32];
-    use std::io::Read;
-    std::fs::File::open("/dev/urandom")
-        .and_then(|mut f| f.read_exact(&mut key))
-        .map_err(|e| format!("/dev/urandom: {e}"))?;
-    std::fs::write(path, key).map_err(|e| format!("write {}: {e}", path.display()))?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
-    }
-    Ok(key)
-}
-
-/// Spawn the heartbeat + cosign loop for one node. Returns the handle.
-/// `addr_secret` is the payout address's key: registration proves this app
-/// controls the bond/payout address (pool verifies via `verifymessage`).
+/// Spawn the register + heartbeat loop for one `ln-` identity. Idempotent:
+/// an existing live registration is a no-op, and heartbeats fire at most
+/// once per epoch. Errors log and retry — an unfunded node wallet (or a
+/// node that is still syncing) resolves without restarting the service.
 pub fn start(
-    pool_url: String,
-    id: String,
+    rpc: NodeClient,
+    name: String,
     address: String,
-    key: [u8; 32],
-    addr_secret: [u8; 32],
-    bond_utxo: Option<String>,
+    epoch_len: u64,
+    interval_secs: u64,
 ) -> Service {
     let stop = Arc::new(AtomicBool::new(false));
     let stop_thread = Arc::clone(&stop);
-    let bond_first = bond_utxo.clone();
-    let bond_for_svc = bond_utxo.clone();
+    let svc_name = name.clone();
     std::thread::spawn(move || {
-        let reg = match lm_luckynode::register_body(&id, &address, &addr_secret, bond_first.as_deref(), &key) {
-            Ok(b) => b,
-            Err(e) => {
-                eprintln!("luckynode {id}: register sign failed: {e}");
-                serde_json::json!({ "id": id, "address": address, "pubkey": id })
+        let mut pending = None;
+        loop {
+            if stop_thread.load(Ordering::Relaxed) {
+                return;
             }
-        };
-        if let Err(e) = crate::pool::post(&pool_url, "api/luckynode/register", &reg.to_string()) {
-            eprintln!("luckynode {id}: register failed: {e}");
-        }
-        while !stop_thread.load(Ordering::Relaxed) {
-            let ts = now_secs();
-            let msg = notarize::heartbeat_msg(&id, ts);
-            match notarize::sign(&key, &msg) {
-                Ok(sig) => {
-                    let hb = serde_json::json!({
-                        "id": id, "timestamp": ts, "sig": notarize::hex(&sig)
-                    })
-                    .to_string();
-                    match crate::pool::post(&pool_url, "api/luckynode/heartbeat", &hb) {
-                        Ok(_) => {}
-                        Err(e) => {
-                            eprintln!("luckynode {id}: heartbeat: {e}");
-                            if e.contains("unknown node") {
-                                let reg = match lm_luckynode::register_body(&id, &address, &addr_secret, bond_utxo.as_deref(), &key) {
-                                    Ok(b) => b,
-                                    Err(e) => {
-                                        eprintln!("luckynode {id}: register sign failed: {e}");
-                                        serde_json::json!({ "id": id, "address": address, "pubkey": id })
-                                    }
-                                };
-                                let _ = crate::pool::post(
-                                    &pool_url,
-                                    "api/luckynode/register",
-                                    &reg.to_string(),
-                                );
-                            }
-                        }
+            // Registration pass (resumed across ticks via `pending`).
+            let ready = loop {
+                if stop_thread.load(Ordering::Relaxed) {
+                    return;
+                }
+                match identity::ensure_identity(&rpc, &name, &address, epoch_len, pending.clone()) {
+                    Ok(EnsureOutcome::Ready(st)) => {
+                        eprintln!("luckynode {name}: ready ({})", describe(&st));
+                        pending = None;
+                        break true;
+                    }
+                    Ok(EnsureOutcome::Waiting { message, commitment }) => {
+                        eprintln!("luckynode {name}: waiting: {message}");
+                        pending = commitment;
+                    }
+                    Err(e) => {
+                        eprintln!("luckynode {name}: registration failed: {e}");
+                        break false;
                     }
                 }
-                Err(e) => eprintln!("luckynode {id}: sign: {e}"),
-            }
-            // Cosign any pending draws.
-            if let Ok(body) = crate::pool::get(&pool_url, "api/luckynode/pending") {
-                let v: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
-                for p in v.as_array().cloned().unwrap_or_default() {
-                    let draw_id = p.get("draw_id").and_then(|x| x.as_str()).unwrap_or("");
-                    let block_hash = p.get("block_hash").and_then(|x| x.as_str()).unwrap_or("");
-                    if draw_id.is_empty() || block_hash.is_empty() {
-                        continue;
+                for _ in 0..6 {
+                    if stop_thread.load(Ordering::Relaxed) {
+                        return;
                     }
-                    let cmsg = notarize::cosign_msg(draw_id, block_hash);
-                    if let Ok(sig) = notarize::sign(&key, &cmsg) {
-                        let body = serde_json::json!({
-                            "draw_id": draw_id, "id": id, "sig": notarize::hex(&sig)
-                        })
-                        .to_string();
-                        let _ = crate::pool::post(&pool_url, "api/luckynode/notarize", &body);
-                    }
+                    std::thread::sleep(Duration::from_secs(interval_secs.max(5)));
                 }
+            };
+            if !ready {
+                // Back off a full interval before retrying a hard failure
+                // (funds, node down) instead of hot-looping RPC errors.
+                for _ in 0..12 {
+                    if stop_thread.load(Ordering::Relaxed) {
+                        return;
+                    }
+                    std::thread::sleep(Duration::from_secs(interval_secs.max(5)));
+                }
+                continue;
             }
-            // Sleep in slices so Stop is responsive.
+            // Heartbeat + status each interval.
+            match identity::heartbeat_if_due(&rpc, &name, epoch_len) {
+                Ok(true) => eprintln!("luckynode {name}: heartbeat submitted"),
+                Ok(false) => {}
+                Err(e) => eprintln!("luckynode {name}: heartbeat failed: {e}"),
+            }
+            match identity::identity_status(&rpc, &name, epoch_len) {
+                Ok(st) => eprintln!("luckynode {name}: live ({})", describe(&st)),
+                Err(e) => eprintln!("luckynode {name}: status failed: {e}"),
+            }
             for _ in 0..12 {
                 if stop_thread.load(Ordering::Relaxed) {
                     return;
                 }
-                std::thread::sleep(Duration::from_secs(5));
+                std::thread::sleep(Duration::from_secs(interval_secs.max(5)));
             }
         }
     });
     Service {
         stop,
-        addr_secret,
-        bond_utxo: bond_for_svc,
+        name: svc_name,
     }
 }
 
-/// Lock every locally-registered designated bond coin in the connected
-/// node (`lockunspent`): neither the node minter nor a manual send may
-/// spend tripwire coins. Locks are session-only — the node forgets them
-/// on restart — so callers re-arm after (re)starts. Local ids come from
-/// the app-dir key files; designations from the pool rows. Returns the
-/// locked "txid:vout" list (empty = nothing designated).
-pub fn lock_local_bonds(
-    pool_url: &str,
-    rpc: &lm_stratum::rpc::RpcClient,
-    dir: &std::path::Path,
-) -> Result<Vec<String>, String> {
-    let mut ids = Vec::new();
-    let entries = std::fs::read_dir(dir).map_err(|e| format!("app dir: {e}"))?;
-    for e in entries.flatten() {
-        let name = e.file_name().to_str().unwrap_or("").to_string();
-        if !name.starts_with("luckynode-") || !name.ends_with(".key") {
-            continue;
-        }
-        let data = std::fs::read(e.path()).unwrap_or_default();
-        if data.len() != 32 {
-            continue;
-        }
-        let mut k = [0u8; 32];
-        k.copy_from_slice(&data);
-        use ed25519_dalek::SigningKey;
-        ids.push(notarize::hex(
-            &SigningKey::from_bytes(&k).verifying_key().to_bytes(),
-        ));
-    }
-    if ids.is_empty() {
-        return Ok(Vec::new());
-    }
-    let body =
-        crate::pool::get(pool_url, "api/luckynodes").map_err(|e| format!("pool: {e}"))?;
-    let v: serde_json::Value =
-        serde_json::from_str(&body).map_err(|e| format!("pool json: {e}"))?;
-    let mut outs = Vec::new();
-    let mut locked = Vec::new();
-    for n in v
-        .get("nodes")
-        .and_then(|x| x.as_array())
-        .cloned()
-        .unwrap_or_default()
-    {
-        let id = n.get("id").and_then(|x| x.as_str()).unwrap_or("");
-        let u = n
-            .get("bond_utxo")
-            .and_then(|x| x.as_str())
-            .unwrap_or("");
-        if u.is_empty() || !ids.iter().any(|i| i == id) {
-            continue;
-        }
-        let (txid, vout) = lm_luckynode::parse_bond_utxo(u)?;
-        outs.push(serde_json::json!({"txid": txid, "vout": vout}));
-        locked.push(u.to_string());
-    }
-    if outs.is_empty() {
-        return Ok(Vec::new());
-    }
-    rpc.call("lockunspent", serde_json::json!([false, outs]))
-        .map_err(|e| format!("lockunspent: {e}"))?;
-    Ok(locked)
+fn describe(st: &lm_luckynode::identity::IdentityState) -> String {
+    format!(
+        "update@{} tip {} epoch {}/{} eligible={}",
+        st.update_height, st.tip_height, st.epoch, st.epoch_len, st.eligible
+    )
 }

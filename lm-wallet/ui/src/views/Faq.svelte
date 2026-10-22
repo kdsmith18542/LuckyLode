@@ -20,7 +20,7 @@
     ],
     [
       "What is a luckynode?",
-      "A bonded notifier club: register a payout address, keep heartbeats going, and get tenure-weighted tickets in a periodic draw funded by the prize fund. The embedded service in this app only runs while the app is open; for 24/7 heartbeats run the standalone daemon on an always-on machine.",
+      "A consensus-draw entrant: register an ln-* LuckyID identity, keep it heartbeating with identity updates, and get tenure-weighted tickets in each epoch's draw funded by the prize fund (doc 06 section 6.7). The embedded service in this app only runs while the app is open; for 24/7 heartbeats run the standalone daemon on an always-on machine.",
     ],
     [
       "Why does the miner say shares accepted but no blocks?",

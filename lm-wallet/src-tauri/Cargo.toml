@@ -19,7 +19,6 @@ tauri-plugin-notification = { version = "2" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
-ed25519-dalek = "2.2"
 qrcodegen = "1.8"
 lm-stratum = { path = "../../lm-stratum" }
 lm-keys = { path = "../../lm-keys" }

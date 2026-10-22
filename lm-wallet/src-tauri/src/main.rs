@@ -105,7 +105,6 @@ fn main() {
             commands::luckynode_service_start,
             commands::luckynode_service_stop,
             commands::luckynode_service_status,
-            commands::luckynode_lock_bonds,
             commands::get_config,
             commands::set_config,
             commands::set_mining_config,
