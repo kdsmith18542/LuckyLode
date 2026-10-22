@@ -1472,12 +1472,21 @@ fn load_state<P: TemplateProvider + 'static>(
     Ok(())
 }
 
+/// Serialize concurrent saves (periodic 10 s tick vs post-payout save):
+/// both write through the same `<state>.tmp` name, so without a lock one
+/// can rename the tmp file away between the other's create and rename —
+/// and that rename then fails with ENOENT, silently skipping a
+/// post-payout save (seen live exactly once; self-heals on the next tick,
+/// but a crash inside the 10 s window would double-pay).
+static SAVE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// Atomic snapshot write (tmp + rename) so a crash mid-save never leaves
 /// a truncated state file.
 fn save_state<P: TemplateProvider + 'static>(
     server: &RunningServer<P>,
     path: &Path,
 ) {
+    let _guard = SAVE_LOCK.lock().expect("state save");
     let st = PoolState {
         version: STATE_VERSION,
         ledger: server.ledger_snapshot(),
