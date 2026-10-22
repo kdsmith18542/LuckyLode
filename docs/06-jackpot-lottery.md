@@ -266,3 +266,13 @@ controller). Registering `ln-<yourname>@` **is** registration:
   register/heartbeat/notarize routes retire (draws are self-verifying
   from chain state — notarization remains optional spectator
   evidence).
+- **Pool consumer shipped (unit 3a):** the reference pool splices the
+  node's exact `prizedraw` remaining to the winner's script (dedicated
+  output, same collision skip as the internal miner), records claims
+  third-party-only (outside the payout identity), and surfaces them on
+  `/api/stats` + the dashboard. Pool-side prize money, the v1 draw
+  loop/registry/routes, and `--luckynode*` flags are deleted;
+  per-height prize inflow stays as the explorer's display feed.
+  Pending: daemon/wallet identity-RPC flows (registration +
+  heartbeats + a consensus-draw history surface for the wallet tab),
+  testnet reset #5, VPS redeploy.

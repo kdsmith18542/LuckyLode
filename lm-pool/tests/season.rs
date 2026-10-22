@@ -116,16 +116,6 @@ fn leaderboard_ranks_and_flags_farm() {
     // Effective work strictly descends down the board.
     assert!(board[0].eff_work > board[1].eff_work);
     assert!(board[1].eff_work > board[2].eff_work);
-
-    // Prize fund: farm excluded, phone loyalist + small fry split it
-    // all — sqrt-blunted (the loyalist takes ~99.9%, not ~100%).
-    l.credit_prize(1_000_000);
-    let pays = l.split_prize_pool(PPLNS_WINDOW_SECS, now);
-    assert_eq!(pays.iter().map(|(_, p)| p).sum::<u64>(), 1_000_000);
-    assert!(pays.iter().all(|(m, _)| m != "m9"));
-    assert_eq!(pays[0].0, "m1");
-    assert!(pays[0].1 >= 999_000, "loyalist dominates: {:?}", pays[0]);
-    assert_eq!(l.prize_balance(), 0);
 }
 
 #[test]

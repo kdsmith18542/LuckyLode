@@ -90,9 +90,10 @@ testnet incident or a known gap):**
 - **Node repo CI:** the fork gets its own build + KAT-gate CI (all four
   KAT gates) before the countdown — consensus-critical code must not
   depend on one machine's build ritual.
-- **Registry persistence decision:** the luckynode registry is
-  in-memory today (a pool restart unregisters every node) — persist it
-  or move registration on-chain, decided and shipped before mainnet.
+- **Registry persistence decision — SUPERSEDED by the consensus cutover
+  (doc 06 §6.7 rev 1.3):** registration is an on-chain `ln-*` identity
+  and liveness is an identity update — no pool-side registry exists to
+  persist, and the pool-era registry/draw loop is deleted.
 - **Wallet signature-hash coverage — DONE 2026-10-17:** the
   self-custody signer now carries all three epochs (sprout legacy +
   ZIP-143 + ZIP-243, `lm-keys::zip243`), vector-pinned against the

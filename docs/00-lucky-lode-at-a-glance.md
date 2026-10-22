@@ -38,9 +38,10 @@ auditable on-chain.
   - **Luck classes:** every block lands in one of ten themed classes
     (mythic, aurora, comet, beacon, bonfire, cinder, ember, flare,
     glint, spark) that fund bonuses and division prizes.
-  - **Divisions, streaks, and the Luckynode Draw** run pool-side on the
-    same auditable ledger; stakers participate through luckynode
-    draws rather than PoW jackpots.
+  - **Divisions and streaks** run pool-side on the same auditable
+    ledger; the **Luckynode Draw** is consensus money (doc 06 §6.7) —
+    stakers enter it with on-chain `ln-*` identities rather than
+    pool registration.
 
 ## Status
 

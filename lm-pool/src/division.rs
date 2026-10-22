@@ -35,12 +35,6 @@ pub enum DeviceFamily {
 }
 
 impl DeviceFamily {
-    /// Eligible for league prizes and seasonal status (farms are paid, not feted).
-    #[must_use]
-    pub fn prize_eligible(self) -> bool {
-        !matches!(self, DeviceFamily::Farm)
-    }
-
     /// Stable wire name (dashboard/API JSON).
     #[must_use]
     pub fn as_str(self) -> &'static str {
@@ -150,14 +144,6 @@ mod tests {
         assert_eq!(division_for(None, 9_000), DeviceFamily::Phone);
         assert_eq!(division_for(None, 15_000), DeviceFamily::Cpu);
         assert_eq!(division_for(None, 499_999), DeviceFamily::Gpu);
-    }
-
-    #[test]
-    fn only_farms_miss_prizes() {
-        assert!(DeviceFamily::Phone.prize_eligible());
-        assert!(DeviceFamily::Cpu.prize_eligible());
-        assert!(DeviceFamily::Gpu.prize_eligible());
-        assert!(!DeviceFamily::Farm.prize_eligible());
     }
 
     #[test]

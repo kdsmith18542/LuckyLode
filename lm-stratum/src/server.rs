@@ -464,9 +464,12 @@ fn missing_prize_credits(
         .collect()
 }
 
-/// Credit a height's prize inflow exactly once (the accept thread and
-/// the refresh thread race on our own finds). Returns true when this
-/// call performed the credit.
+/// Record a height's prize inflow exactly once (the accept thread and
+/// the refresh thread race on our own finds). Display feed only — no
+/// money moves here: since the consensus-draw cutover the fund pays
+/// winners directly (doc 06 §6.7), so the pool keeps no prize balance;
+/// the log exists for the explorer's per-block game view. Returns true
+/// when this call performed the record.
 fn credit_prize_once<P>(shared: &Shared<P>, height: u64, amount: u64, source: &str) -> bool {
     {
         let mut done = shared.prize_credited.lock().expect("prize credited");
@@ -474,16 +477,11 @@ fn credit_prize_once<P>(shared: &Shared<P>, height: u64, amount: u64, source: &s
             return false;
         }
     }
-    shared
-        .ledger
-        .lock()
-        .expect("ledger")
-        .credit_prize(amount);
     if amount > 0 {
         let mut log = shared.prize_credit_log.lock().expect("prize credit log");
         log.insert(height, amount);
         // Keep the persisted log bounded (the explorer only needs the
-        // recent window; prize money itself lives in `prize_pool`).
+        // recent window).
         while log.len() > PRIZE_CREDIT_LOG_CAP {
             log.pop_first();
         }
@@ -1340,10 +1338,6 @@ impl<P: TemplateProvider + 'static> RunningServer<P> {
             .aggregate(window_secs, now)
     }
 
-    pub fn prize_balance(&self) -> u64 {
-        self.shared.ledger.lock().expect("ledger").prize_balance()
-    }
-
     /// Full-history streak state per miner (doc 07 §7.4 dashboard tile):
     /// the compacted day rollup only — O(miners), safe on every stats poll.
     pub fn streaks(&self, now: u64) -> Vec<lm_pool::ledger::StreakState> {
@@ -1359,21 +1353,6 @@ impl<P: TemplateProvider + 'static> RunningServer<P> {
             .lock()
             .expect("ledger")
             .leaderboard(window_secs, now)
-    }
-
-    /// Spend from the prize fund (draw payments); returns what was
-    /// actually debited, capped at the credited balance.
-    pub fn debit_prize(&self, amount: u64) -> u64 {
-        self.shared.ledger.lock().expect("ledger").debit_prize(amount)
-    }
-
-    /// Restore the persisted prize-fund balance (state-file load).
-    pub fn restore_prize(&self, balance: u64) {
-        self.shared
-            .ledger
-            .lock()
-            .expect("ledger")
-            .set_prize_balance(balance);
     }
 
     /// In-flight faucet claims for the top-up policy (state-file round

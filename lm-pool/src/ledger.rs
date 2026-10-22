@@ -142,11 +142,6 @@ pub struct Ledger {
     last_seen: HashMap<String, u64>,
     /// Per-miner comeback state machine, advanced at submit time.
     comeback: HashMap<String, Comeback>,
-    /// NOT persisted here (serde skip): prize money round-trips through
-    /// the pool state file's own `prize_pool` field, the single money
-    /// source on load. This snapshot carries share data only.
-    #[serde(skip)]
-    prize_pool: u64,
 }
 
 /// One retained share plus its submit-time comeback weight (per-mille).
@@ -200,34 +195,6 @@ impl Ledger {
     #[must_use]
     pub fn raw_share_count(&self) -> usize {
         self.shares.len()
-    }
-
-    /// League prize-pool balance (base units).
-    #[must_use]
-    pub fn prize_balance(&self) -> u64 {
-        self.prize_pool
-    }
-
-    /// Credit reserve overflow into the league prize pool (doc 06 §6.2).
-    pub fn credit_prize(&mut self, amount: u64) {
-        self.prize_pool = self.prize_pool.saturating_add(amount);
-    }
-
-    /// Spend from the league prize pool (Luckynode Draw payments). Returns
-    /// the amount actually debited (≤ `amount`, capped at the balance) —
-    /// draws may never spend past what the pool credited, which is what
-    /// keeps them from eating miner-owed funds.
-    pub fn debit_prize(&mut self, amount: u64) -> u64 {
-        let take = amount.min(self.prize_pool);
-        self.prize_pool -= take;
-        take
-    }
-
-    /// Restore a persisted prize-fund balance (state-file load). The
-    /// ledger itself is in-memory (share log); only this balance is
-    /// durable, so restarts don't silently reset the prize pool.
-    pub fn set_prize_balance(&mut self, balance: u64) {
-        self.prize_pool = balance;
     }
 
     fn in_window(ts: u64, now_ts: u64, window_secs: u64) -> bool {
@@ -344,8 +311,7 @@ impl Ledger {
 
     /// Seasonal board over a window: effective work desc, miner id asc.
     /// Farm-class rows are included but flagged via [`DeviceFamily`] —
-    /// callers filter prizes with [`DeviceFamily::prize_eligible`]. The
-    /// pool server re-resolves each row's division with the miner's
+    /// the pool server re-resolves each row's division with the miner's
     /// declared agent before display.
     pub fn leaderboard(&self, window_secs: u64, now_ts: u64) -> Vec<BoardEntry> {
         let mut rows: Vec<BoardEntry> = self
@@ -362,32 +328,6 @@ impl Ledger {
             .collect();
         rows.sort_by(|a, b| b.eff_work.cmp(&a.eff_work).then(a.miner.cmp(&b.miner)));
         rows
-    }
-
-    /// Pay the whole league prize pool over prize-eligible miners by
-    /// effective work, using the same whale-blunted split as the jackpot
-    /// (sqrt weights + 25% cap once 5+ miners qualify, doc 06 §6.3):
-    /// linear pro-rata let a single large rig take almost the whole pool,
-    /// which defeats the "phones race phones" point of divisions. Drains the
-    /// balance to 0. Returns empty (balance kept) when there is nothing to
-    /// pay or nobody eligible.
-    pub fn split_prize_pool(&mut self, window_secs: u64, now_ts: u64) -> Vec<(String, u64)> {
-        let balance = self.prize_pool;
-        if balance == 0 {
-            return Vec::new();
-        }
-        let shares: Vec<Share> = self
-            .aggregate(window_secs, now_ts)
-            .into_iter()
-            .filter(|a| a.class.prize_eligible() && a.eff_work > 0)
-            .map(|a| Share { miner: a.miner, shares: a.eff_work })
-            .collect();
-        if shares.is_empty() {
-            return Vec::new();
-        }
-        let pays = split_jackpot(&shares, balance);
-        self.prize_pool = 0;
-        pays
     }
 }
 
@@ -492,74 +432,11 @@ mod tests {
     }
 
     #[test]
-    fn prize_split_drains_and_conserves() {
-        let mut l = Ledger::new();
-        l.submit(rec("m1", 9, 3000));
-        l.submit(rec("m2", 9, 1000));
-        l.credit_prize(1000);
-        let pays = l.split_prize_pool(3 * D, 9 * D + 200);
-        // Whale-blunted split (sqrt weights): 3x the work pays ~1.7x,
-        // not 3x — the linear pro-rata let one big rig take almost all.
-        assert_eq!(pays.iter().map(|(_, p)| p).sum::<u64>(), 1000);
-        let m1 = pays.iter().find(|(m, _)| m == "m1").expect("m1").1;
-        let m2 = pays.iter().find(|(m, _)| m == "m2").expect("m2").1;
-        assert!(m1 > m2 && m1 < 750, "sqrt-blunted: m1={m1}, m2={m2}");
-        assert_eq!(l.prize_balance(), 0);
-        // Empty pool pays nothing and keeps nothing.
-        assert!(l.split_prize_pool(3 * D, 9 * D + 200).is_empty());
-    }
-
-    #[test]
-    fn prize_split_caps_a_dominant_rig() {
-        let mut l = Ledger::new();
-        // One giant rig against four small miners: 5+ miners, so the
-        // 25% cap applies — a farm cannot take the pool even if its
-        // shares dominate the window.
-        l.submit(rec("whale", 9, 1_000_000));
-        for m in ["a", "b", "c", "d"] {
-            l.submit(rec(m, 9, 10_000));
-        }
-        l.credit_prize(1_000_000);
-        let pays = l.split_prize_pool(3 * D, 9 * D + 200);
-        assert_eq!(pays.iter().map(|(_, p)| p).sum::<u64>(), 1_000_000);
-        let whale = pays.iter().find(|(m, _)| m == "whale").expect("whale").1;
-        assert!(whale <= 250_000, "dominant rig capped at 25%: {whale}");
-        assert_eq!(l.prize_balance(), 0);
-    }
-
-    #[test]
-    fn prize_balance_restores_and_accumulates() {
-        // State-file load restores the durable part; new overflow credits
-        // accumulate on top instead of restarting from zero.
-        let mut l = Ledger::new();
-        l.set_prize_balance(5000);
-        assert_eq!(l.prize_balance(), 5000);
-        l.credit_prize(1000);
-        assert_eq!(l.prize_balance(), 6000);
-    }
-
-    #[test]
-    fn debit_prize_is_capped_at_the_credited_balance() {
-        // Draw payments may only spend what was credited — never past the
-        // balance (which would silently eat miner-owed wallet funds).
-        let mut l = Ledger::new();
-        l.credit_prize(1000);
-        assert_eq!(l.debit_prize(400), 400);
-        assert_eq!(l.prize_balance(), 600);
-        assert_eq!(l.debit_prize(10_000), 600);
-        assert_eq!(l.prize_balance(), 0);
-        assert_eq!(l.debit_prize(1), 0);
-    }
-
-    #[test]
-    fn farms_take_no_league_prizes() {
+    fn farms_are_ranked_but_flagged() {
         let mut l = Ledger::new();
         // 600 MH/s sustained over the class window: farm territory.
         l.submit(ShareRec { miner: "m9".to_string(), ts: 9 * D, work: 600_000_000 * D, overnight: false });
         l.submit(rec("m1", 9, 1000));
-        l.credit_prize(1000);
-        let pays = l.split_prize_pool(3 * D, 9 * D + 200);
-        assert_eq!(pays, vec![("m1".to_string(), 1000)]);
         let board = l.leaderboard(3 * D, 9 * D + 200);
         assert_eq!(board[0].miner, "m9"); // still ranked…
         assert_eq!(board[0].class, DeviceFamily::Farm); // …but flagged

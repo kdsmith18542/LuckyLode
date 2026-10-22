@@ -247,24 +247,37 @@ fn external_finds_credit_prize_without_pool_submit() {
     .expect("bind");
 
     // Advance the tip one height at a time (as the refresh loop would see
-    // it live) and require the exact advisory credit per height.
+    // it live) and require the exact advisory credit per height. The
+    // feed is display-only (per-height inflow for the explorer); the sum
+    // must still equal the node's advisories exactly.
+    let credited = || {
+        server
+            .prize_credits()
+            .iter()
+            .map(|(_, a)| a)
+            .sum::<u64>()
+    };
     for step in 1..=3u64 {
         *tip.lock().expect("tip") += 1;
         let want = PER_HEIGHT * step;
         let deadline = std::time::Instant::now() + Duration::from_secs(15);
         loop {
-            if server.prize_balance() == want {
+            if credited() == want {
                 break;
             }
             assert!(
                 std::time::Instant::now() < deadline,
-                "tip {} never credited: balance {} != {want}",
+                "tip {} never credited: feed {} != {want}",
                 100 + step,
-                server.prize_balance()
+                credited()
             );
             std::thread::sleep(Duration::from_millis(50));
         }
     }
-    assert_eq!(server.prize_balance(), PER_HEIGHT * 3);
+    assert_eq!(credited(), PER_HEIGHT * 3);
+    // Per-height entries, not just the sum.
+    let mut heights: Vec<u64> = server.prize_credits().iter().map(|(h, _)| *h).collect();
+    heights.sort_unstable();
+    assert_eq!(heights, vec![101, 102, 103]);
     server.stop();
 }

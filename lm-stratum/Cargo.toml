@@ -8,7 +8,6 @@ license = "GPL-3.0-only"
 [dependencies]
 lm-pow = { path = "../lm-pow" }
 lm-pool = { path = "../lm-pool" }
-lm-luckynode = { path = "../lm-luckynode" }
 lm-rewards = { path = "../lm-rewards" }
 primitive-types = "0.14"
 serde = { version = "1", features = ["derive"] }

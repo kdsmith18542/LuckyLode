@@ -1135,7 +1135,6 @@ dependencies = [
  "codec_sv2",
  "framing_sv2",
  "libc",
- "lm-luckynode",
  "lm-pool",
  "lm-pow",
  "lm-rewards",

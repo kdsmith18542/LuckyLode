@@ -101,17 +101,19 @@ fn full_loop_share_block_jackpot_and_money() {
     assert_eq!(last.payouts.iter().map(|(_, p)| p).sum::<u64>(), last.bonus);
 
     // Whole-pool money reconciliation: every levied unit is bonus paid,
-    // reserve held, prize inflow, or (on the mock's full pot) burned —
-    // nothing created or destroyed. The 4/1 levy split sends a fifth of
-    // each levy to the pot leg; the mock chain runs the pot at "full"
-    // (u64::MAX), so that fifth burns, exactly as the real rules would
-    // burn it at a capped pot.
+    // reserve held, prize inflow (display feed — consensus pays winners
+    // directly, the pool keeps no prize money), or (on the mock's full
+    // pot) burned — nothing created or destroyed. The 4/1 levy split
+    // sends a fifth of each levy to the pot leg; the mock chain runs the
+    // pot at "full" (u64::MAX), so that fifth burns, exactly as the real
+    // rules would burn it at a capped pot.
     let bonus_total: u64 = blocks.iter().map(|b| b.bonus).sum();
+    let prized_total: u64 = blocks.iter().map(|b| b.prize_inflow).sum();
     let levied = server.chain_blocks() * LEVY;
     let burned = server.chain_blocks() * (LEVY / 5);
     assert_eq!(
         levied,
-        bonus_total + server.reserve() + server.prize_balance() + burned
+        bonus_total + server.reserve() + prized_total + burned
     );
 
     // The ledger saw alice's work and ranks her.
