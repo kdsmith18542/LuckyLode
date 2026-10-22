@@ -1356,7 +1356,7 @@ pub fn miner_gpus() -> Vec<serde_json::Value> {
 /// `-mineraddress`, ...). Point the node at this wallet first with
 /// `miner_solo_point_payouts` (or `-mineraddress` in Node flags by
 /// hand). Loopback nodes only: a shared node can never pay this wallet.
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 #[allow(clippy::too_many_arguments)] // Tauri command surface: one arg per UI field.
 pub fn miner_solo_start(
     state: State<'_, AppState>,
