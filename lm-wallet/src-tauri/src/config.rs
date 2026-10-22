@@ -123,25 +123,45 @@ impl Config {
         // stays in the file (public by design, and a fresh keyring
         // after reboot must not lock novices out of the default node).
         // If the keyring is unavailable the password stays in the file
-        // (0600 app dir) — never block a connection on it.
+        // (0600) — never block a connection on it.
         let mut for_disk = self.clone();
         let placeholder = for_disk.rpc_user == crate::node_proc::PLACEHOLDER_USER
             && for_disk.rpc_pass == crate::node_proc::PLACEHOLDER_PASS;
-        if for_disk.rpc_pass != KEYRING_SENTINEL && !placeholder {
+        if !placeholder && !for_disk.rpc_pass.is_empty() && for_disk.rpc_pass != KEYRING_SENTINEL {
             // Only move the password into the keyring when it can be read
             // back immediately. A locked/unavailable collection can accept
-            // a store yet fail every load; writing the sentinel then would
-            // silently lose the password and break the node connection.
+            // a store yet fail every load. And never let an *empty*
+            // in-memory password collapse the file to a sentinel: that
+            // permanently destroys the stored credential the next time it
+            // loads (this is how the Advanced password field "cleared
+            // itself" — any save with an empty password wiped it).
             let stored = keyring_store(&for_disk.rpc_pass);
-            if stored && keyring_load().as_deref() == Some(for_disk.rpc_pass.as_str()) {
+            if stored
+                && keyring_load().as_deref() == Some(for_disk.rpc_pass.as_str())
+            {
                 for_disk.rpc_pass = KEYRING_SENTINEL.to_string();
             }
         }
         let s = serde_json::to_string_pretty(&for_disk).map_err(|e| e.to_string())?;
-        std::fs::write(path, s).map_err(|e| format!("write {}: {e}", path.display()))?;
-        // The file may carry the RPC password in plaintext when the OS
-        // keyring is unavailable, so it must never be group/world
-        // readable (the old default umask left it 0664).
+        // Atomic write: a crash (or SIGKILL) between truncate and write
+        // must not leave a half-written file that the next load reads as
+        // corrupt — a corrupt file resets the WHOLE config to defaults.
+        // Rename keeps the tmp file's mode, but enforce 0600 on the final
+        // path too (pre-existing files may predate the chmod).
+        let tmp = path.with_extension("tmp");
+        std::fs::write(&tmp, s).map_err(|e| format!("write {}: {e}", tmp.display()))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))
+                .map_err(|e| format!("chmod {}: {e}", tmp.display()))?;
+        }
+        #[cfg(windows)]
+        {
+            // Windows rename fails when the destination exists.
+            let _ = std::fs::remove_file(path);
+        }
+        std::fs::rename(&tmp, path).map_err(|e| format!("rename {}: {e}", path.display()))?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -192,8 +212,32 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// An empty in-memory password must never collapse the file to the
+    /// keyring sentinel: with nothing to store, sentinel-writing would
+    /// permanently destroy a previously stored credential on the next
+    /// load (the "Advanced password clears itself" bug — any save while
+    /// the password was unresolved wiped it).
+    #[test]
+    fn empty_password_never_becomes_sentinel() {
+        let dir = std::env::temp_dir().join(format!("lk-cfgempty-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("tmpdir");
+        let path = dir.join("config.json");
+        let cfg = Config {
+            rpc_user: "luckywallet".to_string(),
+            rpc_pass: String::new(),
+            ..Config::default()
+        };
+        cfg.save(&path).expect("save");
+        let on_disk: Config =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_ne!(on_disk.rpc_pass, KEYRING_SENTINEL, "empty must stay empty");
+        assert!(!path.with_extension("tmp").exists(), "no tmp file left behind");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// When the OS keyring accepts the password, the file only ever
-    /// carries the sentinel — and load resolves it back. Skipped on
+    /// carries the sentinel — and `load` resolves it back. Skipped on
     /// boxes without a usable keyring (graceful fallback keeps the
     /// plaintext path).
     #[test]
