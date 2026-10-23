@@ -84,16 +84,17 @@ footer{margin-top:26px;color:var(--dim);font-size:12px;line-height:1.5}
   <span class="badge" id="updated"></span>
 </header>
 <nav>
-  <button data-tab="dashboard" class="active">Dashboard</button>
-  <button data-tab="start">Getting started</button>
-  <button data-tab="faq">Help</button>
-  <button data-tab="miner">My miner</button>
-  <a class="badge" href="https://luckylode.cc/" target="_blank" rel="noopener">luckylode.cc</a>
-  <a class="badge" href="https://luckylode.cc/explorer/" target="_blank" rel="noopener">explorer</a>
-  <a class="badge" href="https://luckylode.cc/faucet/" target="_blank" rel="noopener">faucet</a>
+<button data-tab="dashboard" class="active">Dashboard</button>
+<button data-tab="start">Getting started</button>
+<button data-tab="faq">Help</button>
+<button data-tab="miner">My miner</button>
+<a class="badge" href="https://luckylode.cc/" target="_blank" rel="noopener">luckylode.cc</a>
+<a class="badge" href="https://luckylode.cc/explorer/" target="_blank" rel="noopener">explorer</a>
+<a class="badge" href="https://luckylode.cc/faucet/" target="_blank" rel="noopener">faucet</a>
 </nav>
+<div class="err" id="stale" style="display:none"></div>
 <section id="tab-dashboard" class="active">
-<div class="grid" id="cards"></div>
+<div class="grid" id="cards"><div class="card"><div class="k">connecting</div><div class="v">…</div></div></div>
 <h2>Workers</h2>
 <input type="search" id="wfilter" placeholder="filter by worker / payout address (Enter looks up idle workers)">
 <div id="wlook" style="color:var(--dim);font-size:12px;margin:6px 0"></div>
@@ -108,18 +109,20 @@ footer{margin-top:26px;color:var(--dim);font-size:12px;line-height:1.5}
 </section>
 <section id="tab-start">
 <h2>Mine to the official pool</h2>
-<p>Lucky Lode is CPU/GPU-first. The reference miner <code>lm-miner</code> speaks Stratum V1 to this pool:</p>
+<p>Lucky Lode is CPU/GPU-first. The reference miner <code>lm-miner</code> speaks Stratum V1 to this pool (V2/Noise on the next port — same command with <code>--v2</code>):</p>
 <pre id="cmd">&hellip;</pre>
-<p>Use <b>your own <span id="gs-ticker">tLKYL</span> address</b> (<span id="gs-net">testnet</span> prefixes <code id="gs-prefixes">m, n, 2</code>) as the worker name &mdash; that is where the pool pays you. Every share is verified against the pool's pre-committed job; nothing is withheld.</p>
+<p>First you need two things: <b>your own <span id="gs-ticker">tLKYL</span> address</b> (<span id="gs-net">testnet</span> prefixes <code id="gs-prefixes">m, n, 2</code> — the desktop wallet or <code>luckyd getnewaddress</code>), as the worker name &mdash; that is where the pool pays you; and <b>testnet coins to nothing</b> &mdash; mining needs no stake, but grab startup funds from the <a href="https://luckylode.cc/faucet/" target="_blank" rel="noopener">faucet</a> if you want to move coins around. Every share is verified against the pool's pre-committed job; nothing is withheld.</p>
 <h2>Options worth knowing</h2>
 <table><thead><tr><th>flag</th><th>what it does</th></tr></thead><tbody>
 <tr><td><code>--device cpu|opencl|auto</code></td><td>hash on CPU threads or an OpenCL GPU (auto prefers the GPU when present)</td></tr>
-<tr><td><code>--threads N</code></td><td>CPU thread count (default: physical cores)</td></tr>
+<tr><td><code>--threads N</code></td><td>CPU thread count (default: all logical cores)</td></tr>
 <tr><td><code>--duty N</code></td><td>run N% of the time &mdash; thermal/power friendly (e.g. 50)</td></tr>
 <tr><td><code>--max-temp C</code></td><td>pause when the package/GPU sensor reaches C (80 recommended)</td></tr>
+<tr><td><code>--max-power W</code></td><td>NVIDIA board power limit in watts (needs driver permission; empty = driver default)</td></tr>
 <tr><td><code>--job-timeout S</code></td><td>reconnect if no new job arrives within S seconds</td></tr>
+<tr><td><code>--password PASS</code></td><td>only on closed pools: must match the operator's pool password or your worker token</td></tr>
 </tbody></table>
-<p>Stratum endpoint: <code id="stratum">:3346</code> (plaintext). <span id="gs-worthless">Testnet coins have no value &mdash; this is the public burn-in.</span></p>
+<p>Stratum endpoint: <code id="stratum">:3346</code> (plaintext; V2 on the next port up). <span id="gs-worthless">Testnet coins have no value &mdash; this is the public burn-in.</span></p>
 </section>
 <section id="tab-faq">
 <h2>Help &amp; FAQ</h2>
@@ -129,11 +132,13 @@ footer{margin-top:26px;color:var(--dim);font-size:12px;line-height:1.5}
 <dt>Why do some shares get rejected?</dt>
 <dd>Usually stale (arrived after a job rotation) or duplicate (nonce already submitted). A few are normal; a rising reject rate means connectivity or clock trouble.</dd>
 <dt>How do payouts work?</dt>
-<dd>Block rewards are credited with PPLNS weights (sqrt-weighted, 25% cap) and sent from the pool wallet to your worker address once mature and above the payout threshold. Sent payouts are listed on the dashboard; your own due/paid balance is on the My miner tab.</dd>
+<dd>Each block's value is split linear pro-rata over the last 2,000 shares (PPLNS) and sent from the pool wallet to your worker address once the coins mature and the balance clears the payout threshold. Jackpot bonuses and pot splashes instead use square-root weights with a 25% per-miner cap, so one big rig can't take a whole windfall. Sent payouts are listed on the dashboard; your own due/paid balance is on the My miner tab (token pools) or the worker lookup (open pools).</dd>
 <dt>What are the jackpot and the Lucky Pot?</dt>
 <dd>Every PoW block carries a pre-committed draw: <code>SHA256D(parent hash + height)</code> &mdash; the ticket is fixed before any grinding, so nothing can be withheld. Jackpot: roughly 1 in 100 blocks &mdash; the block's reward gains a reserve bonus (up to 5× the block reward). Pot: roughly 1 in 1000 blocks with 10/25/50% tiers and a pity timer that forces a splash after a long dry run. Both land only on PoW finds, and the whole block (bonus included) is split among contributors by PPLNS.</dd>
 <dt>What is a Luckynode Draw?</dt>
-<dd>Every epoch the chain picks a winner from registered <code>ln-*</code> identities, and the block found at the boundary pays the winner straight from the prize fund — no pool custody involved. This pool attaches the claim automatically on every block it mines; see the draw-claim column in Blocks. Registering a name and heartbeating once per epoch are small transactions on the node; the old pool-run registry is retired.</dd>
+<dd>Every epoch the chain picks a winner from registered <code>ln-*</code> identities, and the block found at the boundary pays the winner straight from the prize fund — no pool custody involved. Epochs are 3 blocks on testnet (2,880 on mainnet). This pool attaches the claim automatically on every block it mines; see the draw-claim column in Blocks. Registering a name and heartbeating once per epoch are small transactions on the node (the wallet's Luckynodes tab does both); the old pool-run registry is retired.</dd>
+<dt>Where do testnet coins come from?</dt>
+<dd>The <a href="https://luckylode.cc/faucet/" target="_blank" rel="noopener">faucet</a> drips startup funds to any address (once per address per day). Mining itself needs no stake — point the miner at your address and go; payouts arrive once the coins mature (100 blocks) and clear the pool's payout threshold.</dd>
 <dt>Is this real money?</dt>
 <dd id="faq-testnet">No. This is the Lucky Lode public testnet; coins are worthless by design. The point is to break things before mainnet.</dd>
 </dl>
@@ -185,11 +190,16 @@ const coin8=v=>typeof v==='number'?(v/1e8).toLocaleString(undefined,{maximumFrac
 const ago=s=>{if(!s)return '-';const d=Math.max(0,Math.floor(Date.now()/1000-s));if(d<60)return d+'s';if(d<3600)return Math.floor(d/60)+'m';return Math.floor(d/3600)+'h';};
 const tstr=t=>new Date(t*1000).toLocaleTimeString();
 const device=a=>{const p=String(a||'').split(' ').filter(Boolean);return p.length>1?p.slice(1).join(' '):(p[0]||'-');};
-// Tabs + miner lookup + endpoint fill.
-document.querySelectorAll('nav button').forEach(b=>b.addEventListener('click',()=>{
-  document.querySelectorAll('nav button').forEach(x=>x.classList.toggle('active',x===b));
-  document.querySelectorAll('section').forEach(s=>s.classList.toggle('active',s.id==='tab-'+b.dataset.tab));
-}));
+// Tabs + miner lookup + endpoint fill. The active tab lives in the URL
+// hash so Help/Getting started/My miner link and survive reloads.
+const tabBtns=[...document.querySelectorAll('nav button')];
+function showTab(name){
+  if(!tabBtns.some(b=>b.dataset.tab===name))name='dashboard';
+  tabBtns.forEach(b=>b.classList.toggle('active',b.dataset.tab===name));
+  document.querySelectorAll('section').forEach(s=>s.classList.toggle('active',s.id==='tab-'+name));
+}
+tabBtns.forEach(b=>b.addEventListener('click',()=>{showTab(b.dataset.tab);try{location.hash=b.dataset.tab;}catch(e){}}));
+showTab((location.hash||'').replace('#',''));
 const stratum=location.hostname+':3346';
 document.getElementById('stratum').textContent=stratum;
 document.getElementById('cmd').textContent='lm-miner pool --pool '+stratum+' --worker <your '+TICK+' payout address> --device auto';
@@ -208,19 +218,27 @@ wf.addEventListener('keydown',async e=>{
   box.textContent='looking up '+q+' …';
   try{
     const r=await fetch('api/worker/'+encodeURIComponent(q),{cache:'no-store',headers:mtok?{Authorization:'Bearer '+mtok}:{}});
-    if(!r.ok){box.textContent=q+': never seen on this pool';return;}
+    if(!r.ok){
+      box.textContent=r.status===403
+        ?q+': hidden on this token pool — paste your worker token in My miner'
+        :r.status===404?q+': never seen on this pool':'lookup failed (pool error '+r.status+')';
+      return;
+    }
     const w=await r.json();
     box.textContent=`${w.name||w.miner} · ${w.online?'online':'idle'+(w.last_seen?' (last seen '+ago(w.last_seen)+')':'')} · streak ${w.streak||0}d (best ${w.best_streak||0}) · ${w.division_class?('division '+w.division_class+' #'+w.division_rank+'/'+w.division_size):'unranked this season'} · owed ${coin(w.owed)} · paid ${coin(w.paid)}`;
   }catch(err){box.textContent='lookup failed: '+err;}
 });
+let lastOk=0;
 async function tick(){
  try{
   const j=await (await fetch('api/stats',{cache:'no-store'})).json();
+  lastOk=Date.now();
+  document.getElementById('stale').style.display='none';
   const c=[]; const add=(k,v)=>c.push(`<div class="card"><div class="k">${k}</div><div class="v">${esc(v)}</div></div>`);
   if(j.jackpot) add('height', j.jackpot.height);
   if(j.mining) add('difficulty', num(j.mining.difficulty));
   add('pool hashrate 10m', hs(j.pool.hashrate10m));
-  add('workers', `${j.pool.online}/${j.pool.workers}`);
+  add('workers online / seen', `${j.pool.online}/${j.pool.workers}`);
   add('shares', j.pool.shares); add('rejects', j.pool.rejects);
   add('blocks found', j.pool.blocks); add('prize fund', coin((j.jackpot||{}).prize));
   if(j.jackpot){add('jackpot reserve', coin(j.jackpot.reserve)); add('lucky pot', coin(j.jackpot.pot)); add('pot drought', j.jackpot.drought+' / '+(j.jackpot.potdrought||4320)+' blocks');}
@@ -254,13 +272,22 @@ async function tick(){
     || '<tr><td colspan="12">no workers yet</td></tr>';
   applyWF();
   const divisions=(j.divisions&&j.divisions.boards)||[];
-  document.getElementById('divisions').innerHTML=divisions.map(b=>{
+  // Full boards render as tables; empty families collapse to one line so
+  // three empty tables don't dominate the page. The API caps boards at
+  // 20 rows, so say "top 20 of N" when the board is longer.
+  const boardHtml=b=>{
     const rows=(b.entries||[]).map(e=>
-      `<tr><td>${esc(e.rank)}</td><td>${esc(e.name||e.miner)}</td><td>${num(e.eff_work)}</td><td>${esc(e.days_active)}d</td><td>${e.streak?esc(e.streak)+'d':'—'}</td><td>${e.attested?esc((e.attestation&&e.attestation.provider)||'attested'):'—'}</td></tr>`).join('')
-      || '<tr><td colspan="6">no qualifying workers this season</td></tr>';
-    return `<h3 style="margin:14px 0 6px;color:var(--gold);font-size:13px">${esc(b.class)} <span class="dim">· ${esc(b.size)} ranked</span></h3>`+
-      `<table><thead><tr><th>rank</th><th>worker</th><th>eff. work</th><th>days</th><th>streak</th><th>device attest</th></tr></thead><tbody>${rows}</tbody></table>`;
-  }).join('')||'<span style="color:var(--dim)">no ranked workers yet</span>';
+      `<tr><td>${esc(e.rank)}</td><td>${esc(e.name||e.miner)}</td><td>${num(e.eff_work)}</td><td>${esc(e.days_active)}d</td><td>${e.streak?esc(e.streak)+'d':'—'}</td><td>${e.attested?esc((e.attestation&&e.attestation.provider)||'attested'):'—'}</td></tr>`).join('');
+    const cap=(b.entries||[]).length>=20&&(b.size||0)>20?`top 20 of ${esc(b.size)}`:`${esc(b.size)}`;
+    return `<h3 style="margin:14px 0 6px;color:var(--gold);font-size:13px">${esc(b.class)} <span class="dim">· ${cap} ranked</span></h3>`+
+      `<table><thead><tr><th>rank</th><th>worker</th><th>eff. work</th><th>days</th><th>streak</th><th>device attest</th></tr></thead><tbody>${rows||'<tr><td colspan="6">no qualifying workers this season</td></tr>'}</tbody></table>`;
+  };
+  const fullDivs=divisions.filter(b=>(b.entries||[]).length>0);
+  const emptyDivs=divisions.filter(b=>(b.entries||[]).length===0);
+  document.getElementById('divisions').innerHTML=
+    fullDivs.map(boardHtml).join('')
+    +(emptyDivs.length?`<p class="dim">no qualifying workers this season: ${emptyDivs.map(b=>esc(b.class)).join(', ')}</p>`:'')
+    ||'<span style="color:var(--dim)">no ranked workers yet</span>';
   document.getElementById('blocks').innerHTML=(j.last_blocks||[]).map(b=>
     `<tr><td>${esc(b.height)}</td><td>${esc(b.finder_name||b.finder)}</td><td>${coin(b.value)}</td><td>${b.bonus>0?coin(b.bonus):'–'}</td><td>${b.pot>0?coin(b.pot):'–'}</td><td>${b.prize_inflow>0?coin(b.prize_inflow):'–'}</td><td>${b.prize_claim>0?coin(b.prize_claim)+' → '+esc((b.prize_winner||'').slice(0,12))+'…':'–'}</td><td>${b.pplns_total>0?coin(b.pplns_total)+' ('+esc(b.pplns_count)+')':'–'}</td></tr>`).join('')
     || '<tr><td colspan="8">no blocks yet</td></tr>';
@@ -277,7 +304,12 @@ async function tick(){
     'Official Lucky Lode reference pool · <span id="foot-net">'+esc(NET.name)+'</span> · no operator fee (1% miner + 0.5pp pool dev slice applies at mainnet). '
     + claimNote;
   document.getElementById('err').textContent='';
- }catch(e){document.getElementById('err').textContent='stats fetch failed: '+e;}
+ }catch(e){
+  const el=document.getElementById('stale');
+  el.style.display='block';
+  el.textContent='pool API unreachable'+(lastOk?(' — showing data from '+new Date(lastOk).toLocaleTimeString()):' — retrying…');
+  document.getElementById('err').textContent='stats fetch failed: '+e;
+ }
 }
 // My miner: token-authenticated stats + payout settings, with an
 // open-pool fallback. A token Bearer against api/miner unlocks the
@@ -3385,5 +3417,16 @@ mod tests {
         assert!(INDEX_HTML.contains(".gold{"));
         // The empty-workers row spans the full 12-column table.
         assert!(INDEX_HTML.contains("colspan=\"12\""));
+        // Resilience: tab state in the URL hash, a stale-data banner, and
+        // honest lookup errors (403/404 distinguished, not "never seen").
+        assert!(INDEX_HTML.contains("location.hash"));
+        assert!(INDEX_HTML.contains("id=\"stale\""));
+        assert!(INDEX_HTML.contains("showing data from"));
+        assert!(INDEX_HTML.contains("hidden on this token pool"));
+        // Boards collapse when empty and say "top 20 of N" when capped.
+        assert!(INDEX_HTML.contains("no qualifying workers this season: "));
+        assert!(INDEX_HTML.contains("top 20 of "));
+        // Cards name what they count.
+        assert!(INDEX_HTML.contains("workers online / seen"));
     }
 }
