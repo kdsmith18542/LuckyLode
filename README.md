@@ -73,6 +73,7 @@ to mine or run a pool, see the guides:
 
 - [Solo mining](guides/solo-mining.md)
 - [Running a neutral pool](guides/pool-neutrality.md)
+- [Pool and explorer API reference](guides/api.md)
 
 ## Contributing and security
 
