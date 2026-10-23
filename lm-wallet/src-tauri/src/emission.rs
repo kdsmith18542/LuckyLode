@@ -15,7 +15,7 @@
 // Rust mirror shared with the explorer). `subsidy`/`net_subsidy` are
 // re-exported so existing wallet call sites keep their names.
 pub use lm_rewards::emission::{
-    net_subsidy, subsidy, ERA2_END, ERA2_REWARD, HALVING, LEVY_PERMYRIAD, RAMP_END, TAIL_REWARD,
+    net_subsidy, subsidy, ERA2_END, HALVING, RAMP_END, TAIL_REWARD,
 };
 
 /// Live emission phase for display.
