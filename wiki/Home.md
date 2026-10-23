@@ -1,7 +1,7 @@
 # Lucky Lode wiki
 
-Mineable money with a game layer: hybrid PoW/PoS, CPU-first, jackpots,
-leagues and luck classes as the core differentiator.
+Mineable money with a game layer: hybrid PoW/PoS, CPU-first, with
+pre-committed jackpots, the Lucky Pot, Divisions and the Luckynode Draw.
 
 > **Right now the public chain is the TESTNET.** Coins are worthless by
 > design, the chain may restart, and anything you read here about
@@ -11,27 +11,29 @@ leagues and luck classes as the core differentiator.
 
 - [Getting Started](Getting-Started) — mining in five minutes.
 - [Wallet](Wallet) — install, fund, mine, stake, back up.
-- [Pool Mining](Pool-Mining) — workers, PPLNS, payouts.
+- [Pool Mining](Pool-Mining) — workers, PPLNS, payouts, Divisions.
 - [Staking](Staking) — put your coins to work for the PoS half.
-- [Luckynodes](Luckynodes) — bonds, heartbeats, draws.
+- [Luckynodes](Luckynodes) — on-chain identities, heartbeats, draws.
 - [Faucet](Faucet) — free testnet coins.
-- [Game Layer](Game-Layer) — jackpots, Lucky Pot, draws, leagues.
+- [Game Layer](Game-Layer) — jackpots, Lucky Pot, the Draw, Divisions.
 - [Android Miner](Android-Miner) — the phone app (sideload only).
 - [FAQ](FAQ) — short answers.
 - [Testnet Rules](Testnet-Rules) — ground rules while we break things.
 
-## Downloads (never go stale)
+## Software
 
-- **Wallet + miner apps:** https://github.com/kdsmith18542/LuckyLode/releases
-  — always the latest release. Never download builds from anywhere else.
+There is **no published release build yet** — builds and install
+notes live in the repositories:
 
-## Source
+- Wallet + tools: https://github.com/kdsmith18542/LuckyLode
+  (`lm-miner`, `pool_server`, explorer, faucet; wallet in `lm-wallet/`)
+- Node: https://github.com/kdsmith18542/LuckyLode-node (`luckyhash` branch)
 
-- Design docs + Rust code: https://github.com/kdsmith18542/LuckyLode
-- Node fork: https://github.com/kdsmith18542/LuckyLode-node (`luckyhash` branch)
+Never download Lucky Lode binaries from anywhere else.
 
 ## Live testnet services
 
-- Pool: https://luckylode.cc/pool/ — stratum `luckylode.cc:3346` (V1), `:3347` (V2)
+- Pool: https://luckylode.cc/pool/ — stratum `luckylode.cc:3346` (V1,
+  plaintext), `:3347` (V2, Noise-encrypted)
 - Explorer: https://luckylode.cc/explorer/
 - Faucet: https://luckylode.cc/faucet/

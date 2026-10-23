@@ -60,7 +60,7 @@ NAV = (
 FOOT = (
     "<footer>Lucky Lode wiki · testnet — "
     "<a href=\"https://github.com/kdsmith18542/LuckyLode\">source</a> · "
-    "<a href=\"https://github.com/kdsmith18542/LuckyLode/releases\">downloads</a></footer>"
+    "<a href=\"https://github.com/kdsmith18542/LuckyLode\">build from source</a></footer>"
 )
 
 PAGE = (

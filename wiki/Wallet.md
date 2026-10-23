@@ -1,28 +1,28 @@
 # Wallet
 
-Download: https://github.com/kdsmith18542/LuckyLode/releases (AppImage).
-
-## Install (Linux)
-
-Run the AppImage. If it won't execute, check it is marked executable;
-very old systems without FUSE need the raw binary instead (ask in the
- usual places — see [FAQ](FAQ)).
+Build/install: see `lm-wallet/README.md` in
+https://github.com/kdsmith18542/LuckyLode. No release build is
+published yet.
 
 ## First run
 
 Write down the 12-word seed before anything else. It is the only backup.
-Settings → Wallet can change the password later; there is no recovery
-flow — lost seed means lost coins, even play ones.
+The wallet encrypts the seed with your spending password; losing the
+password is recoverable **only** from that phrase — the lock screen has
+a "Forgot password?" recovery form.
 
 ## Tabs
 
-- **Overview** — balances, network, emission, your referrals to pool blocks.
-- **Mining** — CPU or GPU pool mining with temperature/power caps.
-  Paste the pool (`luckylode.cc:3346`) and your payout address, Start.
-- **Send/Receive** — normal transfers, QR payment requests.
-- **Luckynodes** — register/heartbeat if you run one (see [Luckynodes](Luckynodes)).
-- **Node** — run your own node (Settings → Node → Start), or use the
-  shared testnet node with one click.
+- **Overview** — balances, activity, network, emission, staking setup.
+- **Send / Receive** — transfers with a review step, QR payment requests.
+- **Miner** — CPU or GPU pool mining (or solo against your own node)
+  with temperature/power caps. Paste the pool (`luckylode.cc:3346`)
+  and your payout address, Start.
+- **Luckynodes** — register/heartbeat an `ln-` identity
+  (see [Luckynodes](Luckynodes)).
+- **Rewards** — jackpot reserve, pot, prize fund, the next block's draw.
+- **Settings** — node (managed or shared testnet), wallet, contacts,
+  notifications, FAQ.
 
 ## Staking
 
