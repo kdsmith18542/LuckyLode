@@ -62,6 +62,12 @@ fn log(line: &str) {
     println!("{} {line}", fmt_time(now()));
 }
 
+/// Alerts — the monitor's whole job — go to stderr so stdout stays
+/// machine-plumbing and cron mail contains exactly the problems.
+fn alert(line: &str) {
+    eprintln!("{} {line}", fmt_time(now()));
+}
+
 #[derive(serde::Serialize, serde::Deserialize, Default, Clone)]
 struct Persisted {
     height: u64,
@@ -273,6 +279,14 @@ fn main() -> ExitCode {
         eprintln!("error: --node-rpc is required\n{USAGE}");
         return ExitCode::from(2);
     };
+    if interval == 0 {
+        eprintln!("error: --interval must be >= 1 (0 busy-loops the RPC)");
+        return ExitCode::from(2);
+    }
+    if stall_secs == 0 {
+        eprintln!("error: --stall-secs must be >= 1");
+        return ExitCode::from(2);
+    }
     let rpc = RpcClient::new(&node_rpc, &rpc_user, &rpc_pass);
 
     let mut tracker = match state_file.as_deref().and_then(load_state) {
@@ -288,7 +302,7 @@ fn main() -> ExitCode {
         None => Tracker::new(now(), stall_secs),
     };
     let status = Arc::new(Mutex::new(serde_json::json!({
-        "height": null, "reserve": null, "last_advance": null, "events": []
+        "height": null, "reserve": null, "last_advance": null
     })));
     if let Some(addr) = http {
         let s = Arc::clone(&status);
@@ -296,6 +310,13 @@ fn main() -> ExitCode {
         std::thread::spawn(move || http_serve(&listen, s));
         log(&format!("monitor: status on http://{addr}/status"));
     }
+    // Edge-triggered repeat alerts: a stuck-low disk pages once until it
+    // recovers, instead of every poll.
+    let mut disk_low = false;
+    let mut mem_low = false;
+    // --once reports the single poll honestly: exit 1 when the node was
+    // unreachable or anything critical fired.
+    let mut failed = false;
 
     loop {
         match poll(&rpc) {
@@ -305,39 +326,48 @@ fn main() -> ExitCode {
                         Event::ReserveFell { from, to, height } => {
                             let drop = from - to;
                             match coinbase_zat(&rpc, &hash) {
-                                Some(cb) if cb + cb / 100 >= drop => log(&format!(
+                                Some(cb) if cb + cb / 100 >= drop => alert(&format!(
                                     "{} (claim consistent: coinbase {cb} >= drop {drop})",
                                     ev.message()
                                 )),
-                                Some(cb) => log(&format!(
-                                    "CRITICAL reserve drop at height {height}: coinbase {cb} < drop {drop} — possible bug"
-                                )),
-                                None => log(&format!(
+                                Some(cb) => {
+                                    alert(&format!(
+                                        "CRITICAL reserve drop at height {height}: coinbase {cb} < drop {drop} — possible bug"
+                                    ));
+                                    failed = true;
+                                }
+                                None => alert(&format!(
                                     "{} (WARNING: could not fetch coinbase to verify)",
                                     ev.message()
                                 )),
                             }
                         }
-                        _ => log(&ev.message()),
+                        _ => alert(&ev.message()),
                     }
                 }
                 if let Some(path) = &disk_path {
                     if let Some(free) = disk_free_pct(path) {
-                        if free < disk_min_free_pct {
-                            log(&format!(
+                        let low = free < disk_min_free_pct;
+                        if low && !disk_low {
+                            alert(&format!(
                                 "CRITICAL disk {path}: {free}% free (< {disk_min_free_pct}%)"
                             ));
+                            failed = true;
                         }
+                        disk_low = low;
                     }
                 }
                 if mem_min_free_pct > 0 {
                     if let Ok(mi) = std::fs::read_to_string("/proc/meminfo") {
                         if let Some(free) = parse_meminfo_available_pct(&mi) {
-                            if free < mem_min_free_pct {
-                                log(&format!(
+                            let low = free < mem_min_free_pct;
+                            if low && !mem_low {
+                                alert(&format!(
                                     "CRITICAL memory: {free}% available (< {mem_min_free_pct}%)"
                                 ));
+                                failed = true;
                             }
+                            mem_low = low;
                         }
                     }
                 }
@@ -359,10 +389,17 @@ fn main() -> ExitCode {
                     });
                 }
             }
-            Err(e) => log(&format!("CRITICAL node unreachable: {e}")),
+            Err(e) => {
+                alert(&format!("CRITICAL node unreachable: {e}"));
+                failed = true;
+            }
         }
         if once {
-            return ExitCode::SUCCESS;
+            return if failed {
+                ExitCode::from(1)
+            } else {
+                ExitCode::SUCCESS
+            };
         }
         std::thread::sleep(Duration::from_secs(interval));
     }

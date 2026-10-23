@@ -58,6 +58,30 @@ fn mock_pool_version_and_help() {
 }
 
 #[test]
+fn monitor_once_fails_when_the_node_is_down() {
+    // --once reports the single poll honestly: unreachable node = exit 1
+    // with the alert on stderr (stdout stays clean for plumbing).
+    let out = Command::new(env!("CARGO_BIN_EXE_monitor"))
+        .args(["--node-rpc", "127.0.0.1:1", "--once"])
+        .output()
+        .expect("run monitor");
+    assert_eq!(out.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&out.stdout).is_empty());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("CRITICAL node unreachable"));
+}
+
+#[test]
+fn monitor_rejects_a_zero_interval() {
+    for flag in ["--interval", "--stall-secs"] {
+        let out = Command::new(env!("CARGO_BIN_EXE_monitor"))
+            .args(["--node-rpc", "127.0.0.1:1", flag, "0"])
+            .output()
+            .expect("run monitor");
+        assert_eq!(out.status.code(), Some(2), "{flag}");
+    }
+}
+
+#[test]
 fn pool_server_needs_node_or_mock() {
     // Bare flags used to boot the worthless mock chain silently.
     let out = Command::new(env!("CARGO_BIN_EXE_pool_server"))
