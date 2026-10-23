@@ -1,15 +1,18 @@
 # `lm-miner` — reference LuckyHash v1 miner (solo + benchmark)
 
-Portable-first CPU/ARM miner core + binary. One Argon2id instance per
-thread (`p = 1` scales across threads). No third-party CLI or networking
-deps by design — builds offline, easy to audit.
+Portable-first CPU/OpenCL miner core + binary, plus the embeddable pool
+loop shared by the CLI, the desktop wallet and the Android app. One
+Argon2id instance per CPU thread (`p = 1` scales across threads) or one
+OpenCL workgroup per GPU. The `opencl` cargo feature is on by default;
+`default-features = false` builds CPU-only for embedders without
+libOpenCL.
 
 ```sh
 # Benchmark mode (doc 05 §5.6 device-matrix rows: --json for collection)
 cargo run -p lm-miner -- bench --threads 4 --hashes 10
 cargo run -p lm-miner -- bench --threads 4 --hashes 10 --json
 
-# Solo search (testnet primitive; pools speak Stratum V2 later)
+# Solo search (fixed header/nonce range)
 cargo run -p lm-miner -- mine --header <HEX> --height 1 \
   --target nbits:1f00ffff --threads 4 --count 1000000
 
@@ -39,5 +42,6 @@ JSON shape), `tests/search.rs` (single-thread solve pinned at KAT V1
 nonce 0, strict-less boundary, multi-thread validity, stride
 determinism), `tests/cli.rs` (flags, exit codes, output shapes).
 
-Follow-ups (doc 02 §2.3): `lm-sched`
-thread-count hookup + Android JNI, NEON-tuned kernels on measured uplift.
+The thermal policy (`lm-sched`) and the Android JNI facade (`lm-mobile`)
+are wired. Remaining follow-ups: NEON-tuned kernels on measured uplift,
+second-vendor GPU validation (only a GTX 1080 is available).

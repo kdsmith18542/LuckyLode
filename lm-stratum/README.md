@@ -1,12 +1,12 @@
 # `lm-stratum` — reference pool wire layer
 
-Testnet-in-a-box: a threaded TCP pool server speaking Stratum V1 framing
-with the Lucky Lode job profile (`luckylode/1`), running on a mock chain with
-the *real* money rules. No async runtime — std threads only.
+Reference pool: a threaded TCP server speaking Stratum V1 and V2 (Noise
+NX) with the Lucky Lode job profile, against a real node or a mock chain
+carrying the *real* money rules. No async runtime — std threads only.
 
-- `v1` — protocol types, job registry (4-job window), pure share
+- `v1` — protocol types, job registry (16-slot window), pure share
   evaluation (accept/stale/dupe/low-diff/unknown-job/bad-nonce with typed
-  reject codes 20–24), JSON-RPC shapes, worker→id mapping (FNV-1a).
+  reject codes 20–24), JSON-RPC shapes; the worker name is the identity.
 - `provider` — `TemplateProvider` seam + `MockProvider`: real LuckyHash
   verification, real `T/100` jackpot trigger, real levy/bonus/cap machine,
   height advance.
@@ -94,7 +94,8 @@ This is the reference implementation; run it on testnet knowing:
   `CloseChannel` drops one, the connection serves on), `LuckyJob`
   full-template dispatch and `LuckySubmit`
   (u64 nonce) validation through the same registry/dedupe/ledger as V1.
-  V2 auth reuses the V1 password/token map (token rides as device id);
+  at most 64 channels per session; V2 auth reuses the V1 password/token
+  map (token rides as device id);
   vardiff mirrors V1 per channel (core `SetTarget` + same-header retarget
   jobs; templates reset to the template target). The provider
   seam and money rules carry over. No `set_difficulty` — targets ride in `mining.notify`.
@@ -103,6 +104,8 @@ This is the reference implementation; run it on testnet knowing:
   both transport directions byte-identical, length tables agreeing.
 
 Shipped: state-file persistence, the payout processor, pool auth
-(--pool-password / --workers-file), V2 multi-channel, and interop against
-`codec_sv2`'s Encoder/Decoder. Remaining follow-ups: a V2-speaking
-`lm-miner pool` mode, attestation-gated division entry.
+(`--pool-password` / `--workers-file`), V2 multi-channel, a V2-speaking
+`lm-miner pool --v2` mode, TLS (`--tls-cert/--tls-key`), the embedded
+dashboard/API, and interop against `codec_sv2`'s Encoder/Decoder.
+Remaining follow-up: a real device-attestation verifier (the endpoint
+accepts self-labels only).

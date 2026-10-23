@@ -2,7 +2,7 @@
 name = "lm-pool"
 version = "0.1.0"
 edition = "2021"
-description = "Pool-side fun-layer accounting (docs 03, 06): streaks, device-class leagues, PPLNS ledger, jackpot/league payouts"
+description = "Pool-side accounting for the retention engine (docs 03, 06): streaks, device-class Divisions, PPLNS ledger, jackpot/pot/prize splits"
 license = "GPL-3.0-only"
 
 [dependencies]

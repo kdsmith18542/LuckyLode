@@ -2,7 +2,7 @@
 name = "lm-stratum"
 version = "0.1.0"
 edition = "2021"
-description = "Reference pool wire layer (Lucky Lode): Stratum V1 framing with the Lucky Lode job profile, mock-chain provider, threaded server + client"
+description = "Reference pool wire layer (Lucky Lode): Stratum V1 + V2 (Noise), Lucky Lode job profile, node/mock providers, threaded server + client, HTTP dashboards"
 license = "GPL-3.0-only"
 
 [dependencies]

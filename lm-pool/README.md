@@ -6,12 +6,14 @@ payouts + leaderboards that replay deterministically from the log.
 
 - `streak` — uptime streaks (+1%/day to +30%, 48 h reset), comeback
   (+10% × 7 days after ≥14 days idle), overnight (+5% per flagged share).
-- `division` — device-class classification from observed rate
-  (phone <10, miniPC 10–60, desktop 60–500 MH/s; farm above, paid but
-  prize-ineligible).
+- `division` — device-class Divisions: the miner's **declared** family
+  (phone/cpu/gpu/farm) from its agent string, policed by trailing rate
+  (farm-rate claims override; contradicted labels fall back to the
+  rate-implied family). No MH/s bands — LuckyHash runs at kH/s.
 - `ledger` — PPLNS share log, effective-share aggregation
-  (`work × overnight × comeback`, then `× streak`), jackpot payouts via
-  `lm-rewards` sqrt/cap/dust, linear prize-fund splits, seasonal board.
+  (`work × overnight × comeback`, then `× streak`), block-value splits
+  (linear pro-rata over the last 2,000 shares), jackpot/pot splits via
+  `lm-rewards` sqrt/cap/dust, seasonal Divisions boards.
   **Bounded history** (review finding G): raw shares are retained for 32
   days (the longest supported query window); older history is rolled up
   into per-miner UTC active-day lists plus a per-miner comeback state, so
@@ -26,5 +28,7 @@ cargo test -p lm-pool   # unit + season-simulation tests
 comeback return, farm) pinning every number end to end.
 
 Shipped alongside this ledger: the Stratum V1 + V2 wire layer
-(`lm-stratum`) and the payout processor. Remaining follow-ups:
-attestation-gated division entry (doc 03 §3.6), stake-to-enter prize tiers.
+(`lm-stratum`) and the payout processor. Attestation flags decorate
+Division boards (`/api/attest`, self-declared; no verifier yet).
+Pool-side prize money and draws were retired in favour of the consensus
+Prize Fund (doc 06 §6.7) — this crate holds no game-money balances.

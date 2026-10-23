@@ -2,5 +2,5 @@
 name = "lm-rewards"
 version = "0.1.0"
 edition = "2021"
-description = "Reference jackpot-bonus split (doc 06): sqrt weights, cap, dust"
+description = "Consensus game-money rules mirrored in Rust (docs 04/06): jackpot reserve, Lucky Pot tiers/pity, Prize Fund, faucet/dev seed claims, splits"
 license = "GPL-3.0-only"

@@ -1,8 +1,10 @@
 # Lucky Lode Wallet (desktop)
 
-Tauri v2 desktop wallet: wallet core, **luckynodes** (registry, bond,
-embedded heartbeat/cosign service), and all game/network stats — spec in
-`-wallet-gui.md`.
+Tauri v2 desktop wallet: self-custody keys (BIP39/BIP32, encrypted
+vault), send/receive, pool and solo mining, on-chain **luckynodes**
+(identity registration + heartbeats), rewards/game stats, and a managed
+node. Design notes are in the project's internal docs (not in this
+repository); the user-facing wiki lives in `wiki/`.
 
 ## Layout
 
@@ -13,14 +15,14 @@ embedded heartbeat/cosign service), and all game/network stats — spec in
   - `pool.rs` — pool HTTP API (std-only)
   - `draws.rs` — pre-committed draw math (mirrors `lucky_draw.h`; KAT
     vectors pinned in tests)
-  - `luckynode.rs` — embedded heartbeat + draw-cosign service
+  - `luckynode.rs` — embedded identity registration + heartbeat service
   - `commands.rs` — the Tauri command surface
 
 ## Develop
 
 ```sh
 cd lm-wallet/ui && npm install
-cd ../src-tauri && cargo tauri dev   # or: cargo run (after ui is built)
+cd ../src-tauri && cargo tauri dev
 ```
 
 ## Build
@@ -90,11 +92,9 @@ overview balances/activity (**per-tx detail**), send/receive (**contacts
 address book + receive QR**), **embedded miner** (Miner tab:
 CPU/OpenCL — GPU device picker, batch (MiB VRAM), NVIDIA power limit,
 duty + temperature guard, live hashrate/shares/temp/power/log — same
-engine as the reference `lm-miner`; live-verified CPU 846 H/s and GPU
-10.9 kH/s with accepted shares), luckynode list + register + embedded
-service, game stats (**live emission phase**, **luck chart**, draws,
-league read-only), settings (**dark/light theme**). Packaged: deb +
-AppImage (click-to-run verified). Luckynodes tab drives consensus
-draws (doc 06 §6.7): on-chain identity registration + heartbeat
-service, current-epoch draw, last landed claim. Next (M3–M5 in the
-spec): OS notifications, FAQ, OS keyring.
+engine as the reference `lm-miner`; live-verified at ~21 kH/s on a GTX
+1080 with accepted shares), solo mining against the wallet's own node,
+luckynode registration + heartbeat service, Rewards (emission, next
+block draw, jackpot/pot/prize fund), Settings with dark/light themes,
+OS notifications, FAQ, and OS-keyring credential storage. Packaged: deb
++ AppImage (click-to-run verified).
