@@ -91,6 +91,13 @@ testnet incident or a known gap):**
 - **Replay-derivability audit** (doc 06 invariant): every added
   consensus field rebuilds byte-for-byte from a fresh reindex;
   serialization/reload paths re-tested after any field changes.
+- **Index-format versioning (added 2026-10-23):** consensus-adjacent
+  indexes (address index, identity lookups) must carry a persisted format
+  version; a binary/index mismatch forces a full reindex or refuses to
+  start. A testnet datadir built by an older binary silently enumerated
+  zero identities, so the node rejected valid prize claims and stalled
+  until a full `-reindex`. `-reindex-chainstate` is not enough once the
+  address/identity index drifts.
 - **Node repo CI:** the fork gets its own build + KAT-gate CI (all four
   KAT gates) before the countdown — consensus-critical code must not
   depend on one machine's build ritual.
