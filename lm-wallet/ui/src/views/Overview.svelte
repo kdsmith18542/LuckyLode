@@ -1,6 +1,6 @@
 <script lang="ts">
   import * as api from "../lib/api";
-  import { notifyOnce, seenBlockMax, balanceDelta } from "../lib/notify";
+  import { stampOwnSend } from "../lib/events";
   let bal = $state<any>(null);
   let txs = $state<any[]>([]);
   let pool = $state<any>(null);
@@ -12,7 +12,6 @@
   let loading = $state(true);
   let inFlight = $state(false);
   let showAll = $state(false);
-  let miningWorker = $state("");
 
   async function load() {
     if (inFlight) return; // one coordinator beats five racing scans
@@ -35,31 +34,9 @@
     } catch {
       stake = null;
     }
-    if (!miningWorker) {
-      try {
-        miningWorker = String((await api.getConfig() as any)?.mining_worker ?? "");
-      } catch { /* worker match skipped until config loads */ }
-    }
-    // Desktop alerts (best-effort, deduped per event; backend toggle gates).
-    try {
-      const b = Number(bal?.balance ?? NaN);
-      if (Number.isFinite(b) && b > 0) {
-        const delta = balanceDelta(b);
-        if (delta > 0) notifyOnce(`payout-${b}`, "Payout received", `+${api.coin(delta)} ${api.ticker()} (balance ${api.coin(b)})`);
-      }
-      const blocks = (pool?.last_blocks ?? []) as any[];
-      if (miningWorker && blocks.length > 0) {
-        const top = Math.max(...blocks.map((x: any) => Number(x?.height ?? 0) || 0));
-        if (seenBlockMax(top)) {
-          const mine = blocks.find((x: any) => Number(x?.height ?? 0) === top && ((x?.finder_name ?? x?.finder) === miningWorker));
-          if (mine) {
-            const bonus = Number(mine?.bonus ?? 0);
-            const claim = Number(mine?.prize_claim ?? 0);
-            notifyOnce(`block-${top}`, "Block found", `your worker found block ${top}${bonus > 0 ? ` (+${api.coin(bonus)} bonus)` : ""}${claim > 0 ? ` (attached ${api.coin(claim)} draw claim)` : ""}`);
-          }
-        }
-      }
-    } catch { /* advisory only */ }
+    // Event notifications (payout / block found) are evaluated by the
+    // App-level poller so they fire from any tab; this load is display
+    // data only.
   }
   $effect(() => {
     load();
@@ -143,6 +120,7 @@
     fundBusy = true;
     try {
       await api.sendConfirm(fundPreview.txid);
+      stampOwnSend(); // returning change is not a payout
       fundPreview = null;
       await load();
     } catch (e) {

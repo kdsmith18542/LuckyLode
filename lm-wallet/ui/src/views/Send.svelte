@@ -1,5 +1,6 @@
 <script lang="ts">
   import * as api from "../lib/api";
+  import { stampOwnSend } from "../lib/events";
   let to = $state("");
   let amount = $state("");
   let busy = $state(false);
@@ -77,6 +78,7 @@
     try {
       const r: any = await api.sendConfirm(preview.txid);
       result = `sent · txid ${r.txid} · fee ${api.coinU(r.fee_sats)} · change ${api.coinU(r.change_sats)}`;
+      stampOwnSend(); // returning change is not a payout
       preview = null;
       to = "";
       amount = "";

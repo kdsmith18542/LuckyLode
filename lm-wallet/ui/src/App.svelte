@@ -8,6 +8,7 @@
   import Settings from "./views/Settings.svelte";
   import * as api from "./lib/api";
   import { getTheme, setTheme } from "./lib/theme";
+  import { pollEventNotifications } from "./lib/events";
 
   let view = $state("overview");
   let status = $state<any>(null);
@@ -182,7 +183,14 @@
   $effect(() => {
     refresh();
     const t = setInterval(refresh, 10000);
-    return () => clearInterval(t);
+    // Event notifications run on their own slower tick, independent of
+    // which tab is mounted (the views only load display data).
+    pollEventNotifications();
+    const e = setInterval(pollEventNotifications, 30000);
+    return () => {
+      clearInterval(t);
+      clearInterval(e);
+    };
   });
 
   const height = $derived(status?.blocks ?? "–");

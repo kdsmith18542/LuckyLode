@@ -1,6 +1,5 @@
 <script lang="ts">
   import * as api from "../lib/api";
-  import { notifyOnce } from "../lib/notify";
   let data = $state<any>(null);
   let svc = $state<any>(null);
   let name = $state("");
@@ -26,21 +25,8 @@
     } catch (e) {
       err = String(e);
     }
-    // Draw-won alert: the current epoch's winner is one of our payout
-    // addresses.
-    try {
-      const winner: string = data?.draw?.winner ?? "";
-      const ours = new Set(
-        (data?.identities ?? []).map((i: any) => i.address).filter(Boolean),
-      );
-      if (winner && ours.has(winner)) {
-        notifyOnce(
-          `draw-win-${data.draw.epoch}`,
-          "Luckynode Draw won",
-          `your node won epoch ${data.draw.epoch} (${api.coinU(data?.last_claim?.amount ?? 0)})`,
-        );
-      }
-    } catch { /* advisory only */ }
+    // Draw-win alerts are evaluated by the App-level poller so they
+    // fire from any tab; this load is display data only.
   }
   $effect(() => {
     load();

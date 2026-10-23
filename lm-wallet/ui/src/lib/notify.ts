@@ -8,8 +8,11 @@ export async function notifyOnce(key: string, title: string, body: string): Prom
   try {
     const k = `ll-notify-${key}`;
     if (localStorage.getItem(k)) return;
-    localStorage.setItem(k, "1");
+    // Mark seen only AFTER a successful send: a denied permission or a
+    // disabled toggle must not permanently suppress the event — the
+    // next poll retries (cheap; still once per event afterwards).
     await notify(title, body);
+    localStorage.setItem(k, "1");
   } catch {
     /* notifications are advisory — never break the UI */
   }
