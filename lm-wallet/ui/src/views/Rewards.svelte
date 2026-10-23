@@ -75,7 +75,7 @@
     <div class="k">forced pot splash in</div>
     <div class="v">{droughtLeft !== null ? `${droughtLeft} blocks` : "–"}</div>
   </div>
-  <div class="card"><div class="k">difficulty</div><div class="v">{mining.difficulty ?? "–"}</div></div>
+  <div class="card"><div class="k">difficulty</div><div class="v">{api.compact(mining?.difficulty)}</div></div>
 </div>
 
 <h2>Reward events (recent blocks)</h2>

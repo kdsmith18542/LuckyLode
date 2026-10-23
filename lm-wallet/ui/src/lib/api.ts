@@ -122,13 +122,49 @@ export function ticker(): string {
   if (c === "regtest") return "rLKYL";
   return "tLKYL";
 }
-/** coin + ticker suffix: the one money formatter for every money field. */
+/** coin + ticker suffix: the one money formatter for every money field.
+ * Missing values render bare "–", never "– tLKYL". */
 export function coinU(v: unknown): string {
-  return `${coin(v)} ${ticker()}`;
+  const c = coin(v);
+  return c === "–" ? c : `${c} ${ticker()}`;
 }
 /** decimal-LKYL + ticker suffix. */
 export function coinDecU(v: unknown): string {
-  return `${coinDec(v)} ${ticker()}`;
+  const c = coinDec(v);
+  return c === "–" ? c : `${c} ${ticker()}`;
+}
+/** Hashrate: 846 H/s, 2.1 kH/s, 14.60 MH/s — one formatter for the
+ * Miner tab and the Overview/Rewards network cards. */
+export function hs(v: unknown): string {
+  const n = typeof v === "number" ? v : NaN;
+  if (!Number.isFinite(n)) return "–";
+  if (n >= 1e6) return (n / 1e6).toFixed(2) + " MH/s";
+  if (n >= 1e3) return (n / 1e3).toFixed(1) + " kH/s";
+  return Math.max(0, Math.round(n)) + " H/s";
+}
+/** Compact big number: 256.94, 1.2k, 3.40M. For difficulty-style values
+ * that otherwise print 15 decimals. */
+export function compact(v: unknown): string {
+  const n = typeof v === "number" ? v : NaN;
+  if (!Number.isFinite(n)) return "–";
+  if (n >= 1e6) return (n / 1e6).toFixed(2) + "M";
+  if (n >= 1e3) return (n / 1e3).toFixed(1) + "k";
+  return n >= 100 ? n.toFixed(0) : n.toFixed(2);
+}
+/** Thousands separators for counters (shares, rejects, hashes). */
+export function int(v: unknown): string {
+  const n = typeof v === "number" ? v : NaN;
+  if (!Number.isFinite(n)) return "–";
+  return Math.round(n).toLocaleString();
+}
+/** Activity direction vocabulary: one set of words everywhere
+ * (Received/Sent/Change, never raw receive/send/self). */
+export function dir(c: unknown): string {
+  const s = String(c ?? "");
+  if (s === "receive") return "Received";
+  if (s === "send") return "Sent";
+  if (s === "self") return "Change";
+  return s || "–";
 }
 
 /** coin display: base units → exact LKYL (8dp, trailing zeros trimmed).

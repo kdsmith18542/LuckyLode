@@ -10,6 +10,15 @@ use serde_json::json;
 use std::sync::atomic::Ordering;
 use tauri::State;
 
+/// Chain ticker for user-facing strings (mirrors the UI's ticker()).
+fn ticker(net: Network) -> &'static str {
+    match net {
+        Network::Mainnet => "LKYL",
+        Network::Testnet => "tLKYL",
+        Network::Regtest => "rLKYL",
+    }
+}
+
 /// Chain + node health for the top status bar, plus managed-node state.
 /// Never fails when the node is down: chain fields go null and the UI
 /// shows the managed Start button instead of an error.
@@ -459,8 +468,9 @@ pub fn send_preview(
     }
     if spendable.is_empty() && locked > 0 {
         return Err(format!(
-            "nothing spendable: {:.8} LKYL sits in luckynode bond addresses (release in Settings → Wallet)",
-            locked as f64 / 100_000_000.0
+            "nothing spendable: {:.8} {} sits in luckynode bond addresses (release in Settings → Wallet)",
+            locked as f64 / 100_000_000.0,
+            ticker(c.net)
         ));
     }
     let draft = wallet::prepare_payment(
@@ -475,8 +485,9 @@ pub fn send_preview(
     .map_err(|e| {
         if locked > 0 {
             format!(
-                "{e} — plus {:.8} LKYL locked in luckynode bond addresses (release in Settings → Wallet)",
-                locked as f64 / 100_000_000.0
+                "{e} — plus {:.8} {} locked in luckynode bond addresses (release in Settings → Wallet)",
+                locked as f64 / 100_000_000.0,
+                ticker(c.net)
             )
         } else {
             e
@@ -846,8 +857,9 @@ pub fn send(state: State<'_, AppState>, to: String, amount: String) -> Result<se
     }
     if spendable.is_empty() && locked > 0 {
         return Err(format!(
-            "nothing spendable: {:.8} LKYL sits in luckynode bond addresses (release in Settings → Wallet)",
-            locked as f64 / 100_000_000.0
+            "nothing spendable: {:.8} {} sits in luckynode bond addresses (release in Settings → Wallet)",
+            locked as f64 / 100_000_000.0,
+            ticker(c.net)
         ));
     }
     let r = wallet::send_payment(
@@ -862,8 +874,9 @@ pub fn send(state: State<'_, AppState>, to: String, amount: String) -> Result<se
     .map_err(|e| {
         if locked > 0 {
             format!(
-                "{e} — plus {:.8} LKYL locked in luckynode bond addresses (release in Settings → Wallet)",
-                locked as f64 / 100_000_000.0
+                "{e} — plus {:.8} {} locked in luckynode bond addresses (release in Settings → Wallet)",
+                locked as f64 / 100_000_000.0,
+                ticker(c.net)
             )
         } else {
             e

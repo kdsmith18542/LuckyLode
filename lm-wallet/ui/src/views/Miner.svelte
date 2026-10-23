@@ -140,12 +140,6 @@
     }
   }
 
-  const hs = (v: number) =>
-    v >= 1e6
-      ? (v / 1e6).toFixed(2) + " MH/s"
-      : v >= 1e3
-        ? (v / 1e3).toFixed(1) + " kH/s"
-        : (v || 0).toFixed(0) + " H/s";
   const uptime = (s: number) => {
     s = s || 0;
     const h = Math.floor(s / 3600);
@@ -252,13 +246,13 @@
 {#if st && (running || st.hashes > 0)}
   <h2>Status</h2>
   <div class="grid">
-    <div class="card"><div class="k">hashrate</div><div class="v">{hs(st.hashrate)}</div></div>
-    <div class="card"><div class="k">accepted</div><div class="v">{st.accepted}</div></div>
-    <div class="card"><div class="k">rejected</div><div class="v">{st.rejected}</div></div>
+    <div class="card"><div class="k">hashrate</div><div class="v">{api.hs(st.hashrate)}</div></div>
+    <div class="card"><div class="k">accepted</div><div class="v">{api.int(st.accepted)}</div></div>
+    <div class="card"><div class="k">rejected</div><div class="v">{api.int(st.rejected)}</div></div>
     {#if !String(st.pool ?? "").startsWith("solo")}
-    <div class="card" title="resubmitted shares the pool already counted — not extra work"><div class="k">duplicates</div><div class="v">{st.duplicates}</div></div>
+    <div class="card" title="resubmitted shares the pool already counted — not extra work"><div class="k">duplicates</div><div class="v">{api.int(st.duplicates)}</div></div>
     {/if}
-    <div class="card"><div class="k">hashes</div><div class="v">{st.hashes}</div></div>
+    <div class="card"><div class="k">hashes</div><div class="v">{api.int(st.hashes)}</div></div>
     <div class="card"><div class="k">uptime</div><div class="v">{uptime(st.uptime_secs)}</div></div>
     {#if st.temp_c > 0}
       <div class="card"><div class="k">temp</div><div class="v">{st.temp_c}°C</div></div>

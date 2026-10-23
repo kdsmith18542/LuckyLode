@@ -90,7 +90,7 @@
 
 <h2>Luckynodes</h2>
 <div class="grid">
-  <div class="card"><div class="k">draw epoch</div><div class="v">{draw.epoch ?? "–"} / {data?.epoch_len ?? "–"}</div></div>
+  <div class="card"><div class="k">draw epoch</div><div class="v">{draw.epoch ?? "–"}{data?.epoch_len ? ` · ${data.epoch_len} blocks/epoch` : ""}</div></div>
   <div class="card"><div class="k">epoch budget</div><div class="v gold">{typeof draw.budget === "number" ? api.coinU(draw.budget) : "–"}</div></div>
   <div class="card"><div class="k">remaining</div><div class="v">{typeof draw.remaining === "number" ? api.coinU(draw.remaining) : "–"}</div></div>
   <div class="card"><div class="k">last claim</div><div class="v">{typeof last.amount === "number" && last.amount > 0 ? `${api.coinU(last.amount)} (epoch ${last.epoch})` : "–"}</div></div>

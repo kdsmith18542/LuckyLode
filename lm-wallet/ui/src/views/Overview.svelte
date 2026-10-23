@@ -234,9 +234,9 @@
       <b>Fund node wallet — review</b>
       <table><tbody>
         <tr><th>to (node)</th><td class="addr">{fundPreview.to}</td></tr>
-        <tr><th>amount</th><td>{api.coin(fundPreview.amount_sats)}</td></tr>
-        <tr><th>miner fee</th><td>{api.coin(fundPreview.fee_sats)}</td></tr>
-        <tr><th>change back</th><td>{api.coin(fundPreview.change_sats)}</td></tr>
+        <tr><th>amount</th><td>{api.coinU(fundPreview.amount_sats)}</td></tr>
+        <tr><th>miner fee</th><td>{api.coinU(fundPreview.fee_sats)}</td></tr>
+        <tr><th>change back</th><td>{api.coinU(fundPreview.change_sats)}</td></tr>
       </tbody></table>
       <div class="row" style="margin-top:8px;gap:8px;align-items:center">
         <input bind:value={fundAmount} oninput={() => (fundPreview = null)} placeholder={"amount " + api.ticker()} inputmode="decimal" style="max-width:160px" />
@@ -251,11 +251,11 @@
 <table>
   <thead><tr><th>time</th><th>direction</th><th>amount</th><th>address</th><th>status</th></tr></thead>
   <tbody>
-    {#each shownTxs as tx}
-      <tr style="cursor:pointer" onclick={() => openDetail(tx.txid)} title="click a row for details, txid and explorer link">
+      {#each shownTxs as tx}
+        <tr style="cursor:pointer" class:off={tx.category !== "receive"} onclick={() => openDetail(tx.txid)} title="click a row for details, txid and explorer link">
         <td>{new Date((tx.time ?? 0) * 1000).toLocaleString()}</td>
-        <td class:off={tx.category !== "receive"}>{tx.category}</td>
-        <td>{api.coinDecU(tx.amount)}</td>
+          <td>{api.dir(tx.category)}</td>
+          <td>{api.coinDecU(tx.amount)}</td>
         <td class="muted">{api.short(tx.address, 10)}</td>
         <td class="muted">{tx.confirmations ?? 0} conf</td>
       </tr>
@@ -291,7 +291,7 @@
         <tbody>
           {#each detail.details as d}
             <tr>
-              <td>{d.category}</td>
+              <td>{api.dir(d.category)}</td>
               <td class="muted">{api.short(d.address, 12)}</td>
               <td>{api.coinDecU(d.amount)}</td>
             </tr>
@@ -304,10 +304,10 @@
 
 <h2>Network</h2>
 <div class="grid">
-  <div class="card"><div class="k">network hashrate</div><div class="v">{mining.networkhashps ?? "–"} H/s</div></div>
-  <div class="card"><div class="k">difficulty</div><div class="v">{mining.difficulty ?? "–"}</div></div>
-  <div class="card"><div class="k">chain height</div><div class="v">{mining.blocks ?? "–"}</div></div>
-  <div class="card"><div class="k">pool hashrate 10m</div><div class="v">{pool?.pool?.hashrate10m ? Math.round(pool.pool.hashrate10m) + " H/s" : "–"}</div></div>
+  <div class="card"><div class="k">network hashrate</div><div class="v">{api.hs(mining?.networkhashps)}</div></div>
+  <div class="card"><div class="k">difficulty</div><div class="v">{api.compact(mining?.difficulty)}</div></div>
+  <div class="card"><div class="k">chain height</div><div class="v">{mining?.blocks ?? "–"}</div></div>
+  <div class="card"><div class="k">pool hashrate 10m</div><div class="v">{api.hs(pool?.pool?.hashrate10m)}</div></div>
 </div>
 
 <h2>Emission schedule</h2>
