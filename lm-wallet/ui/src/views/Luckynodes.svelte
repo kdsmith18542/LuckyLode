@@ -154,6 +154,13 @@
   <button class="btn primary" disabled={!name || !addr || regBusy} onclick={register}>Register on chain</button>
   <span class="muted">name commitment + identity registration, funded from the connected node's wallet (identity fee set by the chain — 100 tLKYL on the current testnet)</span>
   </div>
+  <div class="muted" style="margin-top:8px">
+    The commitment's coins stay in the connected node's wallet, not this app.
+    A pending registration can therefore show as a debit under this app's
+    <b>unconfirmed</b> balance while the same value sits in the node wallet
+    (Overview → Node staking). Retrying a pending step resumes it — it does
+    not pay a second commitment.
+  </div>
   {#if confirming}
     <div class="card" style="margin-top:12px;border:1px solid var(--gold)">
       <b>Review — this spends real chain fees</b>

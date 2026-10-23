@@ -279,7 +279,7 @@ fn main() {
     // starting over.
     #[derive(Default)]
     struct State {
-        pending: Option<identity::PendingCommitment>,
+        pending: identity::PendingIdentity,
         last_heartbeat_tip: Option<u64>,
     }
     fn load_state(path: &Option<String>) -> Result<State, String> {
@@ -308,11 +308,15 @@ fn main() {
             v.get("commitment_txid").and_then(|t| t.as_str()),
             v.get("namereservation"),
         ) {
-            st.pending = Some(identity::PendingCommitment {
+            st.pending.commitment = Some(identity::PendingCommitment {
                 txid: txid.to_string(),
                 reservation: reservation.clone(),
             });
         }
+        st.pending.registration = v
+            .get("registration_txid")
+            .and_then(|t| t.as_str())
+            .map(str::to_string);
         st.last_heartbeat_tip = v.get("last_heartbeat_tip").and_then(|t| t.as_u64());
         Ok(st)
     }
@@ -321,9 +325,12 @@ fn main() {
             return;
         };
         let mut v = serde_json::Map::new();
-        if let Some(c) = st.pending.as_ref() {
+        if let Some(c) = st.pending.commitment.as_ref() {
             v.insert("commitment_txid".into(), serde_json::json!(c.txid));
             v.insert("namereservation".into(), c.reservation.clone());
+        }
+        if let Some(txid) = st.pending.registration.as_ref() {
+            v.insert("registration_txid".into(), serde_json::json!(txid));
         }
         if let Some(tip) = st.last_heartbeat_tip {
             v.insert("last_heartbeat_tip".into(), serde_json::json!(tip));
@@ -350,19 +357,22 @@ fn main() {
         }
     }
     let st = loop {
-        match identity::ensure_identity(&rpc, &name, &payout, epoch_len, state.pending.clone()) {
+        match identity::ensure_identity(
+            &rpc,
+            &name,
+            &payout,
+            epoch_len,
+            Some(state.pending.clone()),
+        ) {
             Ok(EnsureOutcome::Ready(st)) => {
                 println!("ready: {}", show(&st));
-                state.pending = None;
+                state.pending = Default::default();
                 save_state(&state_file, &state);
                 break st;
             }
-            Ok(EnsureOutcome::Waiting {
-                message,
-                commitment,
-            }) => {
+            Ok(EnsureOutcome::Waiting { message, pending }) => {
                 eprintln!("waiting: {message} — mine a block (or wait for one)");
-                state.pending = commitment;
+                state.pending = pending;
                 save_state(&state_file, &state);
                 std::thread::sleep(Duration::from_secs(interval.max(5)));
             }

@@ -13,6 +13,7 @@
 //! (commitment + registration fee); the primary payout address may be
 //! app-held or node-held — the node never needs its key.
 
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 /// Minimal node-RPC surface the flows need. Implemented by the daemon's
@@ -122,10 +123,23 @@ fn status_inner(rpc: &dyn NodeRpc, name: &str, epoch_len: u64) -> Result<Identit
 /// registration must reference. Callers persist this across restarts
 /// (daemon state file, wallet localStorage) so a retry resumes the same
 /// commitment instead of minting another fee-paying one.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PendingCommitment {
     pub txid: String,
     pub reservation: Value,
+}
+
+/// In-flight registration work, persisted by callers so a retry resumes
+/// the exact same transactions instead of paying twice. `commitment` is
+/// present until a live identity is observed; `registration` is the
+/// unconfirmed `registeridentity` txid (set once it has been broadcast,
+/// so a retry waits for it instead of sending another).
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct PendingIdentity {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commitment: Option<PendingCommitment>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub registration: Option<String>,
 }
 
 /// Outcome of one `ensure_identity` pass.
@@ -138,7 +152,7 @@ pub enum EnsureOutcome {
     /// passing back `commitment` so no second commitment is created.
     Waiting {
         message: String,
-        commitment: Option<PendingCommitment>,
+        pending: PendingIdentity,
     },
 }
 
@@ -152,7 +166,7 @@ pub fn ensure_identity(
     name: &str,
     primary_address: &str,
     epoch_len: u64,
-    pending: Option<PendingCommitment>,
+    pending: Option<PendingIdentity>,
 ) -> Result<EnsureOutcome, String> {
     if !is_ln_name(name) {
         return Err(format!(
@@ -163,9 +177,31 @@ pub fn ensure_identity(
     if st.exists {
         return Ok(EnsureOutcome::Ready(st));
     }
+    let pending = pending.unwrap_or_default();
+    // A registration transaction already broadcast must be awaited, not
+    // re-sent: the commitment confirms before the register tx, so without
+    // this every retry would mint another registration.
+    if let Some(reg_txid) = pending.registration.clone() {
+        if confirmations(rpc, &reg_txid)? == 0 {
+            return Ok(EnsureOutcome::Waiting {
+                message: format!("identity registration {reg_txid} unconfirmed"),
+                pending,
+            });
+        }
+        // Confirmed since the last pass — re-read the chain instead of
+        // trusting the status fetched before the registration check.
+        let st = status_inner(rpc, name, epoch_len)?;
+        return if st.exists {
+            Ok(EnsureOutcome::Ready(st))
+        } else {
+            Err(format!(
+                "registration {reg_txid} confirmed but {name}@ not found"
+            ))
+        };
+    }
     // Resume a previously created commitment (same txid + reservation)
     // instead of minting a second fee-paying one.
-    let (txid, reservation) = match pending {
+    let (txid, reservation) = match pending.commitment.clone() {
         Some(p) => (p.txid, p.reservation),
         None => {
             // Control address for the commitment: a fresh node-wallet
@@ -199,7 +235,10 @@ pub fn ensure_identity(
     if confirmations(rpc, &txid)? == 0 {
         return Ok(EnsureOutcome::Waiting {
             message: format!("name commitment {txid} unconfirmed"),
-            commitment: Some(PendingCommitment { txid, reservation }),
+            pending: PendingIdentity {
+                commitment: Some(PendingCommitment { txid, reservation }),
+                registration: None,
+            },
         });
     }
     let chain_id = rpc
@@ -231,7 +270,10 @@ pub fn ensure_identity(
     if confirmations(rpc, &reg_txid)? == 0 {
         return Ok(EnsureOutcome::Waiting {
             message: format!("identity registration {reg_txid} unconfirmed"),
-            commitment: None,
+            pending: PendingIdentity {
+                commitment: Some(PendingCommitment { txid, reservation }),
+                registration: Some(reg_txid),
+            },
         });
     }
     let st = status_inner(rpc, name, epoch_len)?;
@@ -579,10 +621,10 @@ mod tests {
         match ensure_identity(&s, "ln-new", "LM", 3, None).expect("ensure") {
             EnsureOutcome::Waiting {
                 message: m,
-                commitment,
+                pending,
             } => {
                 assert!(m.contains("cmtx"));
-                assert_eq!(commitment.map(|c| c.txid), Some("cmtx".to_string()));
+                assert_eq!(pending.commitment.map(|c| c.txid), Some("cmtx".to_string()));
             }
             EnsureOutcome::Ready(_) => panic!("should wait"),
         }
@@ -614,6 +656,116 @@ mod tests {
             }
             EnsureOutcome::Waiting { .. } => panic!("should be ready"),
         }
+    }
+
+    #[test]
+    fn ensure_waits_on_broadcast_registration_without_resending() {
+        let s = Seq::new();
+        s.push("getblockcount", json!(60u64));
+        s.push("getidentity", json!({}));
+        s.push("gettransaction", json!({"confirmations": 0u64}));
+        let pending = PendingIdentity {
+            commitment: Some(PendingCommitment {
+                txid: "cmtx".into(),
+                reservation: json!({"name": "ln-new"}),
+            }),
+            registration: Some("regtx".into()),
+        };
+        match ensure_identity(&s, "ln-new", "LM", 3, Some(pending.clone())).expect("ensure") {
+            EnsureOutcome::Waiting {
+                message,
+                pending: next,
+            } => {
+                assert!(message.contains("regtx"));
+                assert_eq!(next, pending);
+            }
+            EnsureOutcome::Ready(_) => panic!("should wait"),
+        }
+        let calls = s.calls.borrow();
+        assert!(calls.iter().all(|(m, _)| m != "registeridentity"));
+        assert!(calls.iter().all(|(m, _)| m != "registernamecommitment"));
+    }
+
+    #[test]
+    fn ensure_resumes_saved_commitment_and_waits_for_registration() {
+        let s = Seq::new();
+        s.push("getblockcount", json!(60u64));
+        s.push("getidentity", json!({}));
+        s.push("gettransaction", json!({"confirmations": 1u64}));
+        s.push("getblockchaininfo", json!({"chainid": "iCHAIN"}));
+        s.push("registeridentity", json!("regtx"));
+        s.push("gettransaction", json!({"confirmations": 0u64}));
+        let pending = PendingIdentity {
+            commitment: Some(PendingCommitment {
+                txid: "cmtx".into(),
+                reservation: json!({"name": "ln-new"}),
+            }),
+            registration: None,
+        };
+        match ensure_identity(&s, "ln-new", "LM", 3, Some(pending)).expect("ensure") {
+            EnsureOutcome::Waiting {
+                message,
+                pending: next,
+            } => {
+                assert!(message.contains("regtx"));
+                assert_eq!(next.registration.as_deref(), Some("regtx"));
+                assert_eq!(next.commitment.map(|c| c.txid).as_deref(), Some("cmtx"));
+            }
+            EnsureOutcome::Ready(_) => panic!("should wait"),
+        }
+        let calls = s.calls.borrow();
+        assert!(calls.iter().all(|(m, _)| m != "getnewaddress"));
+        assert!(calls.iter().all(|(m, _)| m != "registernamecommitment"));
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|(m, _)| m == "registeridentity")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn ensure_finishes_confirmed_registration_without_resending() {
+        let s = Seq::new();
+        s.push("getblockcount", json!(61u64));
+        s.push("getidentity", json!({}));
+        s.push("gettransaction", json!({"confirmations": 1u64}));
+        s.push("getblockcount", json!(61u64));
+        s.push(
+            "getidentity",
+            json!({
+                "identity": {"primaryaddresses": ["LM"]},
+                "status": "active",
+                "blockheight": 61u64,
+            }),
+        );
+        let pending = PendingIdentity {
+            commitment: None,
+            registration: Some("regtx".into()),
+        };
+        match ensure_identity(&s, "ln-new", "LM", 3, Some(pending)).expect("ensure") {
+            EnsureOutcome::Ready(st) => assert!(st.exists),
+            EnsureOutcome::Waiting { .. } => panic!("should be ready"),
+        }
+        let calls = s.calls.borrow();
+        assert!(calls.iter().all(|(m, _)| m != "registeridentity"));
+    }
+
+    #[test]
+    fn pending_identity_roundtrips_through_json() {
+        let p = PendingIdentity {
+            commitment: Some(PendingCommitment {
+                txid: "cmtx".into(),
+                reservation: json!({"name": "ln-new", "salt": "00"}),
+            }),
+            registration: Some("regtx".into()),
+        };
+        let text = serde_json::to_string(&p).expect("serialize");
+        let back: PendingIdentity = serde_json::from_str(&text).expect("deserialize");
+        assert_eq!(back, p);
+        let old: PendingIdentity = serde_json::from_str("{}").expect("empty");
+        assert_eq!(old, PendingIdentity::default());
     }
 
     #[test]

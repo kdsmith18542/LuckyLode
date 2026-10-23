@@ -15,5 +15,5 @@ pub mod identity;
 
 pub use identity::{
     eligible_at, ensure_identity, heartbeat_if_due, identity_status, is_ln_name, resolve_epoch_len,
-    EnsureOutcome, IdentityState, NodeRpc,
+    EnsureOutcome, IdentityState, NodeRpc, PendingCommitment, PendingIdentity,
 };

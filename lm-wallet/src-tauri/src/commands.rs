@@ -1380,6 +1380,55 @@ pub fn pool_stats(state: State<'_, AppState>) -> Result<serde_json::Value, Strin
     serde_json::from_str(&body).map_err(|e| format!("pool json: {e}"))
 }
 
+/// In-flight Luckynode registration work (`<appdir>/luckynode-pending.json`).
+/// Persisting it is what makes retries safe: the name commitment and the
+/// broadcast registration txid are resumed, never re-minted. A corrupt
+/// file fails closed for the same reason.
+const LUCKYNODE_PENDING_FILE: &str = "luckynode-pending.json";
+
+fn load_luckynode_pending(
+    state: &State<'_, AppState>,
+) -> Result<std::collections::HashMap<String, lm_luckynode::identity::PendingIdentity>, String> {
+    let path = app_dir(state).join(LUCKYNODE_PENDING_FILE);
+    match std::fs::read_to_string(&path) {
+        Ok(text) => serde_json::from_str(&text).map_err(|e| {
+            format!(
+                "corrupt {}: {e} (refusing to mint another fee-paying commitment — move it aside to start over)",
+                path.display()
+            )
+        }),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Default::default()),
+        Err(e) => Err(format!("cannot read {}: {e}", path.display())),
+    }
+}
+
+fn save_luckynode_pending(
+    state: &State<'_, AppState>,
+    map: &std::collections::HashMap<String, lm_luckynode::identity::PendingIdentity>,
+) -> Result<(), String> {
+    let path = app_dir(state).join(LUCKYNODE_PENDING_FILE);
+    let tmp = path.with_extension("json.tmp");
+    let body = serde_json::to_vec(map).map_err(|e| format!("pending json: {e}"))?;
+    let write = || -> std::io::Result<()> {
+        use std::io::Write;
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&tmp)?;
+        f.write_all(&body)?;
+        f.sync_all()?;
+        std::fs::rename(&tmp, &path)?;
+        if let Some(dir) = path.parent() {
+            if let Ok(d) = std::fs::File::open(dir) {
+                let _ = d.sync_all();
+            }
+        }
+        Ok(())
+    };
+    write().map_err(|e| format!("cannot write {}: {e}", path.display()))
+}
+
 /// Register a `ln-` Luckynode identity on chain (doc 06 §6.7): name
 /// commitment → confirmation → identity registration, all funded from
 /// the connected node's own wallet. The payout address may be app-held
@@ -1404,16 +1453,30 @@ pub fn luckynode_register(
     let rpc = node::client(&state)?;
     let rpc = luckynode::NodeClient(rpc);
     let epoch_len = identity::resolve_epoch_len(&rpc, None)?;
-    match identity::ensure_identity(&rpc, &name, &address, epoch_len, None)? {
-        EnsureOutcome::Ready(st) => Ok(json!({
-            "name": st.name,
-            "address": st.address,
-            "update_height": st.update_height,
-            "eligible": st.eligible,
-        })),
-        EnsureOutcome::Waiting { message, .. } => Err(format!(
-            "{message} — mine a block on the node (or wait for one) and retry"
-        )),
+    let mut pending_map = load_luckynode_pending(&state)?;
+    let pending = pending_map.get(&name).cloned();
+    match identity::ensure_identity(&rpc, &name, &address, epoch_len, pending)? {
+        EnsureOutcome::Ready(st) => {
+            if pending_map.remove(&name).is_some() {
+                save_luckynode_pending(&state, &pending_map)?;
+            }
+            Ok(json!({
+                "name": st.name,
+                "address": st.address,
+                "update_height": st.update_height,
+                "eligible": st.eligible,
+            }))
+        }
+        EnsureOutcome::Waiting { message, pending } => {
+            let fresh = pending_map.get(&name) != Some(&pending);
+            pending_map.insert(name.clone(), pending);
+            if fresh {
+                save_luckynode_pending(&state, &pending_map)?;
+            }
+            Err(format!(
+                "{message} — saved; retrying resumes this transaction and will not pay another commitment. Mine a block on the node (or wait for one), then retry"
+            ))
+        }
     }
 }
 

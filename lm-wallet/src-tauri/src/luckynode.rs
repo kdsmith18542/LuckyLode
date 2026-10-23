@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use lm_luckynode::identity::{self, EnsureOutcome, NodeRpc};
+use lm_luckynode::identity::{self, EnsureOutcome, NodeRpc, PendingIdentity};
 
 /// NodeRpc over the wallet's node client. Newtype because the orphan
 /// rule forbids implementing the shared trait for `RpcClient` directly.
@@ -46,7 +46,7 @@ pub fn start(
     let stop_thread = Arc::clone(&stop);
     let svc_name = name.clone();
     std::thread::spawn(move || {
-        let mut pending = None;
+        let mut pending: Option<PendingIdentity> = None;
         let mut last_hb_tip: Option<u64> = None;
         loop {
             if stop_thread.load(Ordering::Relaxed) {
@@ -65,10 +65,10 @@ pub fn start(
                     }
                     Ok(EnsureOutcome::Waiting {
                         message,
-                        commitment,
+                        pending: next,
                     }) => {
                         eprintln!("luckynode {name}: waiting: {message}");
-                        pending = commitment;
+                        pending = Some(next);
                     }
                     Err(e) => {
                         eprintln!("luckynode {name}: registration failed: {e}");
