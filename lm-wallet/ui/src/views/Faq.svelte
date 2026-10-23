@@ -36,7 +36,7 @@
     ],
     [
       "I lost my password. Now what?",
-      "The password encrypts the seed on this machine — it cannot be reset. Restore from the 12-word backup phrase instead (Settings → wallet → restore), with a new password.",
+      "The password encrypts the seed on this machine — it cannot be reset. On the lock screen choose “Forgot password?” and restore from the 12-word backup phrase with a new password. This replaces the locked wallet on this machine, so make sure the words are the right ones first.",
     ],
     [
       "Something looks wrong. Where are the logs?",

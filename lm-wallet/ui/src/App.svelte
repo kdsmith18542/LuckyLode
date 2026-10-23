@@ -27,6 +27,12 @@
   let busy = $state(false);
   let pw = $state("");
   let pw2 = $state("");
+  // Lock-screen recovery uses its own fields so typing a recovery phrase
+  // never mutates the unlock/create password state.
+  let showRecover = $state(false);
+  let recPhrase = $state("");
+  let recPw = $state("");
+  let recPw2 = $state("");
 
   async function checkWallet() {
     try {
@@ -85,6 +91,29 @@
       await api.walletUnlock(pw);
       pw = "";
       await checkWallet();
+    } catch (e) {
+      setupErr = String(e);
+    } finally {
+      busy = false;
+    }
+  }
+  async function recoverFromLock() {
+    // Password lost: re-seal the vault from the backup phrase. This
+    // REPLACES the locked wallet on this machine — the old password
+    // stops working and anything not covered by these words is gone
+    // from the app, so the form says so and requires the repeat.
+    busy = true;
+    setupErr = "";
+    try {
+      await api.walletRestore(recPhrase.trim(), recPw);
+      recPhrase = "";
+      recPw = "";
+      recPw2 = "";
+      showRecover = false;
+      pw = "";
+      hasWallet = true;
+      locked = false;
+      legacy = false;
     } catch (e) {
       setupErr = String(e);
     } finally {
@@ -238,7 +267,36 @@
           <button class="btn primary" disabled={busy || !pw} onclick={unlockWallet}>Unlock</button>
         </div>
         {#if setupErr}<div class="err" style="margin-top:10px">{setupErr}</div>{/if}
+        <div style="margin-top:12px">
+          <button class="btn" disabled={busy} onclick={() => { showRecover = !showRecover; setupErr = ""; }}>
+            {showRecover ? "Back to unlock" : "Forgot password?"}
+          </button>
+        </div>
       </div>
+      {#if showRecover}
+        <div class="card" style="margin-top:12px;text-align:left">
+          <b>Recover from backup phrase</b>
+          <p class="muted">
+            This <b>replaces</b> the locked wallet on this machine with
+            whatever these 12 words describe. The old password stops
+            working; anything not covered by these words disappears from
+            the app. Type carefully — a mistyped phrase fails the
+            checksum and restores nothing.
+          </p>
+          <label for="recphrase">12-word backup phrase</label>
+          <input id="recphrase" bind:value={recPhrase} placeholder="twelve words separated by spaces" spellcheck="false" />
+          <label for="recpw">new spending password (min 8 characters)</label>
+          <input id="recpw" type="password" bind:value={recPw} spellcheck="false" />
+          <label for="recpw2">repeat new password</label>
+          <input id="recpw2" type="password" bind:value={recPw2} spellcheck="false" />
+          {#if recPw && recPw2 && recPw !== recPw2}<div class="err">passwords do not match</div>{/if}
+          <div class="row" style="margin-top:10px">
+            <button class="btn primary" disabled={busy || !recPhrase.trim() || recPw.length < 8 || recPw !== recPw2} onclick={recoverFromLock}>
+              Replace wallet from phrase
+            </button>
+          </div>
+        </div>
+      {/if}
     </main>
   </div>
 {:else}

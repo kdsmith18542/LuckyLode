@@ -2402,6 +2402,7 @@ dependencies = [
  "lm-luckynode",
  "lm-miner",
  "lm-pool",
+ "lm-rewards",
  "lm-stratum",
  "qrcodegen",
  "rand 0.8.8",
