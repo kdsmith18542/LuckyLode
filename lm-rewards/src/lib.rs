@@ -21,11 +21,13 @@
 //! [`pot`], promotes to doc 06 on sign-off); multi-class luck
 //! exploration lives in [`luck`] (doc 12 §12.10, not consensus-wired).
 
+pub mod emission;
 pub mod luck;
 pub mod pot;
 pub mod reserve;
 pub mod prize;
 pub mod seed;
+pub mod units;
 
 /// Per-mille cap denominator base.
 pub const CAP_DENOM: u64 = 1000;

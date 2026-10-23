@@ -26,6 +26,14 @@ pub struct Indexer {
     price_source: Option<String>,
     /// Cached price feed result: (price_per_coin, fetched_at, source).
     price_cache: Option<(f64, i64, String)>,
+    /// Node-derived views refreshed by the sync thread. Pages read these
+    /// instead of calling the node while holding the index lock: one slow
+    /// node used to queue every page view behind its RPC timeout.
+    cache_net: serde_json::Value,
+    cache_mempool: serde_json::Value,
+    cache_game: serde_json::Value,
+    cache_staking: serde_json::Value,
+    cache_node_ok: bool,
 }
 
 #[derive(Debug, Default)]
@@ -227,6 +235,11 @@ impl Indexer {
             price_url: None,
             price_source: None,
             price_cache: None,
+            cache_net: serde_json::json!({}),
+            cache_mempool: serde_json::json!({}),
+            cache_game: serde_json::json!({}),
+            cache_staking: serde_json::json!({}),
+            cache_node_ok: true,
         };
         // Backfill the exact PoS marker for indexed rows (cheap header
         // call each — the whole testnet chain is a few hundred blocks).
@@ -641,17 +654,50 @@ impl Indexer {
     }
 
     /// One sync pass: roll back any diverged tip, then index forward.
+    /// Snapshot the node-derived views the UI shows. Runs on the sync
+    /// thread (which already talks to the node); request threads then read
+    /// the snapshots without touching RPC under the index lock. A node
+    /// error keeps the previous snapshot.
+    fn refresh_node_caches(&mut self) {
+        if let Ok(v) = self.fetch_network() {
+            self.cache_net = v;
+        }
+        if let Ok(v) = self.fetch_mempool() {
+            self.cache_mempool = v;
+        }
+        if let Ok(v) = self.fetch_game_state() {
+            self.cache_game = v;
+        }
+        if let Ok(v) = self.fetch_staking_state() {
+            self.cache_staking = v;
+        }
+        self.cache_node_ok = self
+            .rpc
+            .call("getblockcount", serde_json::json!([]))
+            .is_ok();
+        // Price feed has its own TTL cache; refresh it here too so the
+        // supply page never performs network I/O under the lock.
+        self.refresh_price();
+    }
+
     pub fn sync(&mut self) -> Result<SyncReport, String> {
         // Catch up any history the indexer predates (fee totals, exact
         // tx sizes) — bounded per pass so a long chain fills in over
         // several passes instead of stalling the sync.
         self.backfill_block_fees();
         self.backfill_tx_facts(200);
-        let tip = self
-            .rpc
-            .call("getblockcount", serde_json::json!([]))?
-            .as_u64()
-            .ok_or_else(|| "getblockcount: not a number".to_string())?;
+        let tip = match self.rpc.call("getblockcount", serde_json::json!([])) {
+            Ok(v) => v
+                .as_u64()
+                .ok_or_else(|| "getblockcount: not a number".to_string())?,
+            Err(e) => {
+                // Mark the node down before returning: the UI banner reads
+                // this flag and a sync that never reaches the cache refresh
+                // would otherwise keep claiming the node is healthy.
+                self.cache_node_ok = false;
+                return Err(e);
+            }
+        };
         let mut have = self.height()?;
         let mut rolled_back = 0u64;
         while have >= 0 {
@@ -669,6 +715,7 @@ impl Indexer {
             self.index_height(have as u64)?;
             indexed += 1;
         }
+        self.refresh_node_caches();
         Ok(SyncReport { rolled_back, indexed, tip })
     }
 
@@ -1485,7 +1532,7 @@ impl Indexer {
 
         // Price: only from a configured feed. None configured = no
         // price, and the UI says so.
-        let price = self.price();
+        let price = self.cached_price();
         let market_cap = price.map(|p| p * supply as f64 / 100_000_000.0);
         let curve = self.supply_curve()?;
         Ok(serde_json::json!({
@@ -1503,6 +1550,23 @@ impl Indexer {
             "market_cap": market_cap,
             "supply_curve": curve,
         }))
+    }
+
+    /// Cached price for rendering (no I/O). The sync thread refreshes it.
+    fn cached_price(&self) -> Option<f64> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        match &self.price_cache {
+            Some((p, at, _)) if now - at < 600 => Some(*p),
+            _ => None,
+        }
+    }
+
+    /// Refresh the price feed (sync thread only; cached ~10 min).
+    fn refresh_price(&mut self) {
+        let _ = self.price();
     }
 
     /// Fetch the configured price feed (cached ~10 min). Returns None
@@ -1579,7 +1643,7 @@ impl Indexer {
     /// raw hex, first-seen tracked locally since the fork's verbose tx
     /// carries no timestamps). No stored history — the mempool is the
     /// node's, not the chain's.
-    pub fn mempool(&mut self) -> Result<serde_json::Value, String> {
+    fn fetch_mempool(&mut self) -> Result<serde_json::Value, String> {
         let info = self.rpc.call("getmempoolinfo", serde_json::json!([]))?;
         let ids: Vec<String> = self
             .rpc
@@ -1714,14 +1778,14 @@ impl Indexer {
 
     /// Live network snapshot (node RPC, best-effort): peer count plus the
     /// node's own hashrate estimate.
-    /// Node reachability for UI banners (one cheap RPC call). Pages that
-    /// would otherwise render silent zeros use this to say the node is
-    /// down instead of looking like an empty chain.
+    /// Node reachability for UI banners, from the sync thread's last
+    /// probe (no per-request RPC). Pages that would otherwise render
+    /// silent zeros use this to say the node is down.
     pub fn node_reachable(&self) -> bool {
-        self.rpc.call("getblockcount", serde_json::json!([])).is_ok()
+        self.cache_node_ok
     }
 
-    pub fn network(&self) -> Result<serde_json::Value, String> {
+    fn fetch_network(&self) -> Result<serde_json::Value, String> {
         let peers = self
             .rpc
             .call("getconnectioncount", serde_json::json!([]))
@@ -1737,6 +1801,28 @@ impl Indexer {
         Ok(serde_json::json!({"peers": peers, "hashrate": hashrate}))
     }
 
+    // ---- cached node views for request threads ----
+    //
+    // These return the sync thread's last snapshot instead of calling the
+    // node: a slow/unreachable node used to queue every page view behind
+    // its RPC timeout while the index lock was held.
+
+    pub fn network(&self) -> Result<serde_json::Value, String> {
+        Ok(self.cache_net.clone())
+    }
+
+    pub fn mempool(&mut self) -> Result<serde_json::Value, String> {
+        Ok(self.cache_mempool.clone())
+    }
+
+    pub fn game_state(&self) -> Result<serde_json::Value, String> {
+        Ok(self.cache_game.clone())
+    }
+
+    pub fn staking_state(&self) -> Result<serde_json::Value, String> {
+        Ok(self.cache_staking.clone())
+    }
+
     /// Locked emission schedule, base units (chainparams: testnet mirrors
     /// mainnet; verified live — getblocksubsidy h100 → 0.15873015 exact,
     /// h10081 → 16, h1062000 → 8, h4217760 → 1). Era 1 (0–10080) ramps
@@ -1745,28 +1831,15 @@ impl Indexer {
     /// 4217760); era 3 is the fixed 1-coin tail forever.
     #[must_use]
     pub fn subsidy_at(height: u64) -> u64 {
-        const RAMP_END: u64 = 10_080;
-        const ERA2_END: u64 = 4_217_760;
-        const HALVING: u64 = 1_051_920;
-        const PEAK: u128 = 1_600_000_000;
-        if height <= RAMP_END {
-            (PEAK * height as u128 / RAMP_END as u128) as u64
-        } else if height <= ERA2_END {
-            let halvings = (height - RAMP_END) / HALVING;
-            (PEAK >> halvings.min(63)) as u64
-        } else {
-            100_000_000
-        }
+        // One shared mirror of the locked schedule (lm-rewards::emission).
+        lm_rewards::emission::subsidy(height)
     }
 
     /// Next subsidy change after `height`: (change_height, new_subsidy).
     /// None once the fixed tail is reached.
     #[must_use]
     pub fn next_subsidy_change(height: u64) -> Option<(u64, u64)> {
-        const RAMP_END: u64 = 10_080;
-        const ERA2_END: u64 = 4_217_760;
-        const HALVING: u64 = 1_051_920;
-        const PEAK: u64 = 1_600_000_000;
+        use lm_rewards::emission::{ERA2_END, ERA2_REWARD as PEAK, HALVING, RAMP_END};
         if height < RAMP_END {
             Some((RAMP_END + 1, PEAK))
         } else if height <= ERA2_END {
@@ -1803,7 +1876,7 @@ impl Indexer {
             .unwrap_or_else(|_| serde_json::json!({"epoch": 0}))
     }
 
-    pub fn game_state(&self) -> Result<serde_json::Value, String> {
+    fn fetch_game_state(&self) -> Result<serde_json::Value, String> {
         let ji = self.rpc.call("getjackpotinfo", serde_json::json!([]))?;
         Ok(serde_json::json!({
             "height": ji.get("height").and_then(|v| v.as_i64()).unwrap_or(-1),
@@ -1824,7 +1897,7 @@ impl Indexer {
     /// PUBLIC surface: on/off + chain supply only. Operator-wallet shape
     /// (eligible outputs/balance) is deliberately NOT published — it maps
     /// an idle hot wallet.
-    pub fn staking_state(&self) -> Result<serde_json::Value, String> {
+    fn fetch_staking_state(&self) -> Result<serde_json::Value, String> {
         let mining = self.rpc.call("getmininginfo", serde_json::json!([]))?;
         let coins = |v: Option<&serde_json::Value>| -> i64 {
             (v.and_then(|x| x.as_f64()).unwrap_or(0.0) * 100_000_000.0).round() as i64

@@ -16,7 +16,8 @@ use std::collections::HashMap;
 /// Fee denominator (per-myriad): fee = `total * fee_permyriad / 10_000`.
 pub const FEE_DENOM_PERMYRIAD: u64 = 10_000;
 /// Coins per whole coin (base units) for the `sendtoaddress` decimal form.
-pub const COIN_BASE: u64 = 100_000_000;
+/// Re-exported from the shared money module (one coin definition).
+pub const COIN_BASE: u64 = lm_rewards::units::COIN_BASE;
 
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct PayoutLedger {
@@ -160,7 +161,7 @@ impl PayoutLedger {
 /// only — floats never touch money: `76_000_000 → "0.76000000"`.
 #[must_use]
 pub fn format_coins(v: u64) -> String {
-    format!("{}.{:08}", v / COIN_BASE, v % COIN_BASE)
+    lm_rewards::units::format_sats(v)
 }
 
 /// Base58check decode: 25 bytes (version byte, 20-byte hash160,
