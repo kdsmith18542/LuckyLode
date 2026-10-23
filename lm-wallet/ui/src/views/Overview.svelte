@@ -159,7 +159,6 @@
     }
   }
 
-  const recent = $derived((pool?.last_blocks ?? []).slice(0, 5));
   const mining = $derived<any>(game?.mining ?? {});
   const shownTxs = $derived(showAll ? txs : txs.slice(0, 12));
 </script>
@@ -305,25 +304,6 @@
     {/if}
   </div>
 {/if}
-
-<h2>Pool blocks (recent)</h2>
-<div class="muted">source pool — set in Settings → Node → pool URL</div>
-<table>
-  <thead><tr><th>height</th><th>finder</th><th>block reward</th><th>jackpot bonus</th><th>pot splash</th><th>prize inflow</th></tr></thead>
-  <tbody>
-    {#each recent as b}
-      <tr>
-        <td>{b.height}</td>
-        <td class="muted">{api.short(b.finder_name ?? b.finder, 10)}</td>
-        <td>{api.coinU(b.value)}</td>
-        <td>{api.coinU(b.bonus)}</td>
-        <td>{api.coinU(b.pot)}</td>
-        <td>{api.coinU(b.prize_inflow)}</td>
-      </tr>
-    {/each}
-    {#if recent.length === 0}<tr><td colspan="6" class="muted">no blocks indexed yet</td></tr>{/if}
-  </tbody>
-</table>
 
 <h2>Network</h2>
 <div class="grid">
