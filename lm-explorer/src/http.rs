@@ -237,8 +237,10 @@ fn home(idx: &mut Indexer) -> String {
         })
         .collect();
     let mut pos_count = 0;
+    let mut checked = 0;
     for hh in (0.max(h - 19)..=h).rev() {
         if let Ok(Some(b)) = idx.block_by_height(hh) {
+            checked += 1;
             let is_pos = b["pos"].as_bool().unwrap_or(false);
             if is_pos {
                 pos_count += 1;
@@ -261,7 +263,9 @@ fn home(idx: &mut Indexer) -> String {
     let stake_card = format!(
         "<div class=card>stake supply <b>{}</b> · PoS share last 20: <b>{}%</b> (target ~50%)</div>",
         coins(stake.get("staking_supply").and_then(|v| v.as_i64()).unwrap_or(0)),
-        if h >= 0 { pos_count * 100 / 20 } else { 0 },
+        // Share of the indexed window, not a hardcoded 20 (a short or
+        // partially indexed chain used to report a misleading percent).
+        if checked > 0 { pos_count * 100 / checked } else { 0 },
     );
     // Network card: live node view (peers, hashrate estimate, mempool).
     let net = idx.network().unwrap_or(serde_json::json!({}));
