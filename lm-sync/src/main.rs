@@ -100,7 +100,11 @@ const HELP: &str = "lm-sync — Lucky Lode fast sync\n\
          \u{2009}                      --to RPC   --to-user U   --to-pass P\n\
          watch:  lm-sync watch <same endpoints> [--source-p2p HOST:PORT]\n\
          \u{2009}                      [--stall-secs 180] [--interval 15]\n\
-         status: lm-sync status --node RPC --node-user U --node-pass P";
+         status: lm-sync status --node RPC --node-user U --node-pass P\n\
+         \n\
+         notes: plain HTTP only — reach remote nodes through an SSH tunnel\n\
+         (ssh -L 11927:127.0.0.1:9271 user@host). Unknown flags and\n\
+         non-numeric --stall-secs/--interval are errors, not silent defaults.";
 
 fn usage() -> ! {
     eprintln!("{HELP}");
@@ -112,6 +116,36 @@ fn arg(args: &[String], name: &str, default: &str) -> String {
         .find(|w| w[0] == name)
         .map(|w| w[1].clone())
         .unwrap_or_else(|| default.to_string())
+}
+
+/// Reject unknown `--flags` (typos used to vanish silently). Values ride
+/// the next argv slot after a known flag, so `--`-leading values still
+/// work there; a bare `--foo` that names no known flag is an error.
+fn check_flags(args: &[String], known: &[&str]) {
+    let mut i = 2; // past binary + subcommand
+    while i < args.len() {
+        let a = &args[i];
+        if known.contains(&a.as_str()) {
+            i += 2; // flag + its value
+            continue;
+        }
+        if a.starts_with("--") {
+            eprintln!("error: unknown flag '{a}'\n{HELP}");
+            std::process::exit(2);
+        }
+        i += 1;
+    }
+}
+
+fn parse_u64_flag(args: &[String], name: &str, default: u64) -> u64 {
+    let raw = arg(args, name, "");
+    if raw.is_empty() {
+        return default;
+    }
+    raw.parse().unwrap_or_else(|_| {
+        eprintln!("error: {name} expects an integer, got '{raw}'");
+        std::process::exit(2);
+    })
 }
 
 fn endpoints(args: &[String]) -> (Endpoint, Endpoint) {
@@ -138,6 +172,17 @@ fn endpoints(args: &[String]) -> (Endpoint, Endpoint) {
 }
 
 fn cmd_pull(args: &[String]) -> Result<(), String> {
+    check_flags(
+        args,
+        &[
+            "--from",
+            "--from-user",
+            "--from-pass",
+            "--to",
+            "--to-user",
+            "--to-pass",
+        ],
+    );
     let (src, dst) = endpoints(args);
     let from_h = src.height()?;
     let to_h = dst.height()?;
@@ -146,8 +191,17 @@ fn cmd_pull(args: &[String]) -> Result<(), String> {
         src.label, from_h, dst.label, to_h
     );
     if from_h <= to_h {
-        println!("already in sync (target ahead or equal)");
-        return Ok(());
+        // Same-or-ahead height is not "in sync" by itself: compare tips.
+        // A reorg or a wrong source leaves equal heights on different
+        // chains, and blindly copying would fork the target.
+        let (sb, db) = (src.best()?, dst.best()?);
+        if sb == db {
+            println!("already in sync at height {from_h} ({sb})");
+            return Ok(());
+        }
+        return Err(format!(
+            "DIVERGED: equal heights, different tips — src {sb} dst {db} (reorg or wrong source; refusing to overwrite)"
+        ));
     }
     let (n, el) = pull_range(&src, &dst, from_h, to_h)?;
     let el_s = el.as_secs_f64().max(0.001);
@@ -163,6 +217,7 @@ fn cmd_pull(args: &[String]) -> Result<(), String> {
 }
 
 fn cmd_status(args: &[String]) -> Result<(), String> {
+    check_flags(args, &["--node", "--node-user", "--node-pass"]);
     let ep = Endpoint {
         rpc: RpcClient::new(
             &arg(args, "--node", ""),
@@ -180,29 +235,69 @@ fn cmd_status(args: &[String]) -> Result<(), String> {
         .as_array()
         .map(|a| a.len())
         .unwrap_or(0);
+    let best: String = ep.best()?.chars().take(64).collect();
     println!(
         "height={} headers={} peers={} best={}",
         ep.height()?,
         ep.headers()?,
         peers,
-        &ep.best()?[..16]
+        best,
     );
     Ok(())
 }
 
 fn cmd_watch(args: &[String]) -> Result<(), String> {
+    check_flags(
+        args,
+        &[
+            "--from",
+            "--from-user",
+            "--from-pass",
+            "--to",
+            "--to-user",
+            "--to-pass",
+            "--source-p2p",
+            "--stall-secs",
+            "--interval",
+        ],
+    );
     let (src, dst) = endpoints(args);
-    let stall: u64 = arg(args, "--stall-secs", "180").parse().unwrap_or(180);
-    let interval: u64 = arg(args, "--interval", "15").parse().unwrap_or(15);
+    let stall: u64 = parse_u64_flag(args, "--stall-secs", 180);
+    let interval: u64 = parse_u64_flag(args, "--interval", 15);
+    if interval == 0 {
+        eprintln!("error: --interval must be >= 1 (0 busy-loops the RPC)");
+        std::process::exit(2);
+    }
+    if stall == 0 {
+        eprintln!("error: --stall-secs must be >= 1");
+        std::process::exit(2);
+    }
     let p2p = arg(args, "--source-p2p", "");
-    println!("watch: target=(rpc) source=(rpc) stall={stall}s interval={interval}s");
+    println!(
+        "watch: target={} source={} stall={stall}s interval={interval}s",
+        arg(args, "--to", "(rpc)"),
+        arg(args, "--from", "(rpc)"),
+    );
     let mut last_tip = dst.height()?;
     let mut last_change = Instant::now();
+    let mut err_since: Option<Instant> = None;
     loop {
         std::thread::sleep(Duration::from_secs(interval));
         let (sh, th) = match (src.height(), dst.height()) {
-            (Ok(a), Ok(b)) => (a, b),
-            _ => continue, // RPC blip — not a stall, just retry.
+            (Ok(a), Ok(b)) => {
+                err_since = None;
+                (a, b)
+            }
+            // Visible, not silent: wrong credentials or a down node used
+            // to look identical to a healthy idle watch. Rate-limited so
+            // a dead node pages at most once a minute.
+            _ => {
+                if err_since.map(|t| t.elapsed() >= Duration::from_secs(60)).unwrap_or(true) {
+                    eprintln!("watch: source/target RPC failing (wrong credentials or node down?) — retrying");
+                    err_since = Some(Instant::now());
+                }
+                continue;
+            }
         };
         if th != last_tip {
             last_tip = th;
