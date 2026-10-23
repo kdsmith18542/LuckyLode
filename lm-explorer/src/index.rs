@@ -2315,6 +2315,37 @@ mod tests {
     }
 
     #[test]
+    fn pre_feature_blocks_gain_header_columns() {
+        // Migration: a DB written before version/bits/nonce/prevhash
+        // existed opens cleanly, keeps rows at defaults, and serves the
+        // block page fields.
+        let rpc = RpcClient::new("127.0.0.1:1", "u", "p");
+        let dir = std::env::temp_dir().join("explorer-header-migrate.db");
+        let _ = std::fs::remove_file(&dir);
+        {
+            let db = Connection::open(&dir).expect("raw open");
+            db.execute_batch(
+                "CREATE TABLE blocks(
+                   height INTEGER PRIMARY KEY, hash TEXT NOT NULL, time INTEGER NOT NULL,
+                   ntx INTEGER NOT NULL, difficulty REAL NOT NULL, reserve INTEGER NOT NULL,
+                   pot INTEGER NOT NULL, drought INTEGER NOT NULL, pos INTEGER NOT NULL DEFAULT 0,
+                   size INTEGER NOT NULL DEFAULT 0, merkleroot TEXT NOT NULL DEFAULT '',
+                   chainwork TEXT NOT NULL DEFAULT '', fees INTEGER NOT NULL DEFAULT 0);
+                 INSERT INTO blocks(height, hash, time, ntx, difficulty, reserve, pot, drought)
+                 VALUES (3, 'h3', 1, 1, 1.0, 0, 0, 0);",
+            )
+            .expect("old-schema fixture");
+        }
+        let idx = Indexer::open(dir.to_str().expect("path"), rpc).expect("open migrates");
+        let b = idx.block_by_height(3).expect("block").expect("row");
+        assert_eq!(b["version"], 0);
+        assert_eq!(b["bits"], "");
+        assert_eq!(b["nonce"], "");
+        assert_eq!(b["prevhash"], "");
+        let _ = std::fs::remove_file(&dir);
+    }
+
+    #[test]
     fn pre_feature_game_blocks_gain_claim_and_winner() {
         // Migration path: a DB written before the prize-draw columns
         // existed (no `claim`/`winner` on game_blocks) must open cleanly,
