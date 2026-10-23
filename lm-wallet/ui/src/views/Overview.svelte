@@ -242,7 +242,7 @@
         <tr><th>change back</th><td>{api.coin(fundPreview.change_sats)}</td></tr>
       </tbody></table>
       <div class="row" style="margin-top:8px;gap:8px;align-items:center">
-        <input bind:value={fundAmount} placeholder={"amount " + api.ticker()} inputmode="decimal" style="max-width:160px" />
+        <input bind:value={fundAmount} oninput={() => (fundPreview = null)} placeholder={"amount " + api.ticker()} inputmode="decimal" style="max-width:160px" />
         <button class="btn" disabled={fundBusy} onclick={rebuildFundPreview}>Recalc</button>
         <button class="btn primary" disabled={fundBusy} onclick={confirmFund}>Confirm &amp; send</button>
         <button class="btn" disabled={fundBusy} onclick={() => (fundPreview = null)}>Cancel</button>

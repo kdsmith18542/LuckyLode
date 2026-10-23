@@ -92,7 +92,7 @@
 <div class="card" style="max-width:560px">
   {#if contacts.length > 0}
     <label for="ct">contact</label>
-    <select id="ct" onchange={(e) => (to = e.currentTarget.value)}>
+    <select id="ct" onchange={(e) => { to = e.currentTarget.value; preview = null; }}>
       <option value="">— pick a contact —</option>
       {#each contacts as c}
         <option value={c.address}>{c.name} · {api.short(c.address, 10)}</option>
@@ -100,9 +100,9 @@
     </select>
   {/if}
   <label for="to">destination address</label>
-  <input id="to" bind:value={to} placeholder="L… / m… / n…" spellcheck="false" />
+  <input id="to" bind:value={to} oninput={() => (preview = null)} placeholder="L… / m… / n…" spellcheck="false" />
   <label for="amt">amount</label>
-  <input id="amt" bind:value={amount} placeholder={"0.0 " + api.ticker()} inputmode="decimal" />
+  <input id="amt" bind:value={amount} oninput={() => (preview = null)} placeholder={"0.0 " + api.ticker()} inputmode="decimal" />
   {#if to.trim()}
     <div class="row" style="margin-top:10px">
       <input bind:value={saveName} placeholder="save as contact…" style="max-width:220px" />
