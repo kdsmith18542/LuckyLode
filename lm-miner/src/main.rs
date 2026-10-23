@@ -21,7 +21,15 @@ use lm_pow::difficulty::compact_to_target;
 use std::process::ExitCode;
 use std::sync::atomic::AtomicBool;
 
-const USAGE: &str = "usage:
+/// Advertised agent string: the binary name plus the crate version, one
+/// constant for the default, `--help`, and `--version` (they used to
+/// disagree: help said 0.1 while the code sent 0.2 against crate 0.1.0).
+/// Defined in the pool-loop library so embedders (wallet, Android) send
+/// the same identity.
+use lm_miner::pool_loop::DEFAULT_AGENT as AGENT;
+
+const USAGE: &str = concat!(
+    "usage:
   lm-miner bench [--threads N] [--hashes N] [--height H] [--header HEX] [--json] [--device auto|cpu|opencl] [--gpu-platform N] [--gpu-device N] [--gpu-batch N]
   lm-miner mine --header HEX --height H --target (HEX64 | nbits:XXXXXXXX | max) [--threads N] [--start N] [--count N] [--max-temp C] [--duty N] [--device auto|cpu|opencl] [--gpu-platform N] [--gpu-device N] [--gpu-batch N]
   lm-miner pool --pool HOST:PORT --worker NAME [--agent STR] [--threads N] [--start N] [--count N] [--max-shares N] [--job-timeout SECS] [--max-temp C] [--duty N] [--device auto|cpu|opencl] [--gpu-platform N] [--gpu-device N] [--gpu-batch N] [--password PASS] [--dev-fee-pct N] [--dev-address ADDR] [--tls [--tls-ca PEM] [--tls-server-name NAME] | --tls-insecure] [--v2 [--v2-authority URLKEY|HEX]]
@@ -29,13 +37,16 @@ const USAGE: &str = "usage:
 
 bench defaults: threads=auto, hashes=3/thread, height=1, 80-byte 0x00..0x4F header.
 mine defaults: threads=auto, start=0, count=1000000.
-pool defaults: agent=lm-miner/0.1, threads=auto, start=0, count=1000000/job, max-shares=unlimited, job-timeout=30s.
+pool defaults: agent=",
+    concat!("lm-miner/", env!("CARGO_PKG_VERSION")),
+    ", threads=auto, start=0, count=1000000/job, max-shares=unlimited, job-timeout=30s.
 gpu-test: runs the frozen KAT vectors through the GPU (needs OpenCL hardware).
 device: cpu (default), auto (OpenCL when present, else CPU), opencl (hard error if absent).
 gpu knobs: --gpu-platform 0, --gpu-device 0, --gpu-batch 512 (Argon2 instances per launch, 1 MiB VRAM each), --max-power W (board power limit via nvidia-smi -pl; needs driver permission).
 safety defaults: --max-temp 75 (pause above; 0 disables), --duty 100 (hash percent).
 --max-temp reads the CPU package sensor on CPU runs and the CARD sensor (AMD hwmon / nvidia-smi) on GPU runs; a proportional band below the cap avoids pause/resume sawtooth. The rate line reports gpu temp/power.
-exit: 0 found/done/session-complete, 1 exhausted/idle, 2 usage.";
+exit: 0 found/done/session-complete, 1 exhausted/idle, 2 usage."
+);
 
 fn default_threads() -> usize {
     std::thread::available_parallelism()
@@ -519,7 +530,7 @@ struct PoolOpts {
 fn parse_pool(args: &[String]) -> Result<PoolOpts, String> {
     let mut pool: Option<String> = None;
     let mut worker: Option<String> = None;
-    let mut agent = "lm-miner/0.2".to_string();
+    let mut agent = AGENT.to_string();
     let mut agent_set = false;
     let mut threads = default_threads();
     let mut start = 0u64;
@@ -911,6 +922,10 @@ fn run_gpu_test(args: &[String]) -> ExitCode {
 
 fn main() -> ExitCode {
     let argv: Vec<String> = std::env::args().skip(1).collect();
+    if argv.iter().any(|a| a == "--version" || a == "-V") {
+        println!("lm-miner {}", env!("CARGO_PKG_VERSION"));
+        return ExitCode::SUCCESS;
+    }
     if argv.iter().any(|a| a == "-h" || a == "--help") || argv.is_empty() {
         println!("{USAGE}");
         return if argv.is_empty() {

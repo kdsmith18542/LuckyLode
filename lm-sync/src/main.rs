@@ -94,16 +94,16 @@ fn pull_range(src: &Endpoint, dst: &Endpoint, from_h: u64, to_h: u64) -> Result<
     Ok((n, t0.elapsed()))
 }
 
-fn usage() -> ! {
-    eprintln!(
-        "lm-sync — Lucky Lode fast sync\n\
+const HELP: &str = "lm-sync — Lucky Lode fast sync\n\
          \n\
          pull:   lm-sync pull --from RPC --from-user U --from-pass P \\\n\
          \u{2009}                      --to RPC   --to-user U   --to-pass P\n\
          watch:  lm-sync watch <same endpoints> [--source-p2p HOST:PORT]\n\
          \u{2009}                      [--stall-secs 180] [--interval 15]\n\
-         status: lm-sync status --node RPC --node-user U --node-pass P"
-    );
+         status: lm-sync status --node RPC --node-user U --node-pass P";
+
+fn usage() -> ! {
+    eprintln!("{HELP}");
     std::process::exit(2);
 }
 
@@ -228,6 +228,14 @@ fn cmd_watch(args: &[String]) -> Result<(), String> {
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+    if args.iter().any(|a| a == "--help" || a == "-h") {
+        println!("{HELP}");
+        return;
+    }
+    if args.iter().any(|a| a == "--version" || a == "-V") {
+        println!("lm-sync {}", env!("CARGO_PKG_VERSION"));
+        return;
+    }
     if args.len() < 2 {
         usage();
     }

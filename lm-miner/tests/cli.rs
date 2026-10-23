@@ -127,3 +127,27 @@ fn usage_errors_exit_2() {
         assert_eq!(out.status.code(), Some(2), "args={args:?}");
     }
 }
+
+#[test]
+fn version_reports_the_crate_version() {
+    let out = bin().arg("--version").output().expect("run --version");
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let stdout = String::from_utf8(out.stdout).expect("utf8");
+    assert_eq!(
+        stdout.trim_end(),
+        format!("lm-miner {}", env!("CARGO_PKG_VERSION"))
+    );
+}
+
+#[test]
+fn help_names_the_same_default_agent() {
+    // The advertised agent, the help text, and --version must agree —
+    // pools label workers by the agent, so a skew is user-visible.
+    let out = bin().arg("--help").output().expect("run --help");
+    assert!(out.status.success());
+    let stdout = String::from_utf8(out.stdout).expect("utf8");
+    assert!(
+        stdout.contains(&format!("agent=lm-miner/{}", env!("CARGO_PKG_VERSION"))),
+        "default agent disagrees with --version"
+    );
+}

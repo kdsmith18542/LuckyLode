@@ -49,6 +49,10 @@ fn main() -> std::process::ExitCode {
         println!("{USAGE}");
         return std::process::ExitCode::SUCCESS;
     }
+    if args.iter().any(|a| a == "--version" || a == "-V") {
+        println!("explorer {}", env!("CARGO_PKG_VERSION"));
+        return std::process::ExitCode::SUCCESS;
+    }
     let mut node = String::new();
     let mut user = String::new();
     let mut pass = String::new();

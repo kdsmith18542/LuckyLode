@@ -157,6 +157,10 @@ fn main() -> ExitCode {
         println!("{USAGE}");
         return ExitCode::SUCCESS;
     }
+    if args.iter().any(|a| a == "--version" || a == "-V") {
+        println!("monitor {}", env!("CARGO_PKG_VERSION"));
+        return ExitCode::SUCCESS;
+    }
     let mut node_rpc: Option<String> = None;
     let mut rpc_user = "u".to_string();
     let mut rpc_pass = "p".to_string();

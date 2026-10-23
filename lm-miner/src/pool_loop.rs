@@ -35,7 +35,7 @@ pub struct TlsCfg {
 }
 
 /// Full pool-mining configuration. `agent: None` selects the default
-/// `lm-miner/0.2 <device>` advertisement.
+/// advertisement below (binary name + crate version + device).
 #[derive(Debug, Clone)]
 pub struct PoolConfig {
     pub pool: String,
@@ -245,12 +245,16 @@ fn dev_worker(cfg: &PoolConfig, t0: Instant) -> String {
     }
 }
 
+/// Default agent advertisement (`lm-miner/<crate version>`), shared with
+/// the CLI help/`--version` so build identity never disagrees with itself.
+pub const DEFAULT_AGENT: &str = concat!("lm-miner/", env!("CARGO_PKG_VERSION"));
+
 /// The resolved agent string: explicit, or the default with the device
 /// suffix (pools label workers by it).
 fn agent_of(cfg: &PoolConfig, backend: &Backend) -> String {
     match &cfg.agent {
         Some(a) => a.clone(),
-        None => format!("lm-miner/0.2 {}", backend.device()),
+        None => format!("{DEFAULT_AGENT} {}", backend.device()),
     }
 }
 

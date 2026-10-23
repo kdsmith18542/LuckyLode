@@ -14,6 +14,18 @@ use lm_stratum::provider::MockProvider;
 use lm_stratum::server::spawn_server;
 
 fn main() {
+    match std::env::args().nth(1).as_deref() {
+        Some("--help") | Some("-h") => {
+            println!("mock_pool [ADDR]   # default 127.0.0.1:3344");
+            println!("One-process mock pool: instant blocks, max target, no node required.");
+            return;
+        }
+        Some("--version") | Some("-V") => {
+            println!("mock_pool {}", env!("CARGO_PKG_VERSION"));
+            return;
+        }
+        _ => {}
+    }
     let addr = std::env::args()
         .nth(1)
         .unwrap_or_else(|| "127.0.0.1:3344".to_string());

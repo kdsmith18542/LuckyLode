@@ -1904,6 +1904,10 @@ fn main() -> std::process::ExitCode {
         println!("{USAGE}");
         return std::process::ExitCode::SUCCESS;
     }
+    if args.iter().any(|a| a == "--version" || a == "-V") {
+        println!("pool_server {}", env!("CARGO_PKG_VERSION"));
+        return std::process::ExitCode::SUCCESS;
+    }
     let mut bind = "127.0.0.1:3333".to_string();
     let mut reward = 1_000_000u64;
     let mut fees = 0u64;

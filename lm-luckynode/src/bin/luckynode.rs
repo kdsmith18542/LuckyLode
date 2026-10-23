@@ -128,6 +128,16 @@ fn show(st: &lm_luckynode::identity::IdentityState) -> String {
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+    if args.iter().any(|a| a == "--help" || a == "-h") {
+        println!("usage:\n  luckynode --node-rpc HOST:PORT --rpc-user U --rpc-pass P --name ln-foo --payout-address ADDR [--epoch N] [--state-file PATH] [--heartbeat-interval SECS] [--register-only] [--once]");
+        flush_out();
+        return;
+    }
+    if args.iter().any(|a| a == "--version" || a == "-V") {
+        println!("luckynode {}", env!("CARGO_PKG_VERSION"));
+        flush_out();
+        return;
+    }
     let mut node = String::new();
     let mut user = String::new();
     let mut pass = String::new();
