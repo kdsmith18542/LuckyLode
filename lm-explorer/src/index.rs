@@ -1714,6 +1714,13 @@ impl Indexer {
 
     /// Live network snapshot (node RPC, best-effort): peer count plus the
     /// node's own hashrate estimate.
+    /// Node reachability for UI banners (one cheap RPC call). Pages that
+    /// would otherwise render silent zeros use this to say the node is
+    /// down instead of looking like an empty chain.
+    pub fn node_reachable(&self) -> bool {
+        self.rpc.call("getblockcount", serde_json::json!([])).is_ok()
+    }
+
     pub fn network(&self) -> Result<serde_json::Value, String> {
         let peers = self
             .rpc

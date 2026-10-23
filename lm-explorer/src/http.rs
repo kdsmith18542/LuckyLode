@@ -17,12 +17,22 @@ use std::sync::{Arc, Mutex};
 
 use crate::index::Indexer;
 
-const CSS: &str = "body{background:#0d1117;color:#e6edf3;font:14px ui-monospace,Menlo,monospace;margin:0 auto;padding:24px;max-width:960px}h1{font-size:20px;color:#ffd166}a{color:#7ee787}table{border-collapse:collapse;width:100%;margin:12px 0}td,th{border:1px solid #30363d;padding:6px 10px;text-align:left;font-size:13px}.dim{color:#8b949e}.pos{color:#7ee787}.card{background:#161b22;border:1px solid #30363d;border-radius:10px;padding:12px;margin:12px 0}input{width:70%;padding:8px;background:#0d1117;color:#e6edf3;border:1px solid #30363d;border-radius:6px}button{padding:8px 14px;background:#161b22;color:#ffd166;border:1px solid #ffd166;border-radius:6px}svg.chart{width:100%;height:auto;display:block}";
+const CSS: &str = "body{background:#0d1117;color:#e6edf3;font:14px ui-monospace,Menlo,monospace;margin:0 auto;padding:24px;max-width:960px}h1{font-size:20px;color:#ffd166}a{color:#7ee787}table{border-collapse:collapse;width:100%;margin:12px 0}td,th{border:1px solid #30363d;padding:6px 10px;text-align:left;font-size:13px;overflow-wrap:anywhere}.dim{color:#8b949e}.pos{color:#7ee787}.card{background:#161b22;border:1px solid #30363d;border-radius:10px;padding:12px;margin:12px 0}.warnbox{background:#2d1b00;border:1px solid #ffd166;border-radius:10px;padding:10px 14px;margin:12px 0;color:#ffd166;font-size:13px}input{width:70%;padding:8px;background:#0d1117;color:#e6edf3;border:1px solid #30363d;border-radius:6px}button{padding:8px 14px;background:#161b22;color:#ffd166;border:1px solid #ffd166;border-radius:6px}svg.chart{width:100%;height:auto;display:block}@media (max-width:640px){body{padding:12px}h1{font-size:17px}td,th{padding:4px 6px;font-size:12px}input{width:100%}svg.chart{min-height:220px}}";
+
+/// Node-unreachable banner (empty when the node answers). A node outage
+/// used to render as a zero/empty chain; say so instead.
+fn node_banner(idx: &Indexer) -> String {
+    if idx.node_reachable() {
+        String::new()
+    } else {
+        "<div class=warnbox>node unreachable — live network, mempool and game figures below are unavailable or stale; indexed chain history is unaffected.</div>".to_string()
+    }
+}
 
 /// Template wrapper for HTML pages.
-fn html_page(_title: &str, body: String) -> String {
+fn html_page(title: &str, body: String) -> String {
     format!(
-        "<!doctype html><html lang=en><head><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Lucky Lode explorer</title><style>{CSS}</style></head><body><h1><a href=/ style=\"color:#ffd166;text-decoration:none\">Lucky Lode explorer</a></h1><div class=dim style=\"margin:-4px 0 12px;font-size:13px\"><a href=/>blocks</a> · <a href=/charts>charts</a> · <a href=/supply>supply</a> · <a href=/rewards>rewards</a> · <a href=/mempool>mempool</a></div>{body}</body></html>"
+        "<!doctype html><html lang=en><head><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>{title} · Lucky Lode explorer</title><style>{CSS}</style></head><body><h1><a href=/ style=\"color:#ffd166;text-decoration:none\">Lucky Lode explorer</a></h1><div class=dim style=\"margin:-4px 0 12px;font-size:13px\"><a href=/>blocks</a> · <a href=/charts>charts</a> · <a href=/supply>supply</a> · <a href=/rewards>rewards</a> · <a href=/mempool>mempool</a></div>{body}</body></html>"
     )
 }
 
@@ -287,8 +297,9 @@ fn home(idx: &mut Indexer) -> String {
     html_page(
         "home",
         format!(
-            "{}<div class=card>height <b>{}</b> · hash <span class=dim>{}</span> · supply <b>{}</b> · difficulty {:.2} · minted (PoS) in last 20: <b>{}</b></div>{}{}{}<h2>Recent blocks</h2><table><tr><th>height</th><th>type</th><th>hash</th><th>txs</th><th>block reward</th><th>jackpot bonus</th><th>pot splash</th><th>prize inflow</th></tr>{rows}</table><h2>Recent transactions</h2><table><tr><th>txid</th><th>block</th><th>time</th><th>value</th><th>fee</th><th>size</th><th>fee rate (sat/vB)</th></tr>{txrows}</table>",
+            "{}{}<div class=card>height <b>{}</b> · hash <span class=dim>{}</span> · supply <b>{}</b> · difficulty {:.2} · minted (PoS) in last 20: <b>{}</b></div>{}{}{}<h2>Recent blocks</h2><table><tr><th>height</th><th>type</th><th>hash</th><th>txs</th><th>block reward</th><th>jackpot bonus</th><th>pot splash</th><th>prize inflow</th></tr>{rows}</table><h2>Recent transactions</h2><table><tr><th>txid</th><th>block</th><th>time</th><th>value</th><th>fee</th><th>size</th><th>fee rate (sat/vB)</th></tr>{txrows}</table>",
             search_box(),
+            node_banner(idx),
             if h >= 0 { link_block(h) } else { "–".to_string() },
             esc(stats.get("hash").and_then(|v| v.as_str()).unwrap_or("")),
             coins(stats.get("supply").and_then(|v| v.as_i64()).unwrap_or(0)),
@@ -328,12 +339,25 @@ fn game_page(idx: &Indexer) -> String {
     let draw = idx.draw_state();
     let draw_epoch = draw.get("epoch").and_then(|v| v.as_i64()).unwrap_or(0);
     let draw_line = if draw_epoch > 0 {
+        // Pool sync age: the draw object is mirrored, not live. Say so
+        // when it ages instead of presenting stale numbers as current.
+        let synced = draw.get("synced_at").and_then(|v| v.as_i64()).unwrap_or(0);
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(synced);
+        let stale = if synced > 0 && now - synced > 900 {
+            format!(" · pool data stale (last sync {}m ago)", (now - synced) / 60)
+        } else {
+            String::new()
+        };
         format!(
-            " · draw epoch <b>{}</b> · budget <b>{}</b> · remaining <b>{}</b> · winner <b>{}</b>",
+            " · draw epoch <b>{}</b> · budget <b>{}</b> · remaining <b>{}</b> · winner <b>{}</b>{}",
             draw_epoch,
             coins(draw.get("budget").and_then(|v| v.as_i64()).unwrap_or(0)),
             coins(draw.get("remaining").and_then(|v| v.as_i64()).unwrap_or(0)),
             addr_or_text(draw.get("winner").and_then(|v| v.as_str()).unwrap_or("")),
+            stale,
         )
     } else {
         String::new()
@@ -386,8 +410,9 @@ fn game_page(idx: &Indexer) -> String {
     html_page(
         "rewards",
         format!(
-            "{}<div class=card>jackpot reserve <b>{}</b> · prize fund <b>{}</b> · pot <b>{}</b> · pot drought <b>{}/{}</b> · faucet reserve <b>{}</b> · dev reserve <b>{}</b> · odds (PoW finds, pre-committed per height): jackpot 1-in-{} blocks,             pot 1-in-{} &mdash; forced splash after {} dry blocks max{draw_line}</div><h2>Jackpot hits</h2><table><tr><th>height</th><th>finder</th><th>bonus</th><th>prize inflow</th></tr>{hits}</table><h2>Pot splashes</h2><table><tr><th>height</th><th>finder</th><th>splash</th></tr>{splashes}</table><h2>Prize draw claims</h2><div class=dim>epoch-boundary blocks whose coinbase paid the Luckynode Draw winner straight from the prize fund — pool-observed claims only (pool-mined boundaries); the wallet Luckynodes tab shows the current epoch{epoch_note}.</div><table><tr><th>height</th><th>finder</th><th>claim</th><th>winner</th></tr>{claims}</table>",
+            "{}{}<div class=card>jackpot reserve <b>{}</b> · prize fund <b>{}</b> · pot <b>{}</b> · pot drought <b>{}/{}</b> · faucet reserve <b>{}</b> · dev reserve <b>{}</b> · odds (PoW finds, pre-committed per height): jackpot 1-in-{} blocks,             pot 1-in-{} &mdash; forced splash after {} dry blocks max{draw_line}</div><h2>Jackpot hits</h2><table><tr><th>height</th><th>finder</th><th>bonus</th><th>prize inflow</th></tr>{hits}</table><h2>Pot splashes</h2><table><tr><th>height</th><th>finder</th><th>splash</th></tr>{splashes}</table><h2>Prize draw claims</h2><div class=dim>epoch-boundary blocks whose coinbase paid the Luckynode Draw winner straight from the prize fund — pool-observed claims only (pool-mined boundaries); the wallet Luckynodes tab shows the current epoch{epoch_note}.</div><table><tr><th>height</th><th>finder</th><th>claim</th><th>winner</th></tr>{claims}</table>",
             search_box(),
+            node_banner(idx),
             coins(reserve),
             coins(prize),
             coins(pot),
@@ -716,7 +741,7 @@ fn market_page(idx: &mut Indexer) -> String {
     body.push_str(&format!(
         "<h2>Largest balances</h2><p class=dim>unspent outputs only — exchange and pool wallets dominate by construction</p><table><tr><th>#</th><th>address</th><th>balance</th></tr>{rows}</table>"
     ));
-    html_page("supply", format!("{}{}", search_box(), body))
+    html_page("supply", format!("{}{}{}", search_box(), node_banner(idx), body))
 }
 
 /// Seasonal division boards (doc 03 §3.3: phones race phones), as last
@@ -838,8 +863,9 @@ fn mempool_page(idx: &mut Indexer) -> String {
     html_page(
         "mempool",
         format!(
-            "{}<div class=card>pending <b>{}</b> · size <b>{} B</b> · mempool usage <b>{} B</b> · waiting fees <b>{}</b></div>{}<h2>Pending transactions</h2><table><tr><th>txid</th><th>fee</th><th>vsize</th><th>fee rate (sat/vB)</th><th>first seen</th></tr>{rows}</table>",
+            "{}{}<div class=card>pending <b>{}</b> · size <b>{} B</b> · mempool usage <b>{} B</b> · waiting fees <b>{}</b></div>{}<h2>Pending transactions</h2><table><tr><th>txid</th><th>fee</th><th>vsize</th><th>fee rate (sat/vB)</th><th>first seen</th></tr>{rows}</table>",
             search_box(),
+            node_banner(idx),
             mp["size"].as_u64().unwrap_or(0),
             mp["bytes"].as_u64().unwrap_or(0),
             mp["usage"].as_u64().unwrap_or(0),
@@ -874,8 +900,9 @@ fn richlist_page(idx: &Indexer) -> String {
     html_page(
         "rich list",
         format!(
-            "{}<div class=card>top 100 funded addresses by unspent balance · as of height <b>{}</b></div><table><tr><th>#</th><th>address</th><th>balance</th></tr>{}</table>",
+            "{}{}<div class=card>top 100 funded addresses by unspent balance · as of height <b>{}</b></div><table><tr><th>#</th><th>address</th><th>balance</th></tr>{}</table>",
             search_box(),
+            node_banner(idx),
             tip,
             body,
         ),
@@ -1524,5 +1551,18 @@ mod rewards_tests {
         assert!(r.contains("draw epoch <b>41</b>"), "current draw: {r:.400}");
         assert!(r.contains("1.5 tLKYL"), "remaining budget");
         let _ = std::fs::remove_file(&dir);
+    }
+}
+
+#[cfg(test)]
+mod presentation_tests {
+    #[test]
+    fn pages_carry_titles_and_mobile_css() {
+        assert!(crate::http::CSS.contains("overflow-wrap:anywhere"));
+        assert!(crate::http::CSS.contains("@media (max-width:640px)"));
+        let html = crate::http::html_page("block 7", "x".into());
+        assert!(html.contains("<title>block 7 · Lucky Lode explorer</title>"), "{html:.200}");
+        // Outage banner is part of the chrome helpers.
+        assert!(crate::http::CSS.contains(".warnbox"));
     }
 }
