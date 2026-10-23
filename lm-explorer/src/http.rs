@@ -19,11 +19,41 @@ use crate::index::Indexer;
 
 const CSS: &str = "body{background:#0d1117;color:#e6edf3;font:14px ui-monospace,Menlo,monospace;margin:0 auto;padding:24px;max-width:960px}h1{font-size:20px;color:#ffd166}a{color:#7ee787}table{border-collapse:collapse;width:100%;margin:12px 0}td,th{border:1px solid #30363d;padding:6px 10px;text-align:left;font-size:13px}.dim{color:#8b949e}.pos{color:#7ee787}.card{background:#161b22;border:1px solid #30363d;border-radius:10px;padding:12px;margin:12px 0}input{width:70%;padding:8px;background:#0d1117;color:#e6edf3;border:1px solid #30363d;border-radius:6px}button{padding:8px 14px;background:#161b22;color:#ffd166;border:1px solid #ffd166;border-radius:6px}svg.chart{width:100%;height:auto;display:block}";
 
-fn page(_title: &str, body: String) -> String {
-    // Tab shows the brand only (per-page titles removed); _title is kept
-    // so call sites still label what they render.
+/// Template wrapper for HTML pages.
+fn html_page(_title: &str, body: String) -> String {
     format!(
-        "<!doctype html><html><head><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Lucky Lode explorer</title><style>{CSS}</style></head><body><h1><a href=/ style=\"color:#ffd166;text-decoration:none\">Lucky Lode explorer</a></h1><div class=dim style=\"margin:-4px 0 12px;font-size:13px\"><a href=/>blocks</a> · <a href=/charts>charts</a> · <a href=/supply>supply</a> · <a href=/rewards>rewards</a> · <a href=/mempool>mempool</a></div>{body}</body></html>"
+        "<!doctype html><html lang=en><head><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Lucky Lode explorer</title><style>{CSS}</style></head><body><h1><a href=/ style=\"color:#ffd166;text-decoration:none\">Lucky Lode explorer</a></h1><div class=dim style=\"margin:-4px 0 12px;font-size:13px\"><a href=/>blocks</a> · <a href=/charts>charts</a> · <a href=/supply>supply</a> · <a href=/rewards>rewards</a> · <a href=/mempool>mempool</a></div>{body}</body></html>"
+    )
+}
+
+fn blocks_page(blocks: &[serde_json::Value], page_num: i64, tip: i64, per: i64, coinbase: &std::collections::HashMap<i64, i64>) -> String {
+    let mut rows = String::new();
+    for b in blocks {
+        let h = b["height"].as_i64().unwrap_or(0);
+        let t = b["time"].as_i64().unwrap_or(0);
+        let is_pos = b["pos"].as_bool().unwrap_or(false);
+        let reward = coinbase.get(&h).map(|v| coins(*v)).unwrap_or_else(|| "<span class=dim>–</span>".to_string());
+        rows += &format!(
+            "<tr><td>{}</td><td>{}</td><td><a href=/block/{}>{}</a></td><td>{}</td><td>{}</td><td>{}</td></tr>",
+            h,
+            if is_pos { "<b class=pos>PoS · minted</b>" } else { "<span class=dim>PoW</span>" },
+            b["hash"].as_str().unwrap_or(""),
+            &b["hash"].as_str().unwrap_or("")[..16],
+            b["ntx"],
+            fmt_time(t),
+            reward,
+        );
+    }
+    let prev = if page_num > 0 { format!("<a href=/blocks?page={}>&laquo; prev</a> ", page_num - 1) } else { "".to_string() };
+    let next = {
+        let has_more = page_num * per < tip; // stop at the oldest indexed block
+        if has_more { format!(" <a href=/blocks?page={}>next &raquo;</a>", page_num + 1) } else { "".to_string() }
+    };
+    html_page(
+        &format!("blocks page {}", page_num + 1),
+        format!(
+            "<div class=dim style=\"margin:12px 0\">{prev}{next}</div><table><thead><tr><th>height</th><th>type</th><th>block</th><th>txs</th><th>time</th><th>coinbase</th></tr></thead><tbody>{rows}</tbody></table><div class=dim style=\"margin:12px 0\">{prev}{next}</div>",
+        ),
     )
 }
 
@@ -160,6 +190,16 @@ fn search_box() -> String {
     "<form action=/search><input name=q placeholder=\"height, block hash, txid or address\"><button>Go</button></form>".to_string()
 }
 
+/// ?page=N query for paginated views, clamped to >= 0.
+fn query_page(query: &str) -> i64 {
+    query
+        .split('&')
+        .find_map(|p| p.strip_prefix("page="))
+        .and_then(|v| v.parse::<i64>().ok())
+        .map(|p| p.max(0))
+        .unwrap_or(0)
+}
+
 fn home(idx: &mut Indexer) -> String {
     let stats = idx.stats().unwrap_or(serde_json::json!({"height": -1}));
     let h = stats.get("height").and_then(|v| v.as_i64()).unwrap_or(-1);
@@ -244,7 +284,7 @@ fn home(idx: &mut Indexer) -> String {
     if txrows.is_empty() {
         txrows = "<tr><td colspan=7 class=dim>no transactions indexed yet</td></tr>".to_string();
     }
-    page(
+    html_page(
         "home",
         format!(
             "{}<div class=card>height <b>{}</b> · hash <span class=dim>{}</span> · supply <b>{}</b> · difficulty {:.2} · minted (PoS) in last 20: <b>{}</b></div>{}{}{}<h2>Recent blocks</h2><table><tr><th>height</th><th>type</th><th>hash</th><th>txs</th><th>block reward</th><th>jackpot bonus</th><th>pot splash</th><th>prize inflow</th></tr>{rows}</table><h2>Recent transactions</h2><table><tr><th>txid</th><th>block</th><th>time</th><th>value</th><th>fee</th><th>size</th><th>fee rate (sat/vB)</th></tr>{txrows}</table>",
@@ -328,7 +368,7 @@ fn game_page(idx: &Indexer) -> String {
         claims = "<tr><td colspan=4 class=dim>no prize draw claims yet</td></tr>".to_string();
     }
 
-    page(
+    html_page(
         "rewards",
         format!(
             "{}<div class=card>jackpot reserve <b>{}</b> · pot <b>{}</b> · pot drought <b>{}/{}</b> · faucet reserve <b>{}</b> · dev reserve <b>{}</b> · odds (PoW finds, pre-committed per height): jackpot 1-in-{} blocks,             pot 1-in-{} &mdash; forced splash after {} dry blocks max</div><h2>Jackpot hits</h2><table><tr><th>height</th><th>finder</th><th>bonus</th><th>prize inflow</th></tr>{hits}</table><h2>Pot splashes</h2><table><tr><th>height</th><th>finder</th><th>splash</th></tr>{splashes}</table><h2>Prize draw claims</h2><div class=dim>epoch-boundary blocks whose coinbase paid the Luckynode Draw winner straight from the prize fund — pool-observed claims only (pool-mined boundaries); the wallet Luckynodes tab shows the current epoch.</div><table><tr><th>height</th><th>finder</th><th>claim</th><th>winner</th></tr>{claims}</table>",
@@ -598,7 +638,7 @@ fn charts_page(idx: &Indexer, days: i64) -> String {
             "<h2>Daily detail</h2><table><tr><th>date</th><th>blocks</th><th>txs</th><th>addresses</th><th>fees</th><th>minted</th><th>hashrate</th></tr>{rows}</table>"
         ));
     }
-    page("charts", format!("{}{}", search_box(), body))
+    html_page("charts", format!("{}{}", search_box(), body))
 }
 
 /// Market page: on-chain market facts. Price and market cap appear only
@@ -658,7 +698,7 @@ fn market_page(idx: &mut Indexer) -> String {
     body.push_str(&format!(
         "<h2>Largest balances</h2><p class=dim>unspent outputs only — exchange and pool wallets dominate by construction</p><table><tr><th>#</th><th>address</th><th>balance</th></tr>{rows}</table>"
     ));
-    page("supply", format!("{}{}", search_box(), body))
+    html_page("supply", format!("{}{}", search_box(), body))
 }
 
 /// Seasonal division boards (doc 03 §3.3: phones race phones), as last
@@ -700,7 +740,7 @@ fn divisions_page(idx: &Indexer) -> String {
     if sections.is_empty() {
         sections = "<p class=dim>no division data yet — the explorer mirrors the pool boards on its next pool sync.</p>".to_string();
     }
-    page(
+    html_page(
         "divisions",
         format!(
             "{}<div class=card>Seasonal boards by device family (30-day effective work). Phones race phones; farms are paid, not feted. Archive snapshot mirrored from the official pool — the pool dashboard shows the live season; this page shows the last synced copy.</div>{sections}",
@@ -751,7 +791,7 @@ fn mempool_page(idx: &mut Indexer) -> String {
     } else {
         String::new()
     };
-    page(
+    html_page(
         "mempool",
         format!(
             "{}<div class=card>pending <b>{}</b> · size <b>{} B</b> · mempool usage <b>{} B</b> · waiting fees <b>{}</b></div>{}<h2>Pending transactions</h2><table><tr><th>txid</th><th>fee</th><th>vsize</th><th>fee rate (sat/vB)</th><th>first seen</th></tr>{rows}</table>",
@@ -787,7 +827,7 @@ fn richlist_page(idx: &Indexer) -> String {
             .collect::<Vec<_>>()
             .join("")
     };
-    page(
+    html_page(
         "rich list",
         format!(
             "{}<div class=card>top 100 funded addresses by unspent balance · as of height <b>{}</b></div><table><tr><th>#</th><th>address</th><th>balance</th></tr>{}</table>",
@@ -798,7 +838,8 @@ fn richlist_page(idx: &Indexer) -> String {
     )
 }
 
-fn block_page(idx: &Indexer, b: &serde_json::Value) -> String {    let h = b["height"].as_i64().unwrap_or(0);
+fn block_page(idx: &Indexer, b: &serde_json::Value) -> String {
+    let h = b["height"].as_i64().unwrap_or(0);
     let txs = idx.block_txs(h).unwrap_or_default();
     let mut rows = String::new();
     for t in &txs {
@@ -837,10 +878,18 @@ fn block_page(idx: &Indexer, b: &serde_json::Value) -> String {    let h = b["he
         }
         None => String::new(),
     };
-    page(
+    let tip = idx.height().unwrap_or(h);
+    let nav = format!(
+        "<div class=dim style=\"margin:12px 0\"><a href=/blocks>&laquo; all blocks</a>{}{}</div>",
+        if h > 0 { format!(" · <a href=/block/{}>&laquo; prev</a>", h - 1) } else { String::new() },
+        if h < tip { format!(" · <a href=/block/{}>next &raquo;</a>", h + 1) } else { String::new() },
+    );
+    html_page(
         &format!("block {h}"),
         format!(
-            "<table><tr><th>height</th><td>{}</td></tr><tr><th>hash</th><td>{}</td></tr><tr><th>time</th><td>{}</td></tr><tr><th>type</th><td>{}</td></tr><tr><th>confirmations</th><td>{}</td></tr><tr><th>txs</th><td>{}</td></tr><tr><th>size</th><td>{} bytes</td></tr><tr><th>merkle root</th><td>{}</td></tr><tr><th>difficulty</th><td>{:.2}</td></tr><tr><th>fees collected</th><td>{}</td></tr><tr><th>jackpot reserve</th><td>{}</td></tr><tr><th>pot</th><td>{}</td></tr><tr><th>drought</th><td>{} blocks</td></tr>{game_rows}</table><h2>Transactions</h2><table><tr><th>txid</th><th>size</th><th>fee rate (sat/vB)</th></tr>{rows}</table>",
+            "{}{}<table><tr><th>height</th><td>{}</td></tr><tr><th>hash</th><td>{}</td></tr><tr><th>time</th><td>{}</td></tr><tr><th>type</th><td>{}</td></tr><tr><th>confirmations</th><td>{}</td></tr><tr><th>txs</th><td>{}</td></tr><tr><th>size</th><td>{} bytes</td></tr><tr><th>merkle root</th><td>{}</td></tr><tr><th>difficulty</th><td>{:.2}</td></tr><tr><th>fees collected</th><td>{}</td></tr><tr><th>jackpot reserve</th><td>{}</td></tr><tr><th>pot</th><td>{}</td></tr><tr><th>drought</th><td>{} blocks</td></tr>{game_rows}</table><h2>Transactions</h2><table><tr><th>txid</th><th>size</th><th>fee rate (sat/vB)</th></tr>{rows}</table>{}",
+            search_box(),
+            nav,
             link_block(h),
             b["hash"].as_str().unwrap_or(""),
             fmt_time(b["time"].as_i64().unwrap_or(0)),
@@ -854,6 +903,7 @@ fn block_page(idx: &Indexer, b: &serde_json::Value) -> String {    let h = b["he
             coins(b["reserve"].as_i64().unwrap_or(0)),
             coins(b["pot"].as_i64().unwrap_or(0)),
             b["drought"],
+            nav,
         ),
     )
 }
@@ -887,21 +937,33 @@ fn tx_page(_idx: &Indexer, t: &serde_json::Value) -> String {
             state,
         );
     }
-    page(
+    let in_total: i64 = t["vin"]
+        .as_array()
+        .map(|a| a.iter().map(|v| v["value"].as_i64().unwrap_or(0)).sum())
+        .unwrap_or(0);
+    let out_total: i64 = t["vout"]
+        .as_array()
+        .map(|a| a.iter().map(|v| v["value"].as_i64().unwrap_or(0)).sum())
+        .unwrap_or(0);
+    html_page(
         "tx",
         format!(
-            "<table><tr><th>txid</th><td>{}</td></tr><tr><th>block</th><td>{} ({} confs)</td></tr><tr><th>fee</th><td>{}</td></tr><tr><th>size</th><td>{}</td></tr><tr><th>fee rate</th><td>{} sat/vB</td></tr></table><h2>Inputs</h2><table><tr><th>#</th><th>from</th><th>value</th><th>tx</th></tr>{ins}</table><h2>Outputs</h2><table><tr><th>#</th><th>to</th><th>value</th><th>state</th></tr>{outs}</table>",
+            "{}<table><tr><th>txid</th><td>{}</td></tr><tr><th>block</th><td>{} ({} confs)</td></tr><tr><th>fee</th><td>{}</td></tr><tr><th>size</th><td>{}</td></tr><tr><th>fee rate</th><td>{} sat/vB</td></tr><tr><th>total in / out</th><td>{} / {}</td></tr></table><h2>Inputs</h2><table><tr><th>#</th><th>from</th><th>value</th><th>tx</th></tr>{ins}</table><h2>Outputs</h2><table><tr><th>#</th><th>to</th><th>value</th><th>state</th></tr>{outs}</table>",
+            search_box(),
             t["txid"].as_str().unwrap_or(""),
             link_block(t["height"].as_i64().unwrap_or(0)),
             t["confirmations"],
             coins(t["fee"].as_i64().unwrap_or(0)),
             size_cell(t),
             feerate_cell(t),
+            coins(in_total),
+            coins(out_total),
         ),
     )
 }
 
-fn address_page(a: &serde_json::Value) -> String {
+fn address_page(a: &serde_json::Value, page: i64) -> String {
+    let addr = a["address"].as_str().unwrap_or("");
     let mut rows = String::new();
     for t in a["txs"].as_array().cloned().unwrap_or_default() {
         let flow = t["flow"].as_i64().unwrap_or(0);
@@ -919,9 +981,29 @@ fn address_page(a: &serde_json::Value) -> String {
             coins(flow),
         );
     }
-    if a["txs_truncated"].as_bool().unwrap_or(false) {
-        rows += "<tr><td colspan=4 class=dim>…first 100, newest first — refine with a txid search for older</td></tr>";
+    if rows.is_empty() {
+        rows = "<tr><td colspan=4 class=dim>no history on this chain</td></tr>".to_string();
     }
+    // Paging: 100 newest-first rows per page; deep pages carry ?page=N.
+    let pages = a["pages"].as_i64().unwrap_or(1).max(1);
+    let prev = if page > 0 {
+        format!("<a href=\"/address/{addr}?page={}\">&laquo; newer</a> ", page - 1)
+    } else {
+        String::new()
+    };
+    let next = if page + 1 < pages {
+        format!(" <a href=\"/address/{addr}?page={}\">older &raquo;</a>", page + 1)
+    } else {
+        String::new()
+    };
+    let pager = if pages > 1 {
+        format!(
+            "<div class=dim style=\"margin:12px 0\">{prev}page {} of {pages}{next}</div>",
+            page + 1
+        )
+    } else {
+        String::new()
+    };
     let unconfirmed = match a.get("unconfirmed") {
         Some(v) if !v.is_null() => coins(v.as_i64().unwrap_or(0)),
         _ => "<span class=dim>–</span>".to_string(),
@@ -930,11 +1012,13 @@ fn address_page(a: &serde_json::Value) -> String {
         Some(v) if !v.is_null() => link_block(v.as_i64().unwrap_or(0)),
         _ => "<span class=dim>–</span>".to_string(),
     };
-    page(
+    html_page(
         "address",
         format!(
-            "<table><tr><th>address</th><td>{}</td></tr><tr><th>balance</th><td>{}</td></tr><tr><th>total received</th><td>{}</td></tr><tr><th>transactions</th><td>{}</td></tr><tr><th>first seen</th><td>{}</td></tr><tr><th>unconfirmed</th><td>{}</td></tr></table>{}<h2>Transactions</h2><table><tr><th>txid</th><th>block</th><th>direction</th><th>net</th></tr>{rows}</table>",
-            esc(a["address"].as_str().unwrap_or("")),
+            "{}{}<table><tr><th>address</th><td>{}</td></tr><tr><th>balance</th><td>{}</td></tr><tr><th>total received</th><td>{}</td></tr><tr><th>transactions</th><td>{}</td></tr><tr><th>first seen</th><td>{}</td></tr><tr><th>unconfirmed</th><td>{}</td></tr></table>{}<h2>Transactions</h2><table><tr><th>txid</th><th>block</th><th>direction</th><th>net</th></tr>{rows}</table>{pager}",
+            search_box(),
+            "",
+            esc(addr),
             coins(a["balance"].as_i64().unwrap_or(0)),
             coins(a["received"].as_i64().unwrap_or(0)),
             a["txcount"].as_i64().map(|n| n.to_string()).unwrap_or_else(|| "–".to_string()),
@@ -951,7 +1035,7 @@ fn address_page(a: &serde_json::Value) -> String {
 
 fn not_found(what: &str) -> String {
     html_resp_status(
-        &page("not found", format!("<p>Unknown {what}. {}</p>", search_box())),
+        &html_page("not found", format!("<p>Unknown {what}. {}</p>", search_box())),
         "404 Not Found",
     )
 }
@@ -1040,7 +1124,10 @@ fn handle(idx: &mut Indexer, method: &str, path: &str) -> String {
         };
     }
     if let Some(key) = route.strip_prefix("/api/address/") {
-        let a = idx.address(key).unwrap_or(serde_json::json!({"address": key, "balance": 0, "received": 0, "txs": []}));
+        let page = query_page(query);
+        let a = idx
+            .address_paged(key, page)
+            .unwrap_or(serde_json::json!({"address": key, "balance": 0, "received": 0, "txs": []}));
         if address_seen(&a) || address_shaped(key) {
             return json_resp(&a);
         }
@@ -1125,7 +1212,10 @@ fn handle(idx: &mut Indexer, method: &str, path: &str) -> String {
         };
     }
     if let Some(key) = route.strip_prefix("/address/") {
-        let a = idx.address(key).unwrap_or(serde_json::json!({"address": key, "balance": 0, "received": 0, "txs": []}));
+        // History pages: ?page=N, 100 newest-first rows each. Page 0 is
+        // the default view; deeper pages need the explicit query.
+        let page = query_page(query);
+        let a = idx.address_paged(key, page).unwrap_or(serde_json::json!({"address": key, "balance": 0, "received": 0, "txs": []}));
         if json {
             return json_resp(&a);
         }
@@ -1135,7 +1225,26 @@ fn handle(idx: &mut Indexer, method: &str, path: &str) -> String {
         if !address_seen(&a) && !address_shaped(key) {
             return not_found("address");
         }
-        return html_resp(&address_page(&a));
+        return html_resp(&address_page(&a, page));
+    }
+    if route == "/blocks" || route == "/api/blocks" {
+        let page = query_page(query);
+        let tip = idx.height().unwrap_or(-1);
+        let per = 50;
+        let top = tip - page * per;
+        let list = idx.block_list(top, per).unwrap_or_default();
+        // Coinbase totals for the reward column (indexed at index time)
+        let mut cb = std::collections::HashMap::new();
+        for b in &list {
+            let h = b["height"].as_i64().unwrap_or(0);
+            if let Ok(v) = idx.coinbase_total(h) {
+                cb.insert(h, v);
+            }
+        }
+        if json || route == "/api/blocks" {
+            return json_resp(&serde_json::json!({"tip": tip, "page": page, "per_page": per, "blocks": list}));
+        }
+        return html_resp(&blocks_page(&list, page, tip, per, &cb));
     }
     if route == "/search" {
         let q = query
@@ -1144,7 +1253,7 @@ fn handle(idx: &mut Indexer, method: &str, path: &str) -> String {
             .unwrap_or("")
             .trim();
         if q.is_empty() {
-            return html_resp(&page("search", search_box()));
+            return html_resp(&html_page("search", search_box()));
         }
         if q.parse::<u64>().is_ok() {
             return redirect(&format!("/block/{q}"));
@@ -1272,6 +1381,78 @@ mod tests {
         // Unknown 64-hex is neither block nor tx: 404, not an address page.
         let r = handle(&mut idx, "GET", &format!("/search?q={}", "a".repeat(64)));
         assert!(r.starts_with("HTTP/1.1 404"), "hex: {r:.40}");
+        let _ = std::fs::remove_file(&dir);
+    }
+}
+
+#[cfg(test)]
+mod nav_tests {
+    use super::*;
+    use crate::index::Indexer;
+    use lm_stratum::rpc::RpcClient;
+
+    fn idx_with_blocks(name: &str, n: i64) -> (Indexer, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(name);
+        let _ = std::fs::remove_file(&dir);
+        let rpc = RpcClient::new("127.0.0.1:1", "u", "p");
+        let idx = Indexer::open(dir.to_str().expect("path"), rpc).expect("open");
+        for h in 0..n {
+            idx.fixture_exec(&format!(
+                "INSERT INTO blocks(height, hash, time, ntx, difficulty, reserve, pot, drought, pos)
+                 VALUES ({h}, '{:064x}', 0, 1, 1.0, 0, 0, 0, {})",
+                h,
+                if h % 5 == 0 { 1 } else { 0 }
+            ))
+            .expect("fixture");
+        }
+        (idx, dir)
+    }
+
+    #[test]
+    fn blocks_index_pages_and_links_blocks() {
+        let (mut idx, dir) = idx_with_blocks("explorer-nav-blocks.db", 120);
+        let r = handle(&mut idx, "GET", "/blocks");
+        assert!(r.starts_with("HTTP/1.1 200"));
+        assert!(r.contains("<td>119</td>"), "newest first");
+        assert!(r.contains("next &raquo;") && r.contains("page=1"));
+        let r2 = handle(&mut idx, "GET", "/blocks?page=1");
+        assert!(r2.contains("<td>69</td>") && r2.contains("&laquo; prev"));
+        let api = handle(&mut idx, "GET", "/api/blocks?page=0");
+        assert!(api.starts_with("HTTP/1.1 200") && api.contains("\"per_page\":50"));
+        let _ = std::fs::remove_file(&dir);
+    }
+
+    #[test]
+    fn block_and_tx_pages_carry_search_and_nav() {
+        let (mut idx, dir) = idx_with_blocks("explorer-nav-block.db", 3);
+        let r = handle(&mut idx, "GET", "/block/1");
+        assert!(r.starts_with("HTTP/1.1 200"));
+        assert!(r.contains("action=/search"), "search on block page: {r:.300}");
+        assert!(r.contains("href=/block/0") && r.contains("href=/block/2"), "prev/next");
+        assert!(r.contains("href=/blocks"), "back to index");
+        let _ = std::fs::remove_file(&dir);
+    }
+
+    #[test]
+    fn address_history_pages_do_not_repeat_rows() {
+        let (mut idx, dir) = idx_with_blocks("explorer-nav-addr.db", 1);
+        let addr = format!("m{}", "1".repeat(33));
+        // 150 funding txs to one address.
+        idx.fixture_exec(&format!(
+                "INSERT INTO txs(txid, height, coinbase) VALUES {}
+                 ; INSERT INTO outs(txid, n, address, value, coinbase, spent_by, spent_n) VALUES {};",
+                (0..150).map(|i| format!("('tx{i}', 0, 0)")).collect::<Vec<_>>().join(","),
+                (0..150).map(|i| format!("('tx{i}', 0, '{addr}', 100, 0, NULL, NULL)")).collect::<Vec<_>>().join(","),
+            ))
+            .expect("fixture");
+        let p0 = handle(&mut idx, "GET", &format!("/address/{addr}"));
+        assert!(p0.starts_with("HTTP/1.1 200"));
+        assert!(p0.contains("page 1 of 2"), "pager visible");
+        assert!(p0.contains("href=\"/address/") && p0.contains("page=1"));
+        let p1 = handle(&mut idx, "GET", &format!("/address/{addr}?page=1"));
+        assert!(p1.contains("page 2 of 2") && p1.contains("page=0"), "prev link");
+        let api0 = handle(&mut idx, "GET", &format!("/api/address/{addr}?page=1"));
+        assert!(api0.contains("\"page\":1"));
         let _ = std::fs::remove_file(&dir);
     }
 }

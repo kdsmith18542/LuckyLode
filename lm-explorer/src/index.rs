@@ -160,6 +160,13 @@ fn schema(db: &Connection) -> rusqlite::Result<()> {
 }
 
 impl Indexer {
+    /// Test-only fixture hook: sibling modules exercise the HTTP layer on
+    /// an index they populate directly (the connection stays private).
+    #[cfg(test)]
+    pub(crate) fn fixture_exec(&self, sql: &str) -> rusqlite::Result<()> {
+        self.db.execute_batch(sql)
+    }
+
     pub fn open(path: &str, rpc: RpcClient) -> Result<Self, String> {
         let db = Connection::open(path).map_err(|e| format!("open db {path}: {e}"))?;
         schema(&db).map_err(|e| format!("schema: {e}"))?;
@@ -840,6 +847,21 @@ impl Indexer {
         }
     }
 
+    /// Newest-first block summaries at or below `top`, up to `limit`
+    /// rows. Backs the /blocks index page (the home page only shows the
+    /// last 20). Each row is the full [`Indexer::block_by_height`] object.
+    pub fn block_list(&self, top: i64, limit: i64) -> Result<Vec<serde_json::Value>, String> {
+        let tip = self.height().unwrap_or(top);
+        let top = top.min(tip).max(0);
+        let mut out = Vec::new();
+        for h in ((top - limit + 1).max(0)..=top).rev() {
+            if let Some(b) = self.block_by_height(h).unwrap_or(None) {
+                out.push(b);
+            }
+        }
+        Ok(out)
+    }
+
     pub fn block_txs(&self, height: i64) -> Result<Vec<String>, String> {
         let mut st = self
             .db
@@ -912,7 +934,19 @@ impl Indexer {
         })))
     }
 
+    /// Full address view, newest-first (page 0). Kept for callers that
+    /// want the first screen; [`Indexer::address_paged`] serves the rest.
+    #[allow(dead_code)] // convenience wrapper retained for tests/tools
     pub fn address(&self, addr: &str) -> Result<serde_json::Value, String> {
+        self.address_paged(addr, 0)
+    }
+
+    /// Address history page (`PAGE` rows, newest first). Pages are stable
+    /// while the chain is: a reorg rewrites history and resets them,
+    /// which the rollback-safe index already guarantees.
+    pub const ADDRESS_PAGE_ROWS: i64 = 100;
+
+    pub fn address_paged(&self, addr: &str, page: i64) -> Result<serde_json::Value, String> {
         let received: i64 = self
             .db
             .query_row(
@@ -936,11 +970,15 @@ impl Indexer {
                  WHERE o.address = ?1
                  UNION SELECT o.spent_by AS txid, t.height FROM outs o JOIN txs t ON t.txid = o.spent_by
                  WHERE o.address = ?2 AND o.spent_by IS NOT NULL
-                 ORDER BY height DESC LIMIT 100",
+                 ORDER BY height DESC LIMIT ?3 OFFSET ?4",
             )
             .map_err(|e| format!("addr history: {e}"))?;
+        let page = page.max(0);
         let rows = st
-            .query_map([addr, addr], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))
+            .query_map(
+                rusqlite::params![addr, addr, Self::ADDRESS_PAGE_ROWS, page * Self::ADDRESS_PAGE_ROWS],
+                |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)),
+            )
             .map_err(|e| format!("addr history: {e}"))?;
         let mut history = Vec::new();
         for r in rows {
@@ -958,7 +996,8 @@ impl Indexer {
         }
         Ok(serde_json::json!({
             "address": addr, "balance": balance, "received": received,
-            "txs": history, "txs_truncated": history.len() == 100,
+            "txs": history, "txs_truncated": history.len() == Self::ADDRESS_PAGE_ROWS as usize,
+            "page": page, "pages": (tx_count(addr, &self.db).unwrap_or(history.len() as i64) + Self::ADDRESS_PAGE_ROWS - 1) / Self::ADDRESS_PAGE_ROWS,
             "txcount": tx_count(addr, &self.db).unwrap_or(history.len() as i64),
             "first_seen": first_seen(addr, &self.db),
             "unconfirmed": address_unconfirmed_opt(&self.rpc, addr),
