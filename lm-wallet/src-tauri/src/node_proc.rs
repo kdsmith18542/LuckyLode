@@ -83,12 +83,17 @@ pub fn default_datadir() -> Result<String, String> {
     }
     #[cfg(all(not(windows), target_os = "macos"))]
     {
-        let home = home_dir().ok_or_else(|| "no home directory — set a node datadir in Settings".to_string())?;
-        Ok(home.join("Library/Application Support/LuckyLodeTest").to_string_lossy().into_owned())
+        let home = home_dir()
+            .ok_or_else(|| "no home directory — set a node datadir in Settings".to_string())?;
+        Ok(home
+            .join("Library/Application Support/LuckyLodeTest")
+            .to_string_lossy()
+            .into_owned())
     }
     #[cfg(all(not(windows), not(target_os = "macos")))]
     {
-        let home = home_dir().ok_or_else(|| "no home directory — set a node datadir in Settings".to_string())?;
+        let home = home_dir()
+            .ok_or_else(|| "no home directory — set a node datadir in Settings".to_string())?;
         Ok(home.join(".luckylodetest").to_string_lossy().into_owned())
     }
 }
@@ -223,8 +228,7 @@ pub fn spawn(bin: &str, args: &[String]) -> Result<Child, String> {
     if bin.trim().is_empty() {
         return Err("no node binary configured (Settings → Node → luckyd path)".to_string());
     }
-    let meta = std::fs::metadata(bin)
-        .map_err(|e| format!("node binary {bin}: {e}"))?;
+    let meta = std::fs::metadata(bin).map_err(|e| format!("node binary {bin}: {e}"))?;
     if meta.is_dir() {
         return Err(format!("node binary {bin} is a directory"));
     }
@@ -262,7 +266,14 @@ pub fn wait_for_rpc(
             let tail = std::fs::read_to_string(format!("{datadir}/wallet-managed-debug.log"))
                 .map(|s| {
                     let lines: Vec<&str> = s.lines().collect();
-                    lines.iter().rev().take(5).rev().cloned().collect::<Vec<_>>().join(" | ")
+                    lines
+                        .iter()
+                        .rev()
+                        .take(5)
+                        .rev()
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .join(" | ")
                 })
                 .unwrap_or_else(|_| "(no debug log)".to_string());
             return Err(format!("node did not answer RPC in time — did another node take the port? log tail: {tail}"));
@@ -279,7 +290,10 @@ mod tests {
     fn rpc_port_parsing() {
         assert_eq!(rpc_port_from_url("http://127.0.0.1:42253"), 42253);
         assert_eq!(rpc_port_from_url("127.0.0.1:9271"), 9271);
-        assert_eq!(rpc_port_from_url("https://luckylode.cc/node/"), DEFAULT_RPC_PORT);
+        assert_eq!(
+            rpc_port_from_url("https://luckylode.cc/node/"),
+            DEFAULT_RPC_PORT
+        );
         assert_eq!(rpc_port_from_url(""), DEFAULT_RPC_PORT);
     }
 
@@ -323,8 +337,7 @@ mod tests {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&good, std::fs::Permissions::from_mode(0o755))
-                .expect("chmod");
+            std::fs::set_permissions(&good, std::fs::Permissions::from_mode(0o755)).expect("chmod");
         }
         let not_exec = dir.join("luckyd-noexec");
         std::fs::write(&not_exec, b"#!/bin/sh\n").expect("write");
@@ -419,12 +432,9 @@ mod tests {
         let port = 45553u16;
         let args = build_args(&dir_s, "u", "p", port, "-regtest");
         let mut child = spawn(&luckyd, &args).expect("spawn luckyd");
-        let rpc = lm_stratum::rpc::RpcClient::from_url(
-            &format!("http://127.0.0.1:{port}"),
-            "u",
-            "p",
-        )
-        .expect("rpc client");
+        let rpc =
+            lm_stratum::rpc::RpcClient::from_url(&format!("http://127.0.0.1:{port}"), "u", "p")
+                .expect("rpc client");
         let h = wait_for_rpc(&rpc, &dir_s, Duration::from_secs(180)).expect("rpc up");
         assert_eq!(h, 0);
         let _ = rpc.call("stop", serde_json::json!([]));

@@ -31,23 +31,67 @@ pub struct LuckClass {
 
 /// Ten classes, rarest first. Partition-weights × bonuses sum to the full 5% levy.
 pub const LUCK_TABLE: [LuckClass; 10] = [
-    LuckClass { name: "mythic",  odds: 100_000, bonus_millis: 225_000 },
-    LuckClass { name: "aurora",  odds: 10_000,  bonus_millis: 25_000 },
-    LuckClass { name: "comet",   odds: 2_500,   bonus_millis: 12_500 },
-    LuckClass { name: "beacon",  odds: 1_000,   bonus_millis: 6_250 },
-    LuckClass { name: "bonfire", odds: 500,     bonus_millis: 5_000 },
-    LuckClass { name: "cinder",  odds: 250,     bonus_millis: 2_500 },
-    LuckClass { name: "ember",   odds: 100,     bonus_millis: 1_000 },
-    LuckClass { name: "flare",   odds: 50,      bonus_millis: 500 },
-    LuckClass { name: "glint",   odds: 25,      bonus_millis: 250 },
-    LuckClass { name: "spark",   odds: 10,      bonus_millis: 200 },
+    LuckClass {
+        name: "mythic",
+        odds: 100_000,
+        bonus_millis: 225_000,
+    },
+    LuckClass {
+        name: "aurora",
+        odds: 10_000,
+        bonus_millis: 25_000,
+    },
+    LuckClass {
+        name: "comet",
+        odds: 2_500,
+        bonus_millis: 12_500,
+    },
+    LuckClass {
+        name: "beacon",
+        odds: 1_000,
+        bonus_millis: 6_250,
+    },
+    LuckClass {
+        name: "bonfire",
+        odds: 500,
+        bonus_millis: 5_000,
+    },
+    LuckClass {
+        name: "cinder",
+        odds: 250,
+        bonus_millis: 2_500,
+    },
+    LuckClass {
+        name: "ember",
+        odds: 100,
+        bonus_millis: 1_000,
+    },
+    LuckClass {
+        name: "flare",
+        odds: 50,
+        bonus_millis: 500,
+    },
+    LuckClass {
+        name: "glint",
+        odds: 25,
+        bonus_millis: 250,
+    },
+    LuckClass {
+        name: "spark",
+        odds: 10,
+        bonus_millis: 200,
+    },
 ];
 
 /// Partition width of class `i` per 100,000 blocks (`c_i − c_{i−1}`).
 #[must_use]
 pub fn partition_weight(i: usize) -> u64 {
     let c = 100_000 / LUCK_TABLE[i].odds;
-    let prev = if i == 0 { 0 } else { 100_000 / LUCK_TABLE[i - 1].odds };
+    let prev = if i == 0 {
+        0
+    } else {
+        100_000 / LUCK_TABLE[i - 1].odds
+    };
     c - prev
 }
 
@@ -66,9 +110,7 @@ pub fn table_conservation() -> u128 {
 /// the draw clears no threshold (the ~84% common case incl. non-wins).
 #[must_use]
 pub fn classify(draw_top64: u64) -> Option<&'static LuckClass> {
-    LUCK_TABLE
-        .iter()
-        .find(|c| draw_top64 < u64::MAX / c.odds)
+    LUCK_TABLE.iter().find(|c| draw_top64 < u64::MAX / c.odds)
 }
 
 /// Bonus paid for a class at base reward `R`: floor(R × millis / 1000),
@@ -131,8 +173,8 @@ mod tests {
         assert_eq!(bonus_for(1_000_000, spark), 200_000); // 0.2 × R
         assert_eq!(bonus_for(1_000_000, mythic), 225_000_000); // 225 × R
         assert_eq!(bonus_for(999, spark), 199); // floor
-        // Saturating multiply, then floor divide: MAX × 225000 saturates to
-        // MAX, then /1000 → MAX/1000 (not MAX).
+                                                // Saturating multiply, then floor divide: MAX × 225000 saturates to
+                                                // MAX, then /1000 → MAX/1000 (not MAX).
         assert_eq!(bonus_for(u64::MAX, mythic), u64::MAX / 1000);
     }
 
@@ -161,7 +203,10 @@ mod tests {
         }
         let expected = blocks as f64 * 0.05 * base as f64;
         let ratio = total_bonus as f64 / expected;
-        assert!((0.85..=1.15).contains(&ratio), "ratio {ratio} hits {hits:?}");
+        assert!(
+            (0.85..=1.15).contains(&ratio),
+            "ratio {ratio} hits {hits:?}"
+        );
         // Robust per-class checks: classes expected ≥ 40 hits in 200k
         // (partition-weighted, since rarest-wins partitions the draws).
         for (i, c) in LUCK_TABLE.iter().enumerate() {

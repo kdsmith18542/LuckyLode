@@ -211,7 +211,10 @@ impl TemplateProvider for MockProvider {
         };
         let p = apply_pot_block(
             self.reserve,
-            PotState { pot: u64::MAX, drought: 0 }, // full pot: pot leg burns
+            PotState {
+                pot: u64::MAX,
+                drought: 0,
+            }, // full pot: pot leg burns
             self.base_reward,
             self.fees,
             draws,

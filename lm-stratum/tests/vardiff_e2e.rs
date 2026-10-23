@@ -29,7 +29,7 @@ fn fast_miner_steps_up_twice() {
         "127.0.0.1:0",
         None,
         None,
-        None
+        None,
     )
     .expect("bind");
     let mut c = PoolClient::connect(server.addr()).expect("connect");

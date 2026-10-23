@@ -37,13 +37,22 @@ fn html_page(title: &str, body: String) -> String {
     )
 }
 
-fn blocks_page(blocks: &[serde_json::Value], page_num: i64, tip: i64, per: i64, coinbase: &std::collections::HashMap<i64, i64>) -> String {
+fn blocks_page(
+    blocks: &[serde_json::Value],
+    page_num: i64,
+    tip: i64,
+    per: i64,
+    coinbase: &std::collections::HashMap<i64, i64>,
+) -> String {
     let mut rows = String::new();
     for b in blocks {
         let h = b["height"].as_i64().unwrap_or(0);
         let t = b["time"].as_i64().unwrap_or(0);
         let is_pos = b["pos"].as_bool().unwrap_or(false);
-        let reward = coinbase.get(&h).map(|v| coins(*v)).unwrap_or_else(|| "<span class=dim>–</span>".to_string());
+        let reward = coinbase
+            .get(&h)
+            .map(|v| coins(*v))
+            .unwrap_or_else(|| "<span class=dim>–</span>".to_string());
         rows += &format!(
             "<tr><td>{}</td><td>{}</td><td><a href=/block/{}>{}</a></td><td>{}</td><td>{}</td><td>{}</td></tr>",
             h,
@@ -55,10 +64,18 @@ fn blocks_page(blocks: &[serde_json::Value], page_num: i64, tip: i64, per: i64, 
             reward,
         );
     }
-    let prev = if page_num > 0 { format!("<a href=/blocks?page={}>&laquo; prev</a> ", page_num - 1) } else { "".to_string() };
+    let prev = if page_num > 0 {
+        format!("<a href=/blocks?page={}>&laquo; prev</a> ", page_num - 1)
+    } else {
+        "".to_string()
+    };
     let next = {
         let has_more = page_num * per < tip; // stop at the oldest indexed block
-        if has_more { format!(" <a href=/blocks?page={}>next &raquo;</a>", page_num + 1) } else { "".to_string() }
+        if has_more {
+            format!(" <a href=/blocks?page={}>next &raquo;</a>", page_num + 1)
+        } else {
+            "".to_string()
+        }
     };
     html_page(
         &format!("blocks page {}", page_num + 1),
@@ -334,7 +351,11 @@ fn home(idx: &mut Indexer) -> String {
 fn mp_entries_fee_total(mp: &serde_json::Value) -> i64 {
     mp.get("entries")
         .and_then(|e| e.as_array())
-        .map(|arr| arr.iter().map(|e| e.get("fee").and_then(|f| f.as_i64()).unwrap_or(0)).sum())
+        .map(|arr| {
+            arr.iter()
+                .map(|e| e.get("fee").and_then(|f| f.as_i64()).unwrap_or(0))
+                .sum()
+        })
         .unwrap_or(0)
 }
 
@@ -347,13 +368,25 @@ fn game_page(idx: &Indexer) -> String {
     let reserve = state.get("reserve").and_then(|v| v.as_i64()).unwrap_or(0);
     let pot = state.get("pot").and_then(|v| v.as_i64()).unwrap_or(0);
     let drought = state.get("drought").and_then(|v| v.as_i64()).unwrap_or(0);
-    let jd = state.get("jackpotdivisor").and_then(|v| v.as_i64()).unwrap_or(100);
-    let pd = state.get("potdivisor").and_then(|v| v.as_i64()).unwrap_or(1000);
-    let dl = state.get("potdrought").and_then(|v| v.as_i64()).unwrap_or(4320);
+    let jd = state
+        .get("jackpotdivisor")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(100);
+    let pd = state
+        .get("potdivisor")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(1000);
+    let dl = state
+        .get("potdrought")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(4320);
     let faucet = state.get("faucet").and_then(|v| v.as_i64()).unwrap_or(0);
     let dev = state.get("dev").and_then(|v| v.as_i64()).unwrap_or(0);
     let prize = state.get("prize").and_then(|v| v.as_i64()).unwrap_or(0);
-    let epoch_len = state.get("prizeepochlen").and_then(|v| v.as_i64()).unwrap_or(0);
+    let epoch_len = state
+        .get("prizeepochlen")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0);
     let draw = idx.draw_state();
     let draw_epoch = draw.get("epoch").and_then(|v| v.as_i64()).unwrap_or(0);
     let draw_line = if draw_epoch > 0 {
@@ -365,7 +398,10 @@ fn game_page(idx: &Indexer) -> String {
             .map(|d| d.as_secs() as i64)
             .unwrap_or(synced);
         let stale = if synced > 0 && now - synced > 900 {
-            format!(" · pool data stale (last sync {}m ago)", (now - synced) / 60)
+            format!(
+                " · pool data stale (last sync {}m ago)",
+                (now - synced) / 60
+            )
         } else {
             String::new()
         };
@@ -527,9 +563,20 @@ impl Chart {
         } else {
             (0.0, max_v)
         };
-        let span = if (hi - lo).abs() < f64::EPSILON { 1.0 } else { hi - lo };
+        let span = if (hi - lo).abs() < f64::EPSILON {
+            1.0
+        } else {
+            hi - lo
+        };
         let n = self.points.len().max(1) as f64;
-        let x_of = |i: f64| pad_l + if n <= 1.0 { plot_w / 2.0 } else { i / (n - 1.0) * plot_w };
+        let x_of = |i: f64| {
+            pad_l
+                + if n <= 1.0 {
+                    plot_w / 2.0
+                } else {
+                    i / (n - 1.0) * plot_w
+                }
+        };
         let y_of = |v: f64| pad_t + plot_h - (v - lo) / span * plot_h;
 
         let mut svg = String::new();
@@ -538,7 +585,9 @@ impl Chart {
         // gives the svg height:auto so the viewBox aspect is honored.
         svg.push_str(&format!(
             "<svg viewBox='0 0 {} {}' class=chart role=img aria-label='{}'>",
-            w, h, esc(&self.title)
+            w,
+            h,
+            esc(&self.title)
         ));
         // Horizontal gridlines + y labels.
         for i in 0..=4 {
@@ -639,7 +688,9 @@ impl Chart {
 /// Charts page: daily history — hashrate, difficulty, transactions, fees,
 /// supply and active addresses. All series come from the local index.
 fn charts_page(idx: &Indexer, days: i64) -> String {
-    let series = idx.daily_series(days).unwrap_or(serde_json::json!({"days": []}));
+    let series = idx
+        .daily_series(days)
+        .unwrap_or(serde_json::json!({"days": []}));
     let d = series["days"].as_array().cloned().unwrap_or_default();
     let day_of = |i: usize| -> f64 { d[i]["day"].as_f64().unwrap_or(0.0) };
     let num = |i: usize, k: &str| -> f64 { d[i][k].as_f64().unwrap_or(0.0) };
@@ -647,12 +698,20 @@ fn charts_page(idx: &Indexer, days: i64) -> String {
     let hashrate: Vec<(f64, f64)> = (0..d.len())
         .filter_map(|i| d[i]["hashrate"].as_f64().map(|h| (day_of(i), h)))
         .collect();
-    let difficulty: Vec<(f64, f64)> = (0..d.len()).map(|i| (day_of(i), num(i, "difficulty"))).collect();
+    let difficulty: Vec<(f64, f64)> = (0..d.len())
+        .map(|i| (day_of(i), num(i, "difficulty")))
+        .collect();
     let txs: Vec<(f64, f64)> = (0..d.len()).map(|i| (day_of(i), num(i, "txs"))).collect();
     let fees: Vec<(f64, f64)> = (0..d.len()).map(|i| (day_of(i), num(i, "fees"))).collect();
-    let supply: Vec<(f64, f64)> = (0..d.len()).map(|i| (day_of(i), num(i, "supply"))).collect();
-    let mined: Vec<(f64, f64)> = (0..d.len()).map(|i| (day_of(i), num(i, "minted"))).collect();
-    let addrs: Vec<(f64, f64)> = (0..d.len()).map(|i| (day_of(i), num(i, "addresses"))).collect();
+    let supply: Vec<(f64, f64)> = (0..d.len())
+        .map(|i| (day_of(i), num(i, "supply")))
+        .collect();
+    let mined: Vec<(f64, f64)> = (0..d.len())
+        .map(|i| (day_of(i), num(i, "minted")))
+        .collect();
+    let addrs: Vec<(f64, f64)> = (0..d.len())
+        .map(|i| (day_of(i), num(i, "addresses")))
+        .collect();
 
     let mut body = String::new();
     body.push_str(&format!(
@@ -662,7 +721,11 @@ fn charts_page(idx: &Indexer, days: i64) -> String {
     // Range switcher.
     body.push_str("<p>");
     for r in [7i64, 30, 90, 365] {
-        let sel = if r == days { " style='color:#ffd166'" } else { "" };
+        let sel = if r == days {
+            " style='color:#ffd166'"
+        } else {
+            ""
+        };
         body.push_str(&format!("<a href='/charts?days={r}'{sel}> {r}d</a>"));
     }
     body.push_str("</p>");
@@ -670,11 +733,46 @@ fn charts_page(idx: &Indexer, days: i64) -> String {
         body.push_str("<div class=card>no blocks indexed yet — charts appear once the index has history</div>");
     } else {
         body.push_str(&Chart::new("Hashrate", "solutions per second — work ÷ time over the day (the node's getnetworkhashps uses a 120-block window)", hashrate).render());
-        body.push_str(&Chart::new("Difficulty", "average difficulty of the day's blocks", difficulty).render());
-        body.push_str(&Chart::new("Transactions", "non-coinbase transactions per day", txs).bars().render());
-        body.push_str(&Chart::new("Fees collected", "sats paid in transaction fees per day", fees).bars().render());
-        body.push_str(&Chart::new("Cumulative supply", "coins minted so far (solid line: total; dashed: added that day)", supply).with_overlay(mined).render());
-        body.push_str(&Chart::new("Active addresses", "distinct addresses touched per day", addrs).bars().render());
+        body.push_str(
+            &Chart::new(
+                "Difficulty",
+                "average difficulty of the day's blocks",
+                difficulty,
+            )
+            .render(),
+        );
+        body.push_str(
+            &Chart::new("Transactions", "non-coinbase transactions per day", txs)
+                .bars()
+                .render(),
+        );
+        body.push_str(
+            &Chart::new(
+                "Fees collected",
+                "sats paid in transaction fees per day",
+                fees,
+            )
+            .bars()
+            .render(),
+        );
+        body.push_str(
+            &Chart::new(
+                "Cumulative supply",
+                "coins minted so far (solid line: total; dashed: added that day)",
+                supply,
+            )
+            .with_overlay(mined)
+            .render(),
+        );
+        body.push_str(
+            &Chart::new(
+                "Active addresses",
+                "distinct addresses touched per day",
+                addrs,
+            )
+            .bars()
+            .render(),
+        );
     }
     // A small table with the same numbers (readable, copyable).
     if !d.is_empty() {
@@ -741,9 +839,21 @@ fn market_page(idx: &mut Indexer) -> String {
         let pts: Vec<(f64, f64)> = curve
             .iter()
             .step_by(step)
-            .map(|p| (p["time"].as_f64().unwrap_or(0.0), p["supply"].as_f64().unwrap_or(0.0)))
+            .map(|p| {
+                (
+                    p["time"].as_f64().unwrap_or(0.0),
+                    p["supply"].as_f64().unwrap_or(0.0),
+                )
+            })
             .collect();
-        body.push_str(&Chart::new("Supply over time", "cumulative coins minted, per block height", pts).render());
+        body.push_str(
+            &Chart::new(
+                "Supply over time",
+                "cumulative coins minted, per block height",
+                pts,
+            )
+            .render(),
+        );
     }
     // Top holders (reuse the rich list).
     let top = idx.richlist(20).unwrap_or_default();
@@ -759,7 +869,10 @@ fn market_page(idx: &mut Indexer) -> String {
     body.push_str(&format!(
         "<h2>Largest balances</h2><p class=dim>unspent outputs only — exchange and pool wallets dominate by construction</p><table><tr><th>#</th><th>address</th><th>balance</th></tr>{rows}</table>"
     ));
-    html_page("supply", format!("{}{}{}", search_box(), node_banner(idx), body))
+    html_page(
+        "supply",
+        format!("{}{}{}", search_box(), node_banner(idx), body),
+    )
 }
 
 /// Seasonal division boards (doc 03 §3.3: phones race phones), as last
@@ -842,7 +955,8 @@ fn mempool_page(idx: &mut Indexer) -> String {
     let mp = idx.mempool().unwrap_or(serde_json::json!({}));
     let entries = mp["entries"].as_array().cloned().unwrap_or_default();
     let rows = if entries.is_empty() {
-        "<tr><td colspan=5 class=dim>mempool empty — everything indexed is confirmed</td></tr>".to_string()
+        "<tr><td colspan=5 class=dim>mempool empty — everything indexed is confirmed</td></tr>"
+            .to_string()
     } else {
         entries
             .iter()
@@ -936,7 +1050,10 @@ fn block_page(idx: &Indexer, b: &serde_json::Value) -> String {
         let fact = idx.tx_facts(t);
         let (size, rate) = match fact {
             Some((sz, _fee, r)) => (format!("{sz} B"), format!("{r:.2}")),
-            None => ("<span class=dim>–</span>".to_string(), "<span class=dim>–</span>".to_string()),
+            None => (
+                "<span class=dim>–</span>".to_string(),
+                "<span class=dim>–</span>".to_string(),
+            ),
         };
         rows += &format!(
             "<tr><td>{}</td><td>{}</td><td>{}</td></tr>",
@@ -970,8 +1087,16 @@ fn block_page(idx: &Indexer, b: &serde_json::Value) -> String {
     let tip = idx.height().unwrap_or(h);
     let nav = format!(
         "<div class=dim style=\"margin:12px 0\"><a href=/blocks>&laquo; all blocks</a>{}{}</div>",
-        if h > 0 { format!(" · <a href=/block/{}>&laquo; prev</a>", h - 1) } else { String::new() },
-        if h < tip { format!(" · <a href=/block/{}>next &raquo;</a>", h + 1) } else { String::new() },
+        if h > 0 {
+            format!(" · <a href=/block/{}>&laquo; prev</a>", h - 1)
+        } else {
+            String::new()
+        },
+        if h < tip {
+            format!(" · <a href=/block/{}>next &raquo;</a>", h + 1)
+        } else {
+            String::new()
+        },
     );
     html_page(
         &format!("block {h}"),
@@ -1009,7 +1134,13 @@ fn tx_page(_idx: &Indexer, t: &serde_json::Value) -> String {
     if t["coinbase"].as_bool().unwrap_or(false) {
         ins = "<tr><td colspan=3>coinbase (newly minted)</td></tr>".to_string();
     } else {
-        for (n, v) in t["vin"].as_array().cloned().unwrap_or_default().iter().enumerate() {
+        for (n, v) in t["vin"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+            .iter()
+            .enumerate()
+        {
             ins += &format!(
                 "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
                 n,
@@ -1020,7 +1151,13 @@ fn tx_page(_idx: &Indexer, t: &serde_json::Value) -> String {
         }
     }
     let mut outs = String::new();
-    for (n, v) in t["vout"].as_array().cloned().unwrap_or_default().iter().enumerate() {
+    for (n, v) in t["vout"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .iter()
+        .enumerate()
+    {
         let state = match v.get("spent_by").and_then(|s| s.as_str()) {
             Some(spender) => format!("<a href=/tx/{spender}>spent →</a>"),
             None => "unspent".to_string(),
@@ -1084,12 +1221,18 @@ fn address_page(a: &serde_json::Value, page: i64) -> String {
     // Paging: 100 newest-first rows per page; deep pages carry ?page=N.
     let pages = a["pages"].as_i64().unwrap_or(1).max(1);
     let prev = if page > 0 {
-        format!("<a href=\"/address/{addr}?page={}\">&laquo; newer</a> ", page - 1)
+        format!(
+            "<a href=\"/address/{addr}?page={}\">&laquo; newer</a> ",
+            page - 1
+        )
     } else {
         String::new()
     };
     let next = if page + 1 < pages {
-        format!(" <a href=\"/address/{addr}?page={}\">older &raquo;</a>", page + 1)
+        format!(
+            " <a href=\"/address/{addr}?page={}\">older &raquo;</a>",
+            page + 1
+        )
     } else {
         String::new()
     };
@@ -1102,9 +1245,8 @@ fn address_page(a: &serde_json::Value, page: i64) -> String {
         String::new()
     };
     let addr_html = esc(addr);
-    let copy = format!(
-        " <button onclick=\"navigator.clipboard.writeText('{addr}')\">copy</button>"
-    );
+    let copy =
+        format!(" <button onclick=\"navigator.clipboard.writeText('{addr}')\">copy</button>");
     let mut utxos = String::new();
     for u in a["utxos"].as_array().cloned().unwrap_or_default() {
         utxos += &format!(
@@ -1149,7 +1291,10 @@ fn address_page(a: &serde_json::Value, page: i64) -> String {
 
 fn not_found(what: &str) -> String {
     html_resp_status(
-        &html_page("not found", format!("<p>Unknown {what}. {}</p>", search_box())),
+        &html_page(
+            "not found",
+            format!("<p>Unknown {what}. {}</p>", search_box()),
+        ),
         "404 Not Found",
     )
 }
@@ -1177,7 +1322,9 @@ fn json_404() -> String {
 /// built from validated input only (block digits, hex ids, or
 /// shape-checked addresses), so no user bytes can break the header.
 fn redirect(to: &str) -> String {
-    format!("HTTP/1.1 302 Found\r\nLocation: {to}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+    format!(
+        "HTTP/1.1 302 Found\r\nLocation: {to}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+    )
 }
 
 fn html_resp(body: &str) -> String {
@@ -1194,12 +1341,20 @@ fn html_resp_status(body: &str, status: &str) -> String {
 
 fn err404() -> String {
     let body = "not found";
-    format!("HTTP/1.1 404 Not Found\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body)
+    format!(
+        "HTTP/1.1 404 Not Found\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        body.len(),
+        body
+    )
 }
 
 fn err500() -> String {
     let body = "index unavailable";
-    format!("HTTP/1.1 500 Internal Server Error\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body)
+    format!(
+        "HTTP/1.1 500 Internal Server Error\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        body.len(),
+        body
+    )
 }
 
 fn resolve_block(idx: &Indexer, key: &str) -> Option<serde_json::Value> {
@@ -1269,7 +1424,10 @@ fn handle(idx: &mut Indexer, method: &str, path: &str) -> String {
             .and_then(|v| v.parse::<i64>().ok())
             .unwrap_or(30)
             .clamp(1, 3650);
-        return json_resp(&idx.daily_series(days).unwrap_or(serde_json::json!({"days": []})));
+        return json_resp(
+            &idx.daily_series(days)
+                .unwrap_or(serde_json::json!({"days": []})),
+        );
     }
     if route == "/api/market" {
         return json_resp(&idx.market().unwrap_or(serde_json::json!({})));
@@ -1357,7 +1515,9 @@ fn handle(idx: &mut Indexer, method: &str, path: &str) -> String {
         // History pages: ?page=N, 100 newest-first rows each. Page 0 is
         // the default view; deeper pages need the explicit query.
         let page = query_page(query);
-        let a = idx.address_paged(key, page).unwrap_or(serde_json::json!({"address": key, "balance": 0, "received": 0, "txs": []}));
+        let a = idx
+            .address_paged(key, page)
+            .unwrap_or(serde_json::json!({"address": key, "balance": 0, "received": 0, "txs": []}));
         if json {
             return json_resp(&a);
         }
@@ -1384,7 +1544,9 @@ fn handle(idx: &mut Indexer, method: &str, path: &str) -> String {
             }
         }
         if json || route == "/api/blocks" {
-            return json_resp(&serde_json::json!({"tip": tip, "page": page, "per_page": per, "blocks": list}));
+            return json_resp(
+                &serde_json::json!({"tip": tip, "page": page, "per_page": per, "blocks": list}),
+            );
         }
         return html_resp(&blocks_page(&list, page, tip, per, &cb));
     }
@@ -1511,7 +1673,10 @@ mod tests {
     fn search_redirects_valid_input_and_rejects_garbage() {
         let (mut idx, dir) = test_indexer("explorer-http-search-test.db");
         let r = handle(&mut idx, "GET", "/search?q=12");
-        assert!(r.starts_with("HTTP/1.1 302") && r.contains("Location: /block/12"), "height: {r:.60}");
+        assert!(
+            r.starts_with("HTTP/1.1 302") && r.contains("Location: /block/12"),
+            "height: {r:.60}"
+        );
         let r = handle(&mut idx, "GET", "/search?q=hello");
         assert!(r.starts_with("HTTP/1.1 404"), "garbage: {r:.40}");
         // Valid-shaped but unknown address: redirect to its (empty, with
@@ -1519,7 +1684,9 @@ mod tests {
         let shaped = format!("m{}", "1".repeat(33));
         assert_eq!(shaped.len(), 34);
         let r = handle(&mut idx, "GET", &format!("/search?q={shaped}"));
-        assert!(r.starts_with("HTTP/1.1 302") && r.contains(&format!("Location: /address/{shaped}")));
+        assert!(
+            r.starts_with("HTTP/1.1 302") && r.contains(&format!("Location: /address/{shaped}"))
+        );
         // Unknown 64-hex is neither block nor tx: 404, not an address page.
         let r = handle(&mut idx, "GET", &format!("/search?q={}", "a".repeat(64)));
         assert!(r.starts_with("HTTP/1.1 404"), "hex: {r:.40}");
@@ -1578,8 +1745,14 @@ mod nav_tests {
         let (mut idx, dir) = idx_with_blocks("explorer-nav-block.db", 3);
         let r = handle(&mut idx, "GET", "/block/1");
         assert!(r.starts_with("HTTP/1.1 200"));
-        assert!(r.contains("action=/search"), "search on block page: {r:.300}");
-        assert!(r.contains("href=/block/0") && r.contains("href=/block/2"), "prev/next");
+        assert!(
+            r.contains("action=/search"),
+            "search on block page: {r:.300}"
+        );
+        assert!(
+            r.contains("href=/block/0") && r.contains("href=/block/2"),
+            "prev/next"
+        );
         assert!(r.contains("href=/blocks"), "back to index");
         let _ = std::fs::remove_file(&dir);
     }
@@ -1601,7 +1774,10 @@ mod nav_tests {
         assert!(p0.contains("page 1 of 2"), "pager visible");
         assert!(p0.contains("href=\"/address/") && p0.contains("page=1"));
         let p1 = handle(&mut idx, "GET", &format!("/address/{addr}?page=1"));
-        assert!(p1.contains("page 2 of 2") && p1.contains("page=0"), "prev link");
+        assert!(
+            p1.contains("page 2 of 2") && p1.contains("page=0"),
+            "prev link"
+        );
         let api0 = handle(&mut idx, "GET", &format!("/api/address/{addr}?page=1"));
         assert!(api0.contains("\"page\":1"));
         let _ = std::fs::remove_file(&dir);
@@ -1641,7 +1817,10 @@ mod presentation_tests {
         assert!(crate::http::CSS.contains("overflow-wrap:anywhere"));
         assert!(crate::http::CSS.contains("@media (max-width:640px)"));
         let html = crate::http::html_page("block 7", "x".into());
-        assert!(html.contains("<title>block 7 · Lucky Lode explorer</title>"), "{html:.200}");
+        assert!(
+            html.contains("<title>block 7 · Lucky Lode explorer</title>"),
+            "{html:.200}"
+        );
         // Outage banner is part of the chrome helpers.
         assert!(crate::http::CSS.contains(".warnbox"));
     }
@@ -1708,7 +1887,10 @@ mod extras_tests {
         let r = handle(&mut i, "GET", &format!("/address/{a}"));
         assert!(r.contains("total sent"), "sent row");
         assert!(r.contains("0.3 tLKYL"), "sent value: {r:.400}");
-        assert!(r.contains("Unspent outputs") && r.contains("0.5 tLKYL"), "utxo view");
+        assert!(
+            r.contains("Unspent outputs") && r.contains("0.5 tLKYL"),
+            "utxo view"
+        );
         assert!(r.contains("navigator.clipboard"), "copy button");
         let _ = std::fs::remove_file(&dir);
     }

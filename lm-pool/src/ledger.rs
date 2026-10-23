@@ -166,7 +166,11 @@ impl Ledger {
     /// [`SHARE_RETENTION_SECS`] relative to the newest submission.
     pub fn submit(&mut self, rec: ShareRec) {
         let miner = rec.miner.clone();
-        let cb = self.comeback.entry(miner.clone()).or_default().weight_for(rec.ts);
+        let cb = self
+            .comeback
+            .entry(miner.clone())
+            .or_default()
+            .weight_for(rec.ts);
         let day = day_index(rec.ts);
         let days = self.days.entry(miner.clone()).or_default();
         match days.last().copied() {
@@ -183,7 +187,10 @@ impl Ledger {
             *seen = rec.ts;
         }
         let cutoff = rec.ts.saturating_sub(SHARE_RETENTION_SECS);
-        self.shares.push_back(StoredShare { rec, comeback_pm: cb });
+        self.shares.push_back(StoredShare {
+            rec,
+            comeback_pm: cb,
+        });
         // Append order ≈ time order, so the oldest records sit at the
         // front; prune against the newest submission.
         while let Some(front) = self.shares.front() {
@@ -253,8 +260,7 @@ impl Ledger {
                 e.class_work = e.class_work.saturating_add(r.work);
             }
             let ov = if r.overnight { OVERNIGHT_PERMILLE } else { 0 };
-            e.eff_sum += r.work as u128 * (1000 + ov) as u128
-                * (1000 + stored.comeback_pm) as u128
+            e.eff_sum += r.work as u128 * (1000 + ov) as u128 * (1000 + stored.comeback_pm) as u128
                 / 1_000_000;
         }
         let empty: Vec<u64> = Vec::new();
@@ -268,7 +274,8 @@ impl Ledger {
             let mut window_days = e.window_days;
             window_days.sort_unstable();
             window_days.dedup();
-            let eff_work = (e.eff_sum * (1000 + streak_pm) as u128 / 1000).min(u64::MAX as u128) as u64;
+            let eff_work =
+                (e.eff_sum * (1000 + streak_pm) as u128 / 1000).min(u64::MAX as u128) as u64;
             // Sustained trailing-24h rate. The ledger resolves the
             // rate-implied family only; the pool server re-resolves the
             // display division with the miner's declared agent
@@ -297,7 +304,10 @@ impl Ledger {
         let shares: Vec<Share> = self
             .aggregate(window_secs, now_ts)
             .into_iter()
-            .map(|a| Share { miner: a.miner, shares: a.eff_work })
+            .map(|a| Share {
+                miner: a.miner,
+                shares: a.eff_work,
+            })
             .collect();
         split_jackpot(&shares, bonus)
     }
@@ -308,7 +318,10 @@ impl Ledger {
         let shares: Vec<Share> = self
             .aggregate_shares(n, now_ts)
             .into_iter()
-            .map(|a| Share { miner: a.miner, shares: a.eff_work })
+            .map(|a| Share {
+                miner: a.miner,
+                shares: a.eff_work,
+            })
             .collect();
         split_jackpot(&shares, bonus)
     }
@@ -342,7 +355,12 @@ mod tests {
     const D: u64 = DAY_SECS;
 
     fn rec(miner: &str, day: u64, work: u64) -> ShareRec {
-        ShareRec { miner: miner.to_string(), ts: day * D + 100, work, overnight: false }
+        ShareRec {
+            miner: miner.to_string(),
+            ts: day * D + 100,
+            work,
+            overnight: false,
+        }
     }
 
     #[test]
@@ -366,7 +384,11 @@ mod tests {
         assert_eq!(agg[0].miner, "m1");
         let agg = l.aggregate_shares(2, 2 * D);
         let miners: Vec<String> = agg.iter().map(|a| a.miner.clone()).collect();
-        assert_eq!(miners, vec!["m1".to_string(), "m2".to_string()], "last two shares, both miners");
+        assert_eq!(
+            miners,
+            vec!["m1".to_string(), "m2".to_string()],
+            "last two shares, both miners"
+        );
     }
 
     #[test]
@@ -378,7 +400,10 @@ mod tests {
         }
         let agg = l.aggregate_shares(5, 2 * D);
         assert_eq!(agg.len(), 1);
-        assert_eq!(agg[0].miner, "m2", "5 newer shares pushed the stopped miner out");
+        assert_eq!(
+            agg[0].miner, "m2",
+            "5 newer shares pushed the stopped miner out"
+        );
     }
 
     #[test]
@@ -412,7 +437,12 @@ mod tests {
     #[test]
     fn overnight_flag_weights_share() {
         let mut l = Ledger::new();
-        l.submit(ShareRec { miner: "m1".to_string(), ts: 5 * D, work: 1000, overnight: true });
+        l.submit(ShareRec {
+            miner: "m1".to_string(),
+            ts: 5 * D,
+            work: 1000,
+            overnight: true,
+        });
         l.submit(rec("m2", 5, 1000));
         let agg = l.aggregate(3 * D, 5 * D + 200);
         // Overnight: 1000 × 1.05 × streak(1d → 1.01) = 1060. Plain: 1010.
@@ -439,13 +469,17 @@ mod tests {
     fn farms_are_ranked_but_flagged() {
         let mut l = Ledger::new();
         // 600 MH/s sustained over the class window: farm territory.
-        l.submit(ShareRec { miner: "m9".to_string(), ts: 9 * D, work: 600_000_000 * D, overnight: false });
+        l.submit(ShareRec {
+            miner: "m9".to_string(),
+            ts: 9 * D,
+            work: 600_000_000 * D,
+            overnight: false,
+        });
         l.submit(rec("m1", 9, 1000));
         let board = l.leaderboard(3 * D, 9 * D + 200);
         assert_eq!(board[0].miner, "m9"); // still ranked…
         assert_eq!(board[0].class, DeviceFamily::Farm); // …but flagged
     }
-
 
     #[test]
     fn streaks_serve_full_history_without_a_window() {
@@ -464,9 +498,23 @@ mod tests {
         let out = l.streaks(18 * D + 100);
         assert_eq!(out.len(), 2);
         assert_eq!(out[0].miner, "m1");
-        assert_eq!((out[0].days_active, out[0].streak_days, out[0].best_streak_days), (6, 1, 5));
+        assert_eq!(
+            (
+                out[0].days_active,
+                out[0].streak_days,
+                out[0].best_streak_days
+            ),
+            (6, 1, 5)
+        );
         assert_eq!(out[1].miner, "m2");
-        assert_eq!((out[1].days_active, out[1].streak_days, out[1].best_streak_days), (4, 0, 4));
+        assert_eq!(
+            (
+                out[1].days_active,
+                out[1].streak_days,
+                out[1].best_streak_days
+            ),
+            (4, 0, 4)
+        );
     }
 
     #[test]
@@ -498,7 +546,7 @@ mod tests {
         let agg = l.aggregate(3 * D, 80 * D + 200);
         assert_eq!(agg[0].streak_days, 80);
         assert_eq!(agg[0].streak_per_mille, 300); // capped at +30%
-        // 3-day window: days 78..=80. 3 × 100 × 1.30 = 390.
+                                                  // 3-day window: days 78..=80. 3 × 100 × 1.30 = 390.
         assert_eq!(agg[0].raw_work, 300);
         assert_eq!(agg[0].eff_work, 390);
         assert_eq!(agg[0].days_active, 3);
@@ -535,7 +583,10 @@ mod tests {
             with_ancient.submit(rec("m2", d, 33));
         }
         let now = 40 * D + 200;
-        assert_eq!(bare.aggregate(3 * D, now), with_ancient.aggregate(3 * D, now));
+        assert_eq!(
+            bare.aggregate(3 * D, now),
+            with_ancient.aggregate(3 * D, now)
+        );
         assert_eq!(
             bare.jackpot_payout(1_000_003, 3 * D, now),
             with_ancient.jackpot_payout(1_000_003, 3 * D, now)
@@ -573,8 +624,14 @@ mod tests {
         assert_eq!(arms.len(), 2);
         assert_eq!((arms[0].0, arms[0].1.miner.as_str()), (1, "a1"));
         assert_eq!((arms[1].0, arms[1].1.miner.as_str()), (2, "a2"));
-        assert_eq!((ranked[1].1[0].0, ranked[1].1[0].1.miner.as_str()), (1, "c1"));
-        assert_eq!((ranked[3].1[0].0, ranked[3].1[0].1.miner.as_str()), (1, "f1"));
+        assert_eq!(
+            (ranked[1].1[0].0, ranked[1].1[0].1.miner.as_str()),
+            (1, "c1")
+        );
+        assert_eq!(
+            (ranked[3].1[0].0, ranked[3].1[0].1.miner.as_str()),
+            (1, "f1")
+        );
         // Empty families stay present so callers render stable sections.
         assert!(rank_by_division(Vec::new())[2].1.is_empty());
     }

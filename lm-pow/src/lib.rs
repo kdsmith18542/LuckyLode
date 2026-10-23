@@ -96,7 +96,11 @@ pub fn pow_full(header: &[u8], nonce: u64, height: u64) -> FullHash {
         .hash_password_into(&seed, &salt, &mut mem)
         .expect("fixed params; inputs always valid");
 
-    FullHash { seed, mem, out: final_digest(&seed, &mem) }
+    FullHash {
+        seed,
+        mem,
+        out: final_digest(&seed, &mem),
+    }
 }
 
 /// Final digest only (the hot path for miners and verifiers).

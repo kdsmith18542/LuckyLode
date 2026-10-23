@@ -136,9 +136,7 @@ impl Config {
             // loads (this is how the Advanced password field "cleared
             // itself" — any save with an empty password wiped it).
             let stored = keyring_store(&for_disk.rpc_pass);
-            if stored
-                && keyring_load().as_deref() == Some(for_disk.rpc_pass.as_str())
-            {
+            if stored && keyring_load().as_deref() == Some(for_disk.rpc_pass.as_str()) {
                 for_disk.rpc_pass = KEYRING_SENTINEL.to_string();
             }
         }
@@ -232,7 +230,10 @@ mod tests {
         let on_disk: Config =
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert_ne!(on_disk.rpc_pass, KEYRING_SENTINEL, "empty must stay empty");
-        assert!(!path.with_extension("tmp").exists(), "no tmp file left behind");
+        assert!(
+            !path.with_extension("tmp").exists(),
+            "no tmp file left behind"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -259,7 +260,10 @@ mod tests {
         cfg.save(&path).expect("save");
         let on_disk: Config =
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        assert_eq!(on_disk.rpc_pass, KEYRING_SENTINEL, "file must not carry the password");
+        assert_eq!(
+            on_disk.rpc_pass, KEYRING_SENTINEL,
+            "file must not carry the password"
+        );
         let loaded = Config::load(&path);
         assert_eq!(loaded.rpc_pass, secret, "load resolves the keyring entry");
         let _ = std::fs::remove_dir_all(&dir);

@@ -40,7 +40,10 @@ fn main() -> Result<(), String> {
         return Ok(());
     }
     if args.len() != 8 {
-        return Err("usage: regtest_spend <rpc> <user> <pass> <fund_txid> <fund_vout> <dest> <amount_sats>".to_string());
+        return Err(
+            "usage: regtest_spend <rpc> <user> <pass> <fund_txid> <fund_vout> <dest> <amount_sats>"
+                .to_string(),
+        );
     }
     let rpc = RpcClient::from_url(&args[1], &args[2], &args[3]).map_err(|e| e.to_string())?;
     let vout: u32 = args[5].parse().map_err(|_| "bad vout")?;
@@ -73,8 +76,18 @@ fn main() -> Result<(), String> {
     };
     let dest_script = addr_to_p2pkh_script(&args[6], net)?;
     let change_script = kp.p2pkh_script(net);
-    let spend = build_spend(&[utxo], &dest_script, amount, &change_script, DEFAULT_FEE_RATE_SAT_PER_KB, Epoch::Sprout)?;
-    println!("spend {} fee={} change={}", spend.txid, spend.fee, spend.change);
+    let spend = build_spend(
+        &[utxo],
+        &dest_script,
+        amount,
+        &change_script,
+        DEFAULT_FEE_RATE_SAT_PER_KB,
+        Epoch::Sprout,
+    )?;
+    println!(
+        "spend {} fee={} change={}",
+        spend.txid, spend.fee, spend.change
+    );
     let txid: serde_json::Value = rpc
         .call("sendrawtransaction", serde_json::json!([spend.hex]))
         .map_err(|e| format!("sendrawtransaction REJECTED: {e}"))?;

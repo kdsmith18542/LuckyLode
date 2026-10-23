@@ -9,7 +9,11 @@ fn version_and_help() {
             .arg(arg)
             .output()
             .expect("run explorer");
-        assert!(out.status.success(), "{arg}: {}", String::from_utf8_lossy(&out.stderr));
+        assert!(
+            out.status.success(),
+            "{arg}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
     }
     let out = Command::new(env!("CARGO_BIN_EXE_explorer"))
         .arg("--version")

@@ -153,7 +153,11 @@ pub fn apply_pot_block(
     let credited_reserve = reserve
         .checked_add(to_reserve)
         .expect("invariant: reserve credit stays under the cap");
-    let jackpot = if draws.jackpot { jackpot_bonus(base, credited_reserve) } else { 0 };
+    let jackpot = if draws.jackpot {
+        jackpot_bonus(base, credited_reserve)
+    } else {
+        0
+    };
 
     // Pot leg (cap-overflow burns instead of feeding the prize fund).
     let pcap = pot_cap(base);
@@ -193,7 +197,11 @@ pub fn apply_pot_block(
         pot: credited_pot
             .checked_sub(splash)
             .expect("invariant: splash debit covered by the credit"),
-        drought: if pot_event { 0 } else { state.drought.saturating_add(1) },
+        drought: if pot_event {
+            0
+        } else {
+            state.drought.saturating_add(1)
+        },
         pot_event,
         pity,
     }
@@ -204,11 +212,21 @@ mod tests {
     use super::*;
 
     fn draws(pot_event: bool, tier: u64) -> BlockDraws {
-        BlockDraws { jackpot: false, pot_event, tier, is_pow: true }
+        BlockDraws {
+            jackpot: false,
+            pot_event,
+            tier,
+            is_pow: true,
+        }
     }
 
     fn pos_draws() -> BlockDraws {
-        BlockDraws { jackpot: false, pot_event: false, tier: 0, is_pow: false }
+        BlockDraws {
+            jackpot: false,
+            pot_event: false,
+            tier: 0,
+            is_pow: false,
+        }
     }
 
     #[test]
@@ -247,14 +265,20 @@ mod tests {
     #[test]
     fn cap_overflow_burns_instead_of_hoarding() {
         let cap = pot_cap(100); // 20_000
-        // Slice that fits: all credited, nothing burned.
-        let state = PotState { pot: cap - 3, drought: 0 };
+                                // Slice that fits: all credited, nothing burned.
+        let state = PotState {
+            pot: cap - 3,
+            drought: 0,
+        };
         let p = apply_pot_block(0, state, 100, 0, draws(false, 0));
         assert_eq!(p.to_pot, 1); // levy 5 → pot slice 1
         assert_eq!(p.to_burn, 0);
         assert_eq!(p.pot, cap - 3 + 1);
         // Slice that breaches: pot fills, rest burns.
-        let state = PotState { pot: cap, drought: 0 };
+        let state = PotState {
+            pot: cap,
+            drought: 0,
+        };
         let p = apply_pot_block(0, state, 100, 20, draws(false, 0));
         assert_eq!(p.to_pot, 0);
         assert_eq!(p.to_burn, 1); // levy 6 → pot slice 1, no room
@@ -265,21 +289,30 @@ mod tests {
     fn pity_forces_tier_a_after_the_drought_limit() {
         let pot = 1_000_000u64;
         let cap = pot_cap(80_000_000); // far above the pot: no burn
-        // One under the limit: nothing forced, drought advances.
-        let state = PotState { pot, drought: POT_DROUGHT_LIMIT - 1 };
+                                       // One under the limit: nothing forced, drought advances.
+        let state = PotState {
+            pot,
+            drought: POT_DROUGHT_LIMIT - 1,
+        };
         let p = apply_pot_block(0, state, 80_000_000, 0, draws(false, 99));
         assert!(!p.pot_event && !p.pity);
         assert_eq!(p.drought, POT_DROUGHT_LIMIT);
         assert_eq!(p.pot_splash, 0);
         // At the limit: tier-A splash, drought resets.
-        let state = PotState { pot: p.pot, drought: p.drought };
+        let state = PotState {
+            pot: p.pot,
+            drought: p.drought,
+        };
         let p2 = apply_pot_block(0, state, 80_000_000, 0, draws(false, 99));
         assert!(p2.pot_event && p2.pity);
         assert_eq!(p2.drought, 0);
         // 10% of (pot + this block's slice) — slice is 800k at R+F=80M.
         assert_eq!(p2.pot_splash, (p.pot + 800_000) / 10);
         // A digest event resets the run without pity.
-        let state = PotState { pot, drought: POT_DROUGHT_LIMIT };
+        let state = PotState {
+            pot,
+            drought: POT_DROUGHT_LIMIT,
+        };
         let p3 = apply_pot_block(0, state, 80_000_000, 0, draws(true, 95));
         assert!(p3.pot_event && !p3.pity);
         assert_eq!(p3.drought, 0);
@@ -297,7 +330,12 @@ mod tests {
             PotState::default(),
             80_000_000,
             0,
-            BlockDraws { jackpot: true, pot_event: false, tier: 0, is_pow: true },
+            BlockDraws {
+                jackpot: true,
+                pot_event: false,
+                tier: 0,
+                is_pow: true,
+            },
         );
         assert_eq!(p.to_reserve, 3_200_000);
         assert_eq!(p.to_pot, 800_000);
@@ -314,7 +352,10 @@ mod tests {
         // The block's own levy slice (800k at R+F=80M) credits first, then
         // the tier fraction applies to the credited pot.
         let seed = 4_200_000_000u64; // 1%-of-year-one reference size
-        let state = PotState { pot: seed, drought: 0 };
+        let state = PotState {
+            pot: seed,
+            drought: 0,
+        };
         let credited = seed + 800_000;
         let p = apply_pot_block(0, state, 80_000_000, 0, draws(true, 99));
         assert_eq!(p.to_pot, 800_000);
@@ -336,9 +377,15 @@ mod tests {
         ];
         for &(reserve, pot, drought, base, fees) in &states {
             for jackpot in [false, true] {
-                for (event, tier) in [(false, 0u64), (true, 0), (true, 69), (true, 70), (true, 95)] {
+                for (event, tier) in [(false, 0u64), (true, 0), (true, 69), (true, 70), (true, 95)]
+                {
                     let state = PotState { pot, drought };
-                    let d = BlockDraws { jackpot, pot_event: event, tier, is_pow: true };
+                    let d = BlockDraws {
+                        jackpot,
+                        pot_event: event,
+                        tier,
+                        is_pow: true,
+                    };
                     let p = apply_pot_block(reserve, state, base, fees, d);
                     let inflow = base as u128 + fees as u128;
                     let outflow = p.miner as u128
@@ -362,7 +409,10 @@ mod tests {
         // Jackpots and pot payouts are PoW-finder-only — the forced splash
         // included. A PoS block at the drought limit pays nothing; the
         // drought keeps counting and the next PoW block collects.
-        let mut state = PotState { pot: 1_000_000, drought: 0 };
+        let mut state = PotState {
+            pot: 1_000_000,
+            drought: 0,
+        };
         let base = 80_000_000u64;
         let limit = POT_DROUGHT_LIMIT;
         // Fill the drought with event-less PoW blocks.
@@ -396,7 +446,10 @@ mod tests {
         // 0/70/95, jackpot every 500th. Conservation every step, pot and
         // reserve bounded by their caps.
         let mut reserve = 0u64;
-        let mut state = PotState { pot: 4_200_000_000, drought: 0 };
+        let mut state = PotState {
+            pot: 4_200_000_000,
+            drought: 0,
+        };
         let mut splashes = 0u64;
         let mut jackpots = 0u64;
         for h in 1..=10_000u64 {
@@ -408,7 +461,9 @@ mod tests {
             };
             let p = apply_pot_block(reserve, state, 80_000_000, 0, d);
             let inflow = 80_000_000u128;
-            let outflow = p.miner as u128 + p.reserve as u128 + p.pot as u128
+            let outflow = p.miner as u128
+                + p.reserve as u128
+                + p.pot as u128
                 + p.to_prize as u128
                 + p.to_burn as u128
                 - reserve as u128
@@ -426,7 +481,10 @@ mod tests {
                 jackpots += 1;
             }
             reserve = p.reserve;
-            state = PotState { pot: p.pot, drought: p.drought };
+            state = PotState {
+                pot: p.pot,
+                drought: p.drought,
+            };
         }
         assert_eq!((splashes, jackpots), (10, 20));
     }
@@ -435,7 +493,10 @@ mod tests {
     fn drought_run_never_exceeds_limit() {
         // No digest events at all: the pity timer must fire on exactly the
         // limit-th block, every time.
-        let mut state = PotState { pot: 1_000_000, drought: 0 };
+        let mut state = PotState {
+            pot: 1_000_000,
+            drought: 0,
+        };
         let mut forced_at = Vec::new();
         for h in 1..=40_000u64 {
             let p = apply_pot_block(0, state, 0, 0, draws(false, 0));
@@ -445,9 +506,15 @@ mod tests {
                 assert_eq!(p.pot_splash, state.pot / 10, "height={h}");
                 assert_eq!(p.drought, 0);
             }
-            state = PotState { pot: p.pot, drought: p.drought };
+            state = PotState {
+                pot: p.pot,
+                drought: p.drought,
+            };
         }
-        let expected: Vec<u64> = (1..).map(|k| k * (POT_DROUGHT_LIMIT + 1)).take_while(|&x| x <= 40_000).collect();
+        let expected: Vec<u64> = (1..)
+            .map(|k| k * (POT_DROUGHT_LIMIT + 1))
+            .take_while(|&x| x <= 40_000)
+            .collect();
         assert_eq!(forced_at, expected);
     }
 }

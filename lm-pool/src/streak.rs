@@ -71,7 +71,9 @@ pub fn current_streak(days: &[u64], last_ts: u64, now_ts: u64) -> u32 {
 /// Streak weight per-mille for a streak length: `min(days, 30) * 10`.
 #[must_use]
 pub fn streak_bonus_per_mille(streak_days: u32) -> u64 {
-    (streak_days.min(30) as u64).saturating_mul(STREAK_PER_DAY_PERMILLE).min(STREAK_CAP_PERMILLE)
+    (streak_days.min(30) as u64)
+        .saturating_mul(STREAK_PER_DAY_PERMILLE)
+        .min(STREAK_CAP_PERMILLE)
 }
 
 /// Comeback state machine over a miner's time-ordered share stream: tracks
@@ -169,7 +171,10 @@ mod tests {
     fn gap_boundary_resets_exactly_at_48h() {
         let days = vec![20, 21, 22];
         let last = 22 * D + 500;
-        assert_eq!(current_streak(&days, last, last + STREAK_RESET_GAP_SECS - 1), 3);
+        assert_eq!(
+            current_streak(&days, last, last + STREAK_RESET_GAP_SECS - 1),
+            3
+        );
         assert_eq!(current_streak(&days, last, last + STREAK_RESET_GAP_SECS), 0);
     }
 
@@ -178,12 +183,12 @@ mod tests {
         let mut c = Comeback::new();
         assert_eq!(c.weight_for(1_000), 0); // first share ever: no history
         assert_eq!(c.weight_for(2_000), 0); // 1 s idle: routine
-        // 15 days idle: return share earns the boost and opens 7-day window.
+                                            // 15 days idle: return share earns the boost and opens 7-day window.
         let ret = 2_000 + 15 * D;
         assert_eq!(c.weight_for(ret), 100);
         assert_eq!(c.weight_for(ret + 3 * D), 100); // inside window
         assert_eq!(c.weight_for(ret + 7 * D), 0); // window end is exclusive
-        // Short idle afterwards: no new window.
+                                                  // Short idle afterwards: no new window.
         assert_eq!(c.weight_for(ret + 7 * D + 100), 0);
     }
 
@@ -217,8 +222,8 @@ mod tests {
         // state change — a later real share still sees the open window.
         assert_eq!(c.weight_for(5), 100); // inside the active window
         assert_eq!(c.weight_for(ret + 100), 100); // window still open
-        // The OLD share must NOT have reset prev_ts: the next share
-        // after the window closes is routine, not a fresh comeback.
+                                                  // The OLD share must NOT have reset prev_ts: the next share
+                                                  // after the window closes is routine, not a fresh comeback.
         assert_eq!(c.weight_for(ret + COMEBACK_WINDOW_SECS), 0);
         // And no phantom gap: consecutive routine shares stay 0.
         assert_eq!(c.weight_for(ret + COMEBACK_WINDOW_SECS + 10), 0);
@@ -251,4 +256,3 @@ mod tests {
         assert_eq!(c.weight_for(d(210)), 100); // another long lapse
     }
 }
-

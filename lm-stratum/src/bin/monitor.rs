@@ -206,7 +206,10 @@ fn main() -> ExitCode {
             }
             "--interval" => {
                 interval = next("interval")
-                    .and_then(|v| v.parse().map_err(|_| "--interval expects an integer".into()))
+                    .and_then(|v| {
+                        v.parse()
+                            .map_err(|_| "--interval expects an integer".into())
+                    })
                     .unwrap_or_else(|e| {
                         eprintln!("error: {e}");
                         std::process::exit(2);

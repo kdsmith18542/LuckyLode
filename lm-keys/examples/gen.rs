@@ -17,5 +17,8 @@ fn main() {
     let seed = phrase.seed();
     let k0 = receive_key(&seed, Network::Testnet, 0, 0).expect("receive key");
     println!("fresh phrase: {}", phrase.phrase());
-    println!("  m/44'/1'/0'/0/0 p2pkh: {}", k0.p2pkh_address(Network::Testnet));
+    println!(
+        "  m/44'/1'/0'/0/0 p2pkh: {}",
+        k0.p2pkh_address(Network::Testnet)
+    );
 }

@@ -959,8 +959,16 @@ mod tests {
     #[test]
     fn frame_header_kat() {
         // extension 0x0000, type 0x1a, payload [01 02 03] — pinned bytes.
-        let f = Frame::new(EXTENSION_TYPE_CORE, MSG_SUBMIT_SHARES_STANDARD, false, vec![1, 2, 3]);
-        assert_eq!(f.encode(), vec![0x00, 0x00, 0x1a, 0x03, 0x00, 0x00, 0x01, 0x02, 0x03]);
+        let f = Frame::new(
+            EXTENSION_TYPE_CORE,
+            MSG_SUBMIT_SHARES_STANDARD,
+            false,
+            vec![1, 2, 3],
+        );
+        assert_eq!(
+            f.encode(),
+            vec![0x00, 0x00, 0x1a, 0x03, 0x00, 0x00, 0x01, 0x02, 0x03]
+        );
         let (back, used) = Frame::decode(&f.encode()).expect("decode").expect("frame");
         assert_eq!(used, 9);
         assert_eq!(back, f);
@@ -988,14 +996,25 @@ mod tests {
 
     #[test]
     fn frame_reader_handles_split_and_batched_feeds() {
-        let a = Frame::new(EXTENSION_TYPE_CORE, MSG_SETUP_CONNECTION, false, vec![0xaa; 40]);
+        let a = Frame::new(
+            EXTENSION_TYPE_CORE,
+            MSG_SETUP_CONNECTION,
+            false,
+            vec![0xaa; 40],
+        );
         let b = Frame::new(EXTENSION_TYPE_CORE, MSG_SET_TARGET, true, vec![0xbb; 33]);
         let mut wire = a.encode();
         wire.extend_from_slice(&b.encode());
 
         // Split at every boundary that matters (header, mid-payload).
         let mut r = FrameReader::new();
-        for chunk in [&wire[..1], &wire[1..4], &wire[4..9], &wire[9..50], &wire[50..]] {
+        for chunk in [
+            &wire[..1],
+            &wire[1..4],
+            &wire[4..9],
+            &wire[9..50],
+            &wire[50..],
+        ] {
             r.feed(chunk);
         }
         assert_eq!(r.next_frame().expect("frame a"), Some(a));
@@ -1088,10 +1107,7 @@ mod tests {
         let f = future.to_frame();
         // option flag byte sits after channel_id + job_id.
         assert_eq!(f.payload[8], 0x00);
-        assert_eq!(
-            NewMiningJob::from_frame(&f).expect("future"),
-            future
-        );
+        assert_eq!(NewMiningJob::from_frame(&f).expect("future"), future);
         // Bad option discriminant is rejected.
         let mut bad = f.clone();
         bad.payload[8] = 2;
@@ -1125,13 +1141,19 @@ mod tests {
             new_submits_accepted_count: 10,
             new_shares_sum: 10_000_000_000,
         };
-        assert_eq!(SubmitSharesSuccess::from_frame(&s.to_frame()).expect("ok"), s);
+        assert_eq!(
+            SubmitSharesSuccess::from_frame(&s.to_frame()).expect("ok"),
+            s
+        );
         let e = SubmitSharesError {
             channel_id: 1,
             sequence_number: 11,
             error_code: "difficulty-too-low".to_string(),
         };
-        assert_eq!(SubmitSharesError::from_frame(&e.to_frame()).expect("err"), e);
+        assert_eq!(
+            SubmitSharesError::from_frame(&e.to_frame()).expect("err"),
+            e
+        );
     }
 
     #[test]
@@ -1268,10 +1290,7 @@ mod tests {
         assert_eq!(&sf.payload[..4], &1u32.to_le_bytes());
         assert_eq!(&sf.payload[4..8], &9u32.to_le_bytes());
         assert_eq!(&sf.payload[8..12], &3u32.to_le_bytes());
-        assert_eq!(
-            &sf.payload[12..20],
-            &0xdead_beef_1234_5678u64.to_le_bytes()
-        );
+        assert_eq!(&sf.payload[12..20], &0xdead_beef_1234_5678u64.to_le_bytes());
         assert_eq!(LuckySubmit::from_frame(&sf).expect("decode"), sub);
     }
 
@@ -1284,10 +1303,7 @@ mod tests {
         let f = e.to_frame();
         assert_eq!(f.msg_type, MSG_OPEN_MINING_CHANNEL_ERROR);
         assert!(!f.channel_msg());
-        assert_eq!(
-            OpenMiningChannelError::from_frame(&f).expect("decode"),
-            e
-        );
+        assert_eq!(OpenMiningChannelError::from_frame(&f).expect("decode"), e);
     }
 
     #[test]

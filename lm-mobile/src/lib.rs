@@ -74,17 +74,37 @@ pub extern "system" fn Java_cc_luckylode_miner_NativeCore_nativeSchedulerCreate0
     max_threads: jint,
 ) -> jlong {
     let cfg = Config {
-        temp_pause_deci: if pause_deci > 0 { pause_deci } else { Config::default().temp_pause_deci },
-        temp_resume_deci: if resume_deci > 0 { resume_deci } else { Config::default().temp_resume_deci },
-        derate_band_deci: if band_deci > 0 { band_deci } else { Config::default().derate_band_deci },
-        batt_floor_pct: if batt_floor > 0 { batt_floor as u8 } else { Config::default().batt_floor_pct },
+        temp_pause_deci: if pause_deci > 0 {
+            pause_deci
+        } else {
+            Config::default().temp_pause_deci
+        },
+        temp_resume_deci: if resume_deci > 0 {
+            resume_deci
+        } else {
+            Config::default().temp_resume_deci
+        },
+        derate_band_deci: if band_deci > 0 {
+            band_deci
+        } else {
+            Config::default().derate_band_deci
+        },
+        batt_floor_pct: if batt_floor > 0 {
+            batt_floor as u8
+        } else {
+            Config::default().batt_floor_pct
+        },
         charge_only: charge_only != 0,
         overnight: if overnight_start >= 0 && overnight_end >= 0 {
             Some((overnight_start as u8, overnight_end as u8))
         } else {
             None
         },
-        max_threads: if max_threads > 0 { max_threads as u8 } else { Config::default().max_threads },
+        max_threads: if max_threads > 0 {
+            max_threads as u8
+        } else {
+            Config::default().max_threads
+        },
     };
     match Scheduler::new(cfg) {
         // A degenerate config returns 0 (the Kotlin side treats that as
@@ -148,14 +168,24 @@ pub extern "system" fn Java_cc_luckylode_miner_NativeCore_nativePowHash0(
     nonce: jlong,
     height: jlong,
 ) -> jni::sys::jstring {
-    let header: String = env.get_string(&header_hex).map(|s| s.into()).unwrap_or_default();
+    let header: String = env
+        .get_string(&header_hex)
+        .map(|s| s.into())
+        .unwrap_or_default();
     let header = match hex::decode(header.trim()) {
         Ok(h) => h,
-        Err(_) => return env.new_string("").map(|s| s.into_raw()).unwrap_or(std::ptr::null_mut()),
+        Err(_) => {
+            return env
+                .new_string("")
+                .map(|s| s.into_raw())
+                .unwrap_or(std::ptr::null_mut())
+        }
     };
     let out = lm_pow::pow_hash(&header, nonce as u64, height as u64);
     let hex: String = out.iter().map(|b| format!("{b:02x}")).collect();
-    env.new_string(hex).map(|s| s.into_raw()).unwrap_or(std::ptr::null_mut())
+    env.new_string(hex)
+        .map(|s| s.into_raw())
+        .unwrap_or(std::ptr::null_mut())
 }
 
 /// The frozen scheduler vectors, run natively on the device: returns
@@ -304,7 +334,11 @@ pub extern "system" fn Java_cc_luckylode_miner_NativeCore_nativePoolStart0(
     let worker = jstring_arg(&mut env, worker);
     let password = {
         let p = jstring_arg(&mut env, password);
-        if p.is_empty() { "x".to_string() } else { p }
+        if p.is_empty() {
+            "x".to_string()
+        } else {
+            p
+        }
     };
     let use_v2 = v2 != 0;
     let authority = if use_v2 {
@@ -378,15 +412,21 @@ pub extern "system" fn Java_cc_luckylode_miner_NativeCore_nativePoolStats0(
                 let s = m.stats();
                 format!(
                     "{} {} {} {} {} {}",
-                    s.submitted, s.accepted, s.rejected, s.connected as u8,
-                    (s.hps * 10.0) as i64, s.last
+                    s.submitted,
+                    s.accepted,
+                    s.rejected,
+                    s.connected as u8,
+                    (s.hps * 10.0) as i64,
+                    s.last
                 )
             }
             None => "0 0 0 0 0 idle".to_string(),
         },
         Err(_) => "0 0 0 0 0 idle".to_string(),
     };
-    env.new_string(line).map(|s| s.into_raw()).unwrap_or(std::ptr::null_mut())
+    env.new_string(line)
+        .map(|s| s.into_raw())
+        .unwrap_or(std::ptr::null_mut())
 }
 
 #[cfg(test)]
@@ -396,10 +436,30 @@ mod tests {
     #[test]
     fn action_pack_roundtrip() {
         for a in [
-            Action { mine: true, threads: 8, reason: None, overnight_active: true },
-            Action { mine: false, threads: 0, reason: Some(Reason::Overheat), overnight_active: false },
-            Action { mine: false, threads: 0, reason: Some(Reason::LowBattery), overnight_active: true },
-            Action { mine: true, threads: 4, reason: Some(Reason::NoPower), overnight_active: false },
+            Action {
+                mine: true,
+                threads: 8,
+                reason: None,
+                overnight_active: true,
+            },
+            Action {
+                mine: false,
+                threads: 0,
+                reason: Some(Reason::Overheat),
+                overnight_active: false,
+            },
+            Action {
+                mine: false,
+                threads: 0,
+                reason: Some(Reason::LowBattery),
+                overnight_active: true,
+            },
+            Action {
+                mine: true,
+                threads: 4,
+                reason: Some(Reason::NoPower),
+                overnight_active: false,
+            },
         ] {
             assert_eq!(unpack_action(pack_action(&a)), a);
         }
@@ -407,7 +467,10 @@ mod tests {
 
     #[test]
     fn frozen_vectors_pass_natively() {
-        assert!(scheduler_selftest(), "the JNI self-test mirrors lm-sched's own suite");
+        assert!(
+            scheduler_selftest(),
+            "the JNI self-test mirrors lm-sched's own suite"
+        );
     }
 
     #[test]

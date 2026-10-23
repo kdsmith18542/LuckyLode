@@ -333,7 +333,10 @@ mod tests {
         t.restore_agents(&s.agents());
         t.restore_names(&s.names());
         let far = 100 + WORKER_HIDE_SECS + 1;
-        assert!(t.snapshot_visible(far).is_empty(), "restore must not revive rows");
+        assert!(
+            t.snapshot_visible(far).is_empty(),
+            "restore must not revive rows"
+        );
         assert_eq!(
             t.agents(),
             vec![("gpu-rig".to_string(), "lm-miner/0.2 opencl".to_string())]

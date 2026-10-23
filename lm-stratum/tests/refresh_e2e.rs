@@ -44,7 +44,9 @@ impl TemplateProvider for GatedProvider {
         let n = self.calls.fetch_add(1, Ordering::SeqCst);
         if n >= self.park_from {
             let (lock, cvar) = &*self.gate;
-            let mut open = lock.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut open = lock
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             while !*open {
                 open = cvar.wait(open).expect("gate wait");
             }
@@ -131,7 +133,9 @@ fn connection_threads_never_poll_the_provider() {
 
     // Release the parked refresh so the thread can exit on shutdown.
     let (lock, cvar) = &*gate;
-    *lock.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = true;
+    *lock
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = true;
     cvar.notify_all();
     server.stop();
 }
@@ -160,22 +164,22 @@ fn background_refresh_publishes_new_templates() {
                 draw_winner: String::new(),
             }
         }
-    fn submit_block(&mut self, _h: &[u8], _ht: u64, _n: u64) -> BlockOutcome {
-        BlockOutcome {
-            accepted: false,
-            out: [0u8; 32],
-            jackpot: false,
-            bonus: 0,
-            pot: 0,
-            faucet: 0,
-            dev: 0,
-            prize_inflow: 0,
-            prize_claim: 0,
-            prize_winner: String::new(),
-            reserve: 0,
-            coinbase: 0,
+        fn submit_block(&mut self, _h: &[u8], _ht: u64, _n: u64) -> BlockOutcome {
+            BlockOutcome {
+                accepted: false,
+                out: [0u8; 32],
+                jackpot: false,
+                bonus: 0,
+                pot: 0,
+                faucet: 0,
+                dev: 0,
+                prize_inflow: 0,
+                prize_claim: 0,
+                prize_winner: String::new(),
+                reserve: 0,
+                coinbase: 0,
+            }
         }
-    }
     }
 
     let calls = Arc::new(AtomicUsize::new(0));
@@ -186,7 +190,7 @@ fn background_refresh_publishes_new_templates() {
         "127.0.0.1:0",
         None,
         None,
-        None
+        None,
     )
     .expect("bind");
     let mut c = PoolClient::connect_patient(server.addr(), RPC_WAIT).expect("connect");
@@ -225,7 +229,10 @@ fn external_finds_credit_prize_without_pool_submit() {
     }
     impl TemplateProvider for ExternalChain {
         fn current(&self) -> JobTemplate {
-            let tip = *self.tip.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let tip = *self
+                .tip
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             JobTemplate {
                 // Distinct bytes per tip so each advance publishes.
                 header: vec![tip as u8; 80],
@@ -262,15 +269,10 @@ fn external_finds_credit_prize_without_pool_submit() {
     // it live) and require the exact advisory credit per height. The
     // feed is display-only (per-height inflow for the explorer); the sum
     // must still equal the node's advisories exactly.
-    let credited = || {
-        server
-            .prize_credits()
-            .iter()
-            .map(|(_, a)| a)
-            .sum::<u64>()
-    };
+    let credited = || server.prize_credits().iter().map(|(_, a)| a).sum::<u64>();
     for step in 1..=3u64 {
-        *tip.lock().unwrap_or_else(std::sync::PoisonError::into_inner) += 1;
+        *tip.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) += 1;
         let want = PER_HEIGHT * step;
         let deadline = std::time::Instant::now() + Duration::from_secs(15);
         loop {

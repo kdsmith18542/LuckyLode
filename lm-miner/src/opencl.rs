@@ -281,47 +281,47 @@ impl GpuDevice {
         })
     }
 
-/// Enumerate OpenCL devices as `(platform index, device index, name)` —
-/// what GUI pickers and `gpu-test` need without opening a context.
-/// Mirrors [`GpuDevice::open`]'s traversal (GPU kind first, then all kinds
-/// for odd iGPU drivers).
-pub fn list_devices() -> Vec<(usize, usize, String)> {
-    let mut out = Vec::new();
-    let mut n_platforms = 0u32;
-    if unsafe { clGetPlatformIDs(0, ptr::null_mut(), &mut n_platforms) } != CL_SUCCESS
-        || n_platforms == 0
-    {
-        return out;
-    }
-    let mut platforms = vec![ptr::null_mut(); n_platforms as usize];
-    if unsafe { clGetPlatformIDs(n_platforms, platforms.as_mut_ptr(), ptr::null_mut()) }
-        != CL_SUCCESS
-    {
-        return out;
-    }
-    for (p, platform) in platforms.iter().enumerate() {
-        for kind in [CL_DEVICE_TYPE_GPU, CL_DEVICE_TYPE_ALL] {
-            let mut n = 0u32;
-            if unsafe { clGetDeviceIDs(*platform, kind, 0, ptr::null_mut(), &mut n) } != CL_SUCCESS
-                || n == 0
-            {
-                continue;
-            }
-            let mut devs = vec![ptr::null_mut(); n as usize];
-            if unsafe {
-                clGetDeviceIDs(*platform, kind, n, devs.as_mut_ptr(), ptr::null_mut())
-            } != CL_SUCCESS
-            {
-                continue;
-            }
-            for (d, dev) in devs.iter().enumerate() {
-                out.push((p, d, GpuDevice::device_name(*dev)));
-            }
-            break; // GPU kind covered this platform
+    /// Enumerate OpenCL devices as `(platform index, device index, name)` —
+    /// what GUI pickers and `gpu-test` need without opening a context.
+    /// Mirrors [`GpuDevice::open`]'s traversal (GPU kind first, then all kinds
+    /// for odd iGPU drivers).
+    pub fn list_devices() -> Vec<(usize, usize, String)> {
+        let mut out = Vec::new();
+        let mut n_platforms = 0u32;
+        if unsafe { clGetPlatformIDs(0, ptr::null_mut(), &mut n_platforms) } != CL_SUCCESS
+            || n_platforms == 0
+        {
+            return out;
         }
+        let mut platforms = vec![ptr::null_mut(); n_platforms as usize];
+        if unsafe { clGetPlatformIDs(n_platforms, platforms.as_mut_ptr(), ptr::null_mut()) }
+            != CL_SUCCESS
+        {
+            return out;
+        }
+        for (p, platform) in platforms.iter().enumerate() {
+            for kind in [CL_DEVICE_TYPE_GPU, CL_DEVICE_TYPE_ALL] {
+                let mut n = 0u32;
+                if unsafe { clGetDeviceIDs(*platform, kind, 0, ptr::null_mut(), &mut n) }
+                    != CL_SUCCESS
+                    || n == 0
+                {
+                    continue;
+                }
+                let mut devs = vec![ptr::null_mut(); n as usize];
+                if unsafe { clGetDeviceIDs(*platform, kind, n, devs.as_mut_ptr(), ptr::null_mut()) }
+                    != CL_SUCCESS
+                {
+                    continue;
+                }
+                for (d, dev) in devs.iter().enumerate() {
+                    out.push((p, d, GpuDevice::device_name(*dev)));
+                }
+                break; // GPU kind covered this platform
+            }
+        }
+        out
     }
-    out
-}
 
     fn pick_device(platform: *mut c_void, idx: usize) -> Result<*mut c_void, String> {
         for kind in [CL_DEVICE_TYPE_GPU, CL_DEVICE_TYPE_ALL] {
@@ -448,7 +448,13 @@ pub fn list_devices() -> Vec<(usize, usize, String)> {
         let words_per_instance = 1024usize * 128;
         let mut err = 0i32;
         let init = unsafe {
-            clCreateBuffer(self.context, CL_MEM_READ_ONLY, n_pad * 2 * 128 * 8, ptr::null_mut(), &mut err)
+            clCreateBuffer(
+                self.context,
+                CL_MEM_READ_ONLY,
+                n_pad * 2 * 128 * 8,
+                ptr::null_mut(),
+                &mut err,
+            )
         };
         ck(err, "clCreateBuffer(init)")?;
         let mem = unsafe {
@@ -465,7 +471,13 @@ pub fn list_devices() -> Vec<(usize, usize, String)> {
             return Err(format!("clCreateBuffer(mem) failed ({err})"));
         }
         let out = unsafe {
-            clCreateBuffer(self.context, CL_MEM_WRITE_ONLY, n_pad * 128 * 8, ptr::null_mut(), &mut err)
+            clCreateBuffer(
+                self.context,
+                CL_MEM_WRITE_ONLY,
+                n_pad * 128 * 8,
+                ptr::null_mut(),
+                &mut err,
+            )
         };
         if err != CL_SUCCESS {
             unsafe {
@@ -475,7 +487,13 @@ pub fn list_devices() -> Vec<(usize, usize, String)> {
             return Err(format!("clCreateBuffer(out) failed ({err})"));
         }
         let scratch = unsafe {
-            clCreateBuffer(self.context, CL_MEM_READ_WRITE, n_pad * 384 * 8, ptr::null_mut(), &mut err)
+            clCreateBuffer(
+                self.context,
+                CL_MEM_READ_WRITE,
+                n_pad * 384 * 8,
+                ptr::null_mut(),
+                &mut err,
+            )
         };
         if err != CL_SUCCESS {
             unsafe {
@@ -507,7 +525,10 @@ pub fn list_devices() -> Vec<(usize, usize, String)> {
             return Err("empty batch".to_string());
         }
         if n > bufs.capacity {
-            return Err(format!("batch {n} exceeds buffer capacity {}", bufs.capacity));
+            return Err(format!(
+                "batch {n} exceeds buffer capacity {}",
+                bufs.capacity
+            ));
         }
         const LOCAL: usize = 32; // 4 instances x 8 items
         let n_pad = bufs.capacity.div_ceil(4) * 4;
@@ -533,10 +554,15 @@ pub fn list_devices() -> Vec<(usize, usize, String)> {
             },
             "clEnqueueWriteBuffer(init)",
         )?;
-        for (i, buf) in [bufs.init, bufs.mem, bufs.out, bufs.scratch].iter().enumerate() {
+        for (i, buf) in [bufs.init, bufs.mem, bufs.out, bufs.scratch]
+            .iter()
+            .enumerate()
+        {
             let mut b = *buf;
             ck(
-                unsafe { clSetKernelArg(self.kernel, i as u32, 8, &mut b as *mut _ as *const c_void) },
+                unsafe {
+                    clSetKernelArg(self.kernel, i as u32, 8, &mut b as *mut _ as *const c_void)
+                },
                 "clSetKernelArg",
             )?;
         }
@@ -606,7 +632,10 @@ pub fn list_devices() -> Vec<(usize, usize, String)> {
             return Err("empty batch".to_string());
         }
         if n > bufs.capacity {
-            return Err(format!("batch {n} exceeds buffer capacity {}", bufs.capacity));
+            return Err(format!(
+                "batch {n} exceeds buffer capacity {}",
+                bufs.capacity
+            ));
         }
         const LOCAL: usize = 32; // 4 instances x 8 items
         let n_pad = bufs.capacity.div_ceil(4) * 4;
@@ -638,10 +667,15 @@ pub fn list_devices() -> Vec<(usize, usize, String)> {
             },
             "clEnqueueWriteBuffer(init)",
         )?;
-        for (i, buf) in [bufs.init, bufs.mem, bufs.out, bufs.scratch].iter().enumerate() {
+        for (i, buf) in [bufs.init, bufs.mem, bufs.out, bufs.scratch]
+            .iter()
+            .enumerate()
+        {
             let mut b = *buf;
             ck(
-                unsafe { clSetKernelArg(self.kernel, i as u32, 8, &mut b as *mut _ as *const c_void) },
+                unsafe {
+                    clSetKernelArg(self.kernel, i as u32, 8, &mut b as *mut _ as *const c_void)
+                },
                 "clSetKernelArg",
             )?;
         }
@@ -867,7 +901,10 @@ impl PendingBatch {
     /// host buffers free here (after the event), the event releases on
     /// Drop.
     pub fn wait_and_take(self) -> Result<Vec<[u64; 128]>, String> {
-        ck(unsafe { clWaitForEvents(1, &self.event as *const *mut c_void) }, "clWaitForEvents")?;
+        ck(
+            unsafe { clWaitForEvents(1, &self.event as *const *mut c_void) },
+            "clWaitForEvents",
+        )?;
         let n = self.n;
         let mut out = Vec::with_capacity(n);
         for chunk in self.out_flat.chunks_exact(128).take(n) {

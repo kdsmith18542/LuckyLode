@@ -17,7 +17,11 @@ fn run(bin: &str, arg: &str) -> std::process::Output {
 
 fn check_version(bin: &str) {
     let out = run(bin, "--version");
-    assert!(out.status.success(), "{bin}: stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "{bin}: stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let stdout = String::from_utf8(out.stdout).expect("utf8");
     assert_eq!(
         stdout.trim_end(),
@@ -28,9 +32,16 @@ fn check_version(bin: &str) {
 
 fn check_help(bin: &str) {
     let out = run(bin, "--help");
-    assert!(out.status.success(), "{bin}: stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "{bin}: stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let stdout = String::from_utf8(out.stdout).expect("utf8");
-    assert!(stdout.contains("usage") || stdout.contains("mock_pool"), "{bin}: help text");
+    assert!(
+        stdout.contains("usage") || stdout.contains("mock_pool"),
+        "{bin}: help text"
+    );
 }
 
 #[test]
@@ -62,8 +73,12 @@ fn faucet_rejects_non_finite_amounts() {
     for amount in ["nan", "inf", "-inf", "0"] {
         let out = Command::new(env!("CARGO_BIN_EXE_faucet"))
             .args([
-                "--node-rpc", "127.0.0.1:1", "--bind", "127.0.0.1:9",
-                "--amount", amount,
+                "--node-rpc",
+                "127.0.0.1:1",
+                "--bind",
+                "127.0.0.1:9",
+                "--amount",
+                amount,
             ])
             .output()
             .expect("run faucet");
@@ -78,8 +93,12 @@ fn faucet_refuses_corrupt_state_and_unknown_chains() {
     std::fs::write(&dir, "{not json").expect("write");
     let out = Command::new(env!("CARGO_BIN_EXE_faucet"))
         .args([
-            "--node-rpc", "127.0.0.1:1", "--bind", "127.0.0.1:9",
-            "--state-file", dir.to_str().expect("path"),
+            "--node-rpc",
+            "127.0.0.1:1",
+            "--bind",
+            "127.0.0.1:9",
+            "--state-file",
+            dir.to_str().expect("path"),
         ])
         .output()
         .expect("run faucet");

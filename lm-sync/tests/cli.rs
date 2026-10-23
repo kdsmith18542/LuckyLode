@@ -16,7 +16,11 @@ fn version_and_help() {
             .arg(arg)
             .output()
             .expect("run lm-sync");
-        assert!(out.status.success(), "{arg}: {}", String::from_utf8_lossy(&out.stderr));
+        assert!(
+            out.status.success(),
+            "{arg}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
     }
     let out = Command::new(env!("CARGO_BIN_EXE_lm-sync"))
         .arg("--version")
@@ -52,8 +56,18 @@ fn dead_node_is_exit_1_not_silent() {
     // Endpoints still parse; the failure surfaces from the RPC call.
     let out = run(&[
         "pull",
-        "--from", "127.0.0.1:1", "--from-user", "u", "--from-pass", "p",
-        "--to", "127.0.0.1:1", "--to-user", "u", "--to-pass", "p",
+        "--from",
+        "127.0.0.1:1",
+        "--from-user",
+        "u",
+        "--from-pass",
+        "p",
+        "--to",
+        "127.0.0.1:1",
+        "--to-user",
+        "u",
+        "--to-pass",
+        "p",
     ]);
     assert_eq!(out.status.code(), Some(1));
     assert!(

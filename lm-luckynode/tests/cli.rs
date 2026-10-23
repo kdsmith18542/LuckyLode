@@ -26,7 +26,11 @@ fn version_and_help() {
             .arg(arg)
             .output()
             .expect("run luckynode");
-        assert!(out.status.success(), "{arg}: {}", String::from_utf8_lossy(&out.stderr));
+        assert!(
+            out.status.success(),
+            "{arg}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
     }
     let out = Command::new(env!("CARGO_BIN_EXE_luckynode"))
         .arg("--version")

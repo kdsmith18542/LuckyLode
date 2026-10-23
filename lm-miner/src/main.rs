@@ -13,13 +13,13 @@
 //! `--job-timeout`, 2 = usage error. No third-party argument parser by design
 //! (portable, offline-buildable, auditable) — flags are `--name value`.
 
+use lm_miner::bench;
 #[cfg(feature = "opencl")]
 use lm_miner::gpu::GpuSearcher;
-use lm_miner::pool_loop::{Backend, Event, Outcome, PoolConfig, TlsCfg};
-use lm_miner::thermal::MiningPolicy;
 #[cfg(feature = "opencl")]
 use lm_miner::opencl;
-use lm_miner::bench;
+use lm_miner::pool_loop::{Backend, Event, Outcome, PoolConfig, TlsCfg};
+use lm_miner::thermal::MiningPolicy;
 use lm_pow::difficulty::compact_to_target;
 use std::process::ExitCode;
 use std::sync::atomic::AtomicBool;
@@ -261,7 +261,10 @@ fn apply_power_limit(watts: u32) {
 /// CPU-only build: GPU selections are a clear usage error, CPU proceeds.
 #[cfg(not(feature = "opencl"))]
 fn open_gpu(_cfg: &GpuCfg, _quiet: bool) -> Result<(), String> {
-    Err("this build has no OpenCL support (built with --no-default-features): use --device cpu".to_string())
+    Err(
+        "this build has no OpenCL support (built with --no-default-features): use --device cpu"
+            .to_string(),
+    )
 }
 
 // The grind engine comes from the shared pool runtime now
@@ -794,13 +797,20 @@ fn run_pool(o: &PoolOpts) -> ExitCode {
         return ExitCode::from(2);
     }
     if o.tls && o.v2 {
-        eprintln!("error: --tls applies to the V1 wire; V2 is already Noise-encrypted (drop --tls)");
+        eprintln!(
+            "error: --tls applies to the V1 wire; V2 is already Noise-encrypted (drop --tls)"
+        );
         return ExitCode::from(2);
     }
     if o.dev_fee_pct <= 0.0 {
-        eprintln!("note: dev fee disabled (--dev-fee-pct 0); consider supporting Lucky Lode development");
+        eprintln!(
+            "note: dev fee disabled (--dev-fee-pct 0); consider supporting Lucky Lode development"
+        );
     } else if o.dev_address.as_deref().unwrap_or("").is_empty() {
-        eprintln!("warning: --dev-fee-pct {} set but no --dev-address; mining 100% to worker", o.dev_fee_pct);
+        eprintln!(
+            "warning: --dev-fee-pct {} set but no --dev-address; mining 100% to worker",
+            o.dev_fee_pct
+        );
     } else {
         let dev_secs = (3600.0 * o.dev_fee_pct / 100.0) as u64;
         eprintln!(
@@ -884,7 +894,11 @@ fn run_pool(o: &PoolOpts) -> ExitCode {
         Event::ShareRejected { job, error } => {
             eprintln!("share rejected: job={job} ({error})");
         }
-        Event::Rate { hps, hashes, window_secs } => {
+        Event::Rate {
+            hps,
+            hashes,
+            window_secs,
+        } => {
             let gpu_note = if gpu_backend {
                 match gpu_status() {
                     (t, Some(w)) => format!(" (gpu {t}C {w}W)"),
@@ -903,7 +917,11 @@ fn run_pool(o: &PoolOpts) -> ExitCode {
                 eprintln!("{reason}; reconnecting");
             }
         }
-        Event::Idle { timeout_secs, accepted, submitted } => {
+        Event::Idle {
+            timeout_secs,
+            accepted,
+            submitted,
+        } => {
             eprintln!(
                 "idle: no job within {timeout_secs}s ({accepted}/{submitted} accepted); reconnecting"
             );
@@ -917,7 +935,10 @@ fn run_pool(o: &PoolOpts) -> ExitCode {
         Event::Note(n) => eprintln!("{n}"),
     };
     match lm_miner::pool_loop::run(&cfg, &backend, &policy, &stop, &mut sink) {
-        Outcome::SessionComplete { accepted, submitted } => {
+        Outcome::SessionComplete {
+            accepted,
+            submitted,
+        } => {
             println!("session complete: {accepted}/{submitted} shares accepted");
             ExitCode::SUCCESS
         }

@@ -101,7 +101,10 @@ mod tests {
 
     #[test]
     fn family_parses_both_wires_phone_first() {
-        assert_eq!(family_of("lm-miner-mobile/0.1 android"), Some(DeviceFamily::Phone));
+        assert_eq!(
+            family_of("lm-miner-mobile/0.1 android"),
+            Some(DeviceFamily::Phone)
+        );
         // V2 phone agents carry the backend device too — android wins.
         assert_eq!(
             family_of("v2 lm-miner-mobile/0.1 android cpu"),
@@ -121,11 +124,25 @@ mod tests {
     #[test]
     fn claims_stand_but_the_farm_bar_overrides_everything() {
         // Honest miners keep their labels at real rates.
-        assert_eq!(division_for(Some(DeviceFamily::Phone), 1_500), DeviceFamily::Phone);
-        assert_eq!(division_for(Some(DeviceFamily::Cpu), 8_000), DeviceFamily::Cpu);
-        assert_eq!(division_for(Some(DeviceFamily::Gpu), 21_000), DeviceFamily::Gpu);
+        assert_eq!(
+            division_for(Some(DeviceFamily::Phone), 1_500),
+            DeviceFamily::Phone
+        );
+        assert_eq!(
+            division_for(Some(DeviceFamily::Cpu), 8_000),
+            DeviceFamily::Cpu
+        );
+        assert_eq!(
+            division_for(Some(DeviceFamily::Gpu), 21_000),
+            DeviceFamily::Gpu
+        );
         // A farm cannot hide in a small division behind any label.
-        for claimed in [None, Some(DeviceFamily::Phone), Some(DeviceFamily::Cpu), Some(DeviceFamily::Gpu)] {
+        for claimed in [
+            None,
+            Some(DeviceFamily::Phone),
+            Some(DeviceFamily::Cpu),
+            Some(DeviceFamily::Gpu),
+        ] {
             assert_eq!(division_for(claimed, 500_000), DeviceFamily::Farm);
             assert_eq!(division_for(claimed, u64::MAX), DeviceFamily::Farm);
         }
@@ -135,10 +152,22 @@ mod tests {
     fn contradicted_claims_fall_back_to_rate() {
         // A "phone" at 50 kH/s is not a phone; a "cpu" at 200 kH/s is
         // not a CPU miner. Slow miners keep their (harmless) labels.
-        assert_eq!(division_for(Some(DeviceFamily::Phone), 50_000), DeviceFamily::Cpu);
-        assert_eq!(division_for(Some(DeviceFamily::Cpu), 200_000), DeviceFamily::Gpu);
-        assert_eq!(division_for(Some(DeviceFamily::Gpu), 500), DeviceFamily::Gpu);
-        assert_eq!(division_for(Some(DeviceFamily::Cpu), 500), DeviceFamily::Cpu);
+        assert_eq!(
+            division_for(Some(DeviceFamily::Phone), 50_000),
+            DeviceFamily::Cpu
+        );
+        assert_eq!(
+            division_for(Some(DeviceFamily::Cpu), 200_000),
+            DeviceFamily::Gpu
+        );
+        assert_eq!(
+            division_for(Some(DeviceFamily::Gpu), 500),
+            DeviceFamily::Gpu
+        );
+        assert_eq!(
+            division_for(Some(DeviceFamily::Cpu), 500),
+            DeviceFamily::Cpu
+        );
         // Unlabeled miners get the rate-implied family.
         assert_eq!(division_for(None, 0), DeviceFamily::Phone);
         assert_eq!(division_for(None, 9_000), DeviceFamily::Phone);

@@ -165,10 +165,7 @@ impl PoolClient {
     /// Authorize with an explicit pool password (see `--pool-password` on
     /// the pool). Empty password is sent for open pools.
     pub fn authorize_with(&mut self, worker: &str, password: &str) -> std::io::Result<bool> {
-        let m = self.rpc(
-            "mining.authorize",
-            serde_json::json!([worker, password]),
-        )?;
+        let m = self.rpc("mining.authorize", serde_json::json!([worker, password]))?;
         Ok(m.result == Some(serde_json::Value::Bool(true)))
     }
 
@@ -258,8 +255,7 @@ mod tests {
         // the message (lost submit responses -> reconnect loops).
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
         let addr = listener.local_addr().expect("addr");
-        let line =
-            serde_json::json!({"id": 7, "result": true, "error": null}).to_string();
+        let line = serde_json::json!({"id": 7, "result": true, "error": null}).to_string();
         let (first, rest) = line.split_at(line.len() / 2);
         let first = first.to_string();
         let rest = format!("{rest}\n");
@@ -295,10 +291,7 @@ mod tests {
             if let Some(m) = client.read_message().expect("read") {
                 break m;
             }
-            assert!(
-                Instant::now() < deadline,
-                "split line never assembled"
-            );
+            assert!(Instant::now() < deadline, "split line never assembled");
             std::thread::sleep(Duration::from_millis(50));
         };
         assert_eq!(m.id, Some(serde_json::json!(7)));
@@ -306,7 +299,8 @@ mod tests {
     }
 
     #[test]
-    fn eof_on_dead_connection_is_an_error_not_a_wait() {        // Regression (live 2026-10-12): a pool restart left the miner in
+    fn eof_on_dead_connection_is_an_error_not_a_wait() {
+        // Regression (live 2026-10-12): a pool restart left the miner in
         // CLOSE-WAIT until the job deadline because EOF mapped to
         // Ok(None) ("no data yet"). It must surface immediately so the
         // miner's reconnect path runs.

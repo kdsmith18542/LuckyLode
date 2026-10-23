@@ -115,23 +115,51 @@ impl PoolConfig {
 #[derive(Debug, Clone)]
 pub enum Event {
     /// A session was established (or re-established after a drop).
-    Connected { v2: bool, worker: String, detail: String },
+    Connected {
+        v2: bool,
+        worker: String,
+        detail: String,
+    },
     /// The dev-fee rotation is mining as a different worker.
-    DevFee { worker: String },
-    ShareAccepted { job: String, nonce: u64 },
-    ShareRejected { job: String, error: String },
+    DevFee {
+        worker: String,
+    },
+    ShareAccepted {
+        job: String,
+        nonce: u64,
+    },
+    ShareRejected {
+        job: String,
+        error: String,
+    },
     /// Rolling hashrate over the last `window_secs`.
-    Rate { hps: f64, hashes: u64, window_secs: u64 },
+    Rate {
+        hps: f64,
+        hashes: u64,
+        window_secs: u64,
+    },
     /// The connection dropped (or never established); the loop sleeps
     /// `wait_secs` (0 = immediate) and reconnects unless fail-fast.
-    Reconnect { reason: String, wait_secs: u64 },
+    Reconnect {
+        reason: String,
+        wait_secs: u64,
+    },
     /// No job arrived within the timeout; the loop reconnects.
-    Idle { timeout_secs: u64, accepted: u64, submitted: u64 },
+    Idle {
+        timeout_secs: u64,
+        accepted: u64,
+        submitted: u64,
+    },
     /// The nonce budget for a job ran out; waiting for a new template.
-    JobExhausted { job: String },
+    JobExhausted {
+        job: String,
+    },
     /// A job with a new header was adopted (same-header vardiff
     /// rotations keep the nonce cursor and stay quiet).
-    JobAdopted { job: String, height: u64 },
+    JobAdopted {
+        job: String,
+        height: u64,
+    },
     /// Everything else worth a line (fee notes, GPU status).
     Note(String),
 }
@@ -151,7 +179,9 @@ pub enum Outcome {
 /// facade builds without the `opencl` feature, so `Backend::Gpu` does not
 /// exist there).
 pub enum Backend {
-    Cpu { threads: usize },
+    Cpu {
+        threads: usize,
+    },
     #[cfg(feature = "opencl")]
     Gpu(GpuSearcher),
 }
@@ -495,8 +525,8 @@ fn run_v2(
     };
     let authority = cfg.v2_authority;
     let mut connect = |worker: &str| -> Result<Box<dyn Wire>, String> {
-        let mut client = V2Client::connect(addr, authority, &setup)
-            .map_err(|e| format!("v2: {e}"))?;
+        let mut client =
+            V2Client::connect(addr, authority, &setup).map_err(|e| format!("v2: {e}"))?;
         let opened = client
             .open_channel(1, worker, 0.0, [0xffu8; 32])
             .map_err(|e| format!("v2 channel refused: {e}"))?;
@@ -533,7 +563,10 @@ fn run_session(
     // reboot): reconnect with capped backoff and keep the session
     // counters instead of exiting — the miner is a service.
     let mut backoff = Duration::from_secs(1);
-    let stopped = |accepted: u64, submitted: u64| Outcome::Stopped { accepted, submitted };
+    let stopped = |accepted: u64, submitted: u64| Outcome::Stopped {
+        accepted,
+        submitted,
+    };
     'session: loop {
         if stop.load(Ordering::Relaxed) {
             return stopped(accepted, submitted);
@@ -580,7 +613,10 @@ fn run_session(
                 continue 'session;
             }
             if submitted >= cfg.max_shares {
-                return Outcome::SessionComplete { accepted, submitted };
+                return Outcome::SessionComplete {
+                    accepted,
+                    submitted,
+                };
             }
             if Instant::now() >= report_at {
                 let secs = cfg.report_secs.max(1) as f64;
@@ -600,8 +636,10 @@ fn run_session(
                 match wire.poll() {
                     Ok(Some(j)) => {
                         if current.as_ref().map(|c| c.id != j.id).unwrap_or(true) {
-                            let same_header =
-                                current.as_ref().map(|c| c.header == j.header).unwrap_or(false);
+                            let same_header = current
+                                .as_ref()
+                                .map(|c| c.header == j.header)
+                                .unwrap_or(false);
                             if !same_header {
                                 pos = cfg.start;
                                 sink(Event::JobAdopted {
@@ -809,7 +847,9 @@ impl PoolMiner {
             .name("lm-pool-miner".to_string())
             .spawn(move || {
                 let cfg = cfg;
-                let backend = Backend::Cpu { threads: cfg.threads };
+                let backend = Backend::Cpu {
+                    threads: cfg.threads,
+                };
                 let mut sink = {
                     let stats_sink = stats2.clone();
                     move |ev: Event| update_stats(&stats_sink, &ev)
@@ -818,10 +858,16 @@ impl PoolMiner {
                 if let Ok(mut s) = stats2.lock() {
                     s.connected = false;
                     let last = match &out {
-                        Outcome::SessionComplete { accepted, submitted } => {
+                        Outcome::SessionComplete {
+                            accepted,
+                            submitted,
+                        } => {
                             format!("session complete: {accepted}/{submitted} shares accepted")
                         }
-                        Outcome::Stopped { accepted, submitted } => {
+                        Outcome::Stopped {
+                            accepted,
+                            submitted,
+                        } => {
                             format!("stopped ({accepted}/{submitted} accepted)")
                         }
                         Outcome::Failed { error } => format!("stopped: {error}"),
@@ -848,10 +894,12 @@ impl PoolMiner {
     /// outcome when it was still running.
     pub fn stop_join(&mut self) -> Option<Outcome> {
         self.stop();
-        self.join.take().map(|j| j.join().unwrap_or(Outcome::Stopped {
-            accepted: 0,
-            submitted: 0,
-        }))
+        self.join.take().map(|j| {
+            j.join().unwrap_or(Outcome::Stopped {
+                accepted: 0,
+                submitted: 0,
+            })
+        })
     }
 
     /// The stop flag is set but the thread may still be finishing a chunk.
@@ -861,7 +909,10 @@ impl PoolMiner {
 
     /// True until the looped thread exits (approximate; cheap).
     pub fn running(&self) -> bool {
-        self.join.as_ref().map(|j| !j.is_finished()).unwrap_or(false)
+        self.join
+            .as_ref()
+            .map(|j| !j.is_finished())
+            .unwrap_or(false)
     }
 
     pub fn stats(&self) -> RunStats {
@@ -965,15 +1016,25 @@ mod tests {
             } {
                 break out;
             }
-            assert!(Instant::now() < deadline, "no shares in 60s: {:?}", miner.stats());
+            assert!(
+                Instant::now() < deadline,
+                "no shares in 60s: {:?}",
+                miner.stats()
+            );
             std::thread::sleep(Duration::from_millis(100));
         };
         // Either terminal is correct: with the stats poll racing the
         // loop, the stop flag can be observed a hair before the
         // max-shares check. The counts are the contract.
         match out {
-            Outcome::SessionComplete { accepted, submitted }
-            | Outcome::Stopped { accepted, submitted } => {
+            Outcome::SessionComplete {
+                accepted,
+                submitted,
+            }
+            | Outcome::Stopped {
+                accepted,
+                submitted,
+            } => {
                 assert_eq!((accepted, submitted), (2, 2));
             }
             other => panic!("expected complete or stopped, got {other:?}"),
@@ -1004,7 +1065,11 @@ mod tests {
         let mut miner = PoolMiner::spawn(cfg).expect("spawn");
         let deadline = Instant::now() + Duration::from_secs(30);
         while !miner.stats().connected {
-            assert!(Instant::now() < deadline, "never connected: {:?}", miner.stats());
+            assert!(
+                Instant::now() < deadline,
+                "never connected: {:?}",
+                miner.stats()
+            );
             std::thread::sleep(Duration::from_millis(50));
         }
         assert!(miner.running());

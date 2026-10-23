@@ -127,12 +127,7 @@ impl Limits {
         let text = match std::fs::read_to_string(path) {
             Ok(t) => t,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Self::default()),
-            Err(e) => {
-                return Err(format!(
-                    "cannot read state file {}: {e}",
-                    path.display()
-                ))
-            }
+            Err(e) => return Err(format!("cannot read state file {}: {e}", path.display())),
         };
         serde_json::from_str::<HashMap<String, u64>>(&text)
             .map(|m| Self { last: m })
@@ -146,14 +141,19 @@ impl Limits {
 
     fn save(&self, path: &Path) {
         let tmp = path.with_extension("tmp");
-        let result = serde_json::to_string(&self.last).map_err(|e| e.to_string()).and_then(|text| {
-            std::fs::write(&tmp, text)
-                .and_then(|_| std::fs::rename(&tmp, path))
-                .map_err(|e| e.to_string())
-        });
+        let result = serde_json::to_string(&self.last)
+            .map_err(|e| e.to_string())
+            .and_then(|text| {
+                std::fs::write(&tmp, text)
+                    .and_then(|_| std::fs::rename(&tmp, path))
+                    .map_err(|e| e.to_string())
+            });
         if let Err(e) = result {
             // Loud: a lost rate-limit file reopens every address.
-            eprintln!("warning: faucet state save failed for {}: {e}", path.display());
+            eprintln!(
+                "warning: faucet state save failed for {}: {e}",
+                path.display()
+            );
         }
     }
 
@@ -188,11 +188,7 @@ fn query_param(path: &str, key: &str) -> Option<String> {
     for pair in q.split('&') {
         let (k, v) = pair.split_once('=')?;
         if k == key {
-            return Some(
-                v.replace('+', " ")
-                    .chars()
-                    .collect::<String>(),
-            );
+            return Some(v.replace('+', " ").chars().collect::<String>());
         }
     }
     None
@@ -282,23 +278,44 @@ fn handle(mut stream: TcpStream, ctx: &Ctx) {
         let raw = query_param(rest, "address").unwrap_or_default();
         let address = url_decode(&raw).trim().to_string();
         if address.is_empty() || address.len() > 64 {
-            respond(&mut stream, "400 Bad Request", "application/json", r#"{"ok":false,"error":"missing address"}"#);
+            respond(
+                &mut stream,
+                "400 Bad Request",
+                "application/json",
+                r#"{"ok":false,"error":"missing address"}"#,
+            );
             return;
         }
         // Validate via the node (right chain, well-formed).
-        match ctx.rpc.call("validateaddress", serde_json::json!([address])) {
+        match ctx
+            .rpc
+            .call("validateaddress", serde_json::json!([address]))
+        {
             Ok(v) if v.get("isvalid").and_then(|b| b.as_bool()).unwrap_or(false) => {}
             _ => {
-                respond(&mut stream, "400 Bad Request", "application/json", r#"{"ok":false,"error":"invalid address for this chain"}"#);
+                respond(
+                    &mut stream,
+                    "400 Bad Request",
+                    "application/json",
+                    r#"{"ok":false,"error":"invalid address for this chain"}"#,
+                );
                 return;
             }
         }
         let t = now();
-        let mut limits = ctx.limits.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut limits = ctx
+            .limits
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let wait = limits.wait(&address, ctx.period, t);
         if wait > 0 {
             let body = format!(r#"{{"ok":false,"error":"rate-limited","retry_in_secs":{wait}}}"#);
-            respond(&mut stream, "429 Too Many Requests", "application/json", &body);
+            respond(
+                &mut stream,
+                "429 Too Many Requests",
+                "application/json",
+                &body,
+            );
             return;
         }
         match ctx
@@ -447,11 +464,7 @@ fn main() -> ExitCode {
     let chain = rpc
         .call("getblockchaininfo", serde_json::json!([]))
         .ok()
-        .and_then(|v| {
-            v.get("chain")
-                .and_then(|c| c.as_str())
-                .map(str::to_string)
-        });
+        .and_then(|v| v.get("chain").and_then(|c| c.as_str()).map(str::to_string));
     match chain.as_deref() {
         Some("test") => {}
         Some(other) if allow_mainnet => {

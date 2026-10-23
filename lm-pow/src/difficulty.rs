@@ -128,8 +128,8 @@ pub fn lwma_next_target(targets: &[U256], times: &[u64]) -> Option<U256> {
     let last = targets[LWMA_N - 1];
     let half = last / ADJUST_DENOM;
     let lo = last - half; // half <= last: no underflow by construction
-    // Near U256::MAX the band head overflows — saturate (the clamp below
-    // bounds the result anyway; a panic here would take the node down).
+                          // Near U256::MAX the band head overflows — saturate (the clamp below
+                          // bounds the result anyway; a panic here would take the node down).
     let hi = last.saturating_add(half);
     let next = raw.max(lo).min(hi);
     Some(next.min(POW_LIMIT))

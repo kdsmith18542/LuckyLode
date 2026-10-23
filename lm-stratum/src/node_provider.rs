@@ -201,8 +201,7 @@ fn decide_seed_claim<F>(
 where
     F: Fn(&str) -> Option<u64>,
 {
-    let (faucet_drip, faucet_script, dev_drip, dev_script, dev_epoch) =
-        parse_seed_fields(gbt);
+    let (faucet_drip, faucet_script, dev_drip, dev_script, dev_epoch) = parse_seed_fields(gbt);
     let faucet_need = if claim_faucet && faucet_drip > 0 && !faucet_script.is_empty() {
         match gbt
             .get("faucetaddress")
@@ -382,8 +381,14 @@ impl NodeProvider {
     /// (accepted, rejected) block submissions.
     pub fn counters(&self) -> (u64, u64) {
         (
-            *self.accepted.lock().unwrap_or_else(std::sync::PoisonError::into_inner),
-            *self.rejected.lock().unwrap_or_else(std::sync::PoisonError::into_inner),
+            *self
+                .accepted
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            *self
+                .rejected
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
         )
     }
 
@@ -393,7 +398,10 @@ impl NodeProvider {
         // (audit fix — the lock used to be held across the HTTP call).
         // Concurrent refreshes are benign: both fetch, last write wins.
         {
-            let st = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let st = self
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             if st.fetched_at.elapsed() < REFRESH_INTERVAL {
                 return;
             }
@@ -417,7 +425,10 @@ impl NodeProvider {
                 // helper so the constructor's first template and every
                 // refresh apply identical policy.
                 let height = gbt.get("height").and_then(|v| v.as_u64()).unwrap_or(0);
-                let mut unm = self.faucet_unmatured.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                let mut unm = self
+                    .faucet_unmatured
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 let seed = decide_seed_claim(
                     &|addr| faucet_wallet_balance(&self.rpc, addr),
                     &gbt,
@@ -427,11 +438,22 @@ impl NodeProvider {
                     &mut unm,
                 );
                 drop(unm);
-                build_template(&gbt, claim_jackpots, claim_pot, jackpot_divisor, pot_divisor, &seed, claim_prize)
-                    .map(|bt| (bt, prize))
+                build_template(
+                    &gbt,
+                    claim_jackpots,
+                    claim_pot,
+                    jackpot_divisor,
+                    pot_divisor,
+                    &seed,
+                    claim_prize,
+                )
+                .map(|bt| (bt, prize))
             }) {
             Ok(((tpl, txs, bonus, pot, coinbase, pity, faucet, dev, prize_splice), prize)) => {
-                let mut st = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                let mut st = self
+                    .state
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 if let Some(m) = header_merkle(&tpl.header) {
                     st.recent.push_front(RecentTemplate {
                         merkle: m,
@@ -469,7 +491,10 @@ impl NodeProvider {
             Err(_) => {
                 // Keep serving the last known template; the chain may just
                 // be busy. Polling resumes on the next tick.
-                let mut st = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                let mut st = self
+                    .state
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 st.fetched_at = Instant::now() - REFRESH_INTERVAL + Duration::from_millis(200);
             }
         }
@@ -479,19 +504,27 @@ impl NodeProvider {
 impl TemplateProvider for NodeProvider {
     fn current(&self) -> JobTemplate {
         self.refresh();
-        self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).template.clone()
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .template
+            .clone()
     }
 
     fn faucet_unmatured_snapshot(&self) -> Vec<(u64, u64)> {
         self.faucet_unmatured
-            .lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .iter()
             .map(|(h, a)| (*h, *a))
             .collect()
     }
 
     fn restore_faucet_unmatured(&self, claimed: Vec<(u64, u64)>) {
-        let mut unm = self.faucet_unmatured.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut unm = self
+            .faucet_unmatured
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         unm.clear();
         for (h, a) in claimed {
             unm.insert(h, a);
@@ -503,7 +536,10 @@ impl TemplateProvider for NodeProvider {
         let merkle = match header_merkle(header) {
             Some(m) => m,
             None => {
-                *self.rejected.lock().unwrap_or_else(std::sync::PoisonError::into_inner) += 1;
+                *self
+                    .rejected
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) += 1;
                 return BlockOutcome {
                     accepted: false,
                     out,
@@ -525,7 +561,10 @@ impl TemplateProvider for NodeProvider {
         // template's. Its normal coinbase value rides along for payout
         // accounting.
         let (txs, bonus, pot, faucet, dev, coinbase, _pity, prize, prize_claim, prize_winner) = {
-            let st = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let st = self
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             if header_merkle(&st.template.header) == Some(merkle) {
                 (
                     st.txs.clone(),
@@ -558,7 +597,10 @@ impl TemplateProvider for NodeProvider {
                         // rather than assemble a block whose merkle cannot
                         // match its header.
                         drop(st);
-                        *self.rejected.lock().unwrap_or_else(std::sync::PoisonError::into_inner) += 1;
+                        *self
+                            .rejected
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner) += 1;
                         return BlockOutcome {
                             accepted: false,
                             out,
@@ -586,22 +628,33 @@ impl TemplateProvider for NodeProvider {
             .call("submitblock", serde_json::json!([hex_of(&block_hex)]));
         let accepted = matches!(&result, Ok(v) if v.is_null());
         if accepted {
-            *self.accepted.lock().unwrap_or_else(std::sync::PoisonError::into_inner) += 1;
+            *self
+                .accepted
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) += 1;
             // Record LANDED faucet claims for the top-up policy (never
             // intentions: an unlanded template must not suppress future
             // top-ups). Insert-or-max per height: reorgs can only lower
             // the true pending total, never raise it past a landed claim.
             if faucet > 0 {
-                let mut unm = self.faucet_unmatured.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                let mut unm = self
+                    .faucet_unmatured
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 unm.entry(height)
                     .and_modify(|v| *v = (*v).max(faucet))
                     .or_insert(faucet);
             }
             // Force a fresh template on the next poll (new tip).
-            self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).fetched_at =
-                Instant::now() - REFRESH_INTERVAL - Duration::from_secs(1);
+            self.state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .fetched_at = Instant::now() - REFRESH_INTERVAL - Duration::from_secs(1);
         } else {
-            *self.rejected.lock().unwrap_or_else(std::sync::PoisonError::into_inner) += 1;
+            *self
+                .rejected
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) += 1;
         }
         BlockOutcome {
             accepted,
@@ -621,7 +674,11 @@ impl TemplateProvider for NodeProvider {
             // winner (faucet/dev-style record, never miner-owed).
             prize_inflow: if accepted { prize } else { 0 },
             prize_claim: if accepted { prize_claim } else { 0 },
-            prize_winner: if accepted { prize_winner } else { String::new() },
+            prize_winner: if accepted {
+                prize_winner
+            } else {
+                String::new()
+            },
             reserve: 0,
             coinbase: if accepted { coinbase } else { 0 },
         }
@@ -634,7 +691,9 @@ impl TemplateProvider for NodeProvider {
 /// Nodes predating the field read as 0 (safe: no credit).
 #[must_use]
 pub fn parse_prize_inflow(gbt: &serde_json::Value) -> u64 {
-    gbt.get("prizeoverflow").and_then(|v| v.as_u64()).unwrap_or(0)
+    gbt.get("prizeoverflow")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0)
 }
 
 /// Consensus Luckynode Draw budget for one template (base units): the
@@ -642,7 +701,9 @@ pub fn parse_prize_inflow(gbt: &serde_json::Value) -> u64 {
 /// [`parse_prize_draw`]. Old nodes (no fields) read as 0 → no advisory.
 #[must_use]
 pub fn parse_prize_budget(gbt: &serde_json::Value) -> u64 {
-    gbt.get("prizedrawbudget").and_then(|v| v.as_u64()).unwrap_or(0)
+    gbt.get("prizedrawbudget")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0)
 }
 
 /// Consensus Luckynode Draw claim for one template (doc 06 §6.7): the
@@ -655,8 +716,14 @@ pub fn parse_prize_budget(gbt: &serde_json::Value) -> u64 {
 /// invalid → no claim (safe: templates pass through untouched).
 #[must_use]
 pub fn parse_prize_draw(gbt: &serde_json::Value) -> (u64, bool, u64, String, Vec<u8>) {
-    let epoch = gbt.get("prizedrawepoch").and_then(|v| v.as_u64()).unwrap_or(0);
-    let valid = gbt.get("prizedrawvalid").and_then(|v| v.as_bool()).unwrap_or(false);
+    let epoch = gbt
+        .get("prizedrawepoch")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let valid = gbt
+        .get("prizedrawvalid")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     let remaining = gbt
         .get("prizedrawremaining")
         .and_then(|v| v.as_u64())
@@ -840,7 +907,10 @@ pub fn parse_seed_fields(gbt: &serde_json::Value) -> (u64, Vec<u8>, u64, Vec<u8>
         .and_then(|v| v.as_str())
         .and_then(|s| hex_bytes(s).ok())
         .unwrap_or_default();
-    let dev_epoch = gbt.get("devepoch").and_then(|v| v.as_bool()).unwrap_or(false);
+    let dev_epoch = gbt
+        .get("devepoch")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     (faucet_drip, faucet_script, dev_drip, dev_script, dev_epoch)
 }
 
@@ -882,7 +952,10 @@ fn faucet_wallet_balance(rpc: &RpcClient, faucet_address: &str) -> Option<u64> {
         return None;
     }
     let utxos = rpc
-        .call("listunspent", serde_json::json!([0, 9999999, [faucet_address]]))
+        .call(
+            "listunspent",
+            serde_json::json!([0, 9999999, [faucet_address]]),
+        )
         .ok()?;
     let arr = utxos.as_array()?;
     let mut total: u64 = 0;
@@ -980,7 +1053,11 @@ pub fn build_template(
         .and_then(|v| v.as_u64())
         .unwrap_or(u64::MAX);
     let pity_due = drought >= drought_limit;
-    let claimed_bonus = if claim_jackpots && class.jackpot { adv_bonus } else { 0 };
+    let claimed_bonus = if claim_jackpots && class.jackpot {
+        adv_bonus
+    } else {
+        0
+    };
     let claimed_pot = if claim_pot && (class.pot_event || pity_due) {
         adv_pot
     } else {
@@ -1008,8 +1085,7 @@ pub fn build_template(
     // when ANY existing output already pays that script — the sum would
     // drift and the block would be refused (same builder rule as the
     // internal miner; the budget stays for another block).
-    let (draw_epoch, draw_valid, draw_remaining, draw_winner, draw_script) =
-        parse_prize_draw(gbt);
+    let (draw_epoch, draw_valid, draw_remaining, draw_winner, draw_script) = parse_prize_draw(gbt);
     // Dashboard advisory (display only — the splice above stays exact):
     // the current epoch draw the template belongs to.
     tpl.draw_epoch = draw_epoch;
@@ -1042,7 +1118,17 @@ pub fn build_template(
         && prize.amount == 0)
         || txs.is_empty()
     {
-        return Ok((tpl, txs, 0, 0, coinbase, false, 0, 0, PrizeSplice::default()));
+        return Ok((
+            tpl,
+            txs,
+            0,
+            0,
+            coinbase,
+            false,
+            0,
+            0,
+            PrizeSplice::default(),
+        ));
     }
     let layout = crate::tx::parse_coinbase_layout(&txs[0])
         .map_err(|e| format!("coinbase parse for claim splice: {e:?}"))?;
@@ -1071,7 +1157,17 @@ pub fn build_template(
     // `pity` in the built template means "the claimed splash came from the
     // pity timer" — informational (there is no submission gate anymore).
     let pity = claimed_pot > 0 && !class.pot_event;
-    Ok((tpl, txs, claimed_bonus, claimed_pot, coinbase, pity, claimed_faucet, claimed_dev, prize))
+    Ok((
+        tpl,
+        txs,
+        claimed_bonus,
+        claimed_pot,
+        coinbase,
+        pity,
+        claimed_faucet,
+        claimed_dev,
+        prize,
+    ))
 }
 
 /// Double-SHA256 txid in internal (little-endian) byte order — the exact
@@ -1393,7 +1489,8 @@ mod tests {
         gbt["jackpotbonus"] = serde_json::json!(1_142_856u64);
         // claim=false: passthrough, bonus 0, template identical to parse_gbt
         let (t0, tx0, b0, p0, c0, _, _, _, _) =
-            build_template(&gbt, false, false, 100, 1000, &SeedClaim::default(), false).expect("passthrough");
+            build_template(&gbt, false, false, 100, 1000, &SeedClaim::default(), false)
+                .expect("passthrough");
         let (t1, tx1) = parse_gbt(&gbt).expect("parse");
         assert_eq!((b0, p0), (0, 0));
         assert_eq!(t0.header, t1.header);
@@ -1403,7 +1500,8 @@ mod tests {
         // claim=true on an all-draw height (regtest divisor 1): the coinbase
         // gains a vout, merkle patched to the new txid.
         let (t2, tx2, b2, p2, c2, _, _, _, _) =
-            build_template(&gbt, true, false, 1, 1000, &SeedClaim::default(), false).expect("bonus template");
+            build_template(&gbt, true, false, 1, 1000, &SeedClaim::default(), false)
+                .expect("bonus template");
         assert_eq!((b2, p2), (1_142_856, 0));
         assert_eq!(c2, 0x01_22a4c3); // claims never move the normal value
         assert_eq!(tx2.len(), 1);
@@ -1416,7 +1514,8 @@ mod tests {
         // claim=true with zero bonus: passthrough
         gbt["jackpotbonus"] = serde_json::json!(0);
         let (_, _, b3, p3, c3, _, _, _, _) =
-            build_template(&gbt, true, false, 1, 1000, &SeedClaim::default(), false).expect("zero bonus");
+            build_template(&gbt, true, false, 1, 1000, &SeedClaim::default(), false)
+                .expect("zero bonus");
         assert_eq!((b3, p3), (0, 0));
         assert_eq!(c3, 0x01_22a4c3);
     }
@@ -1431,7 +1530,8 @@ mod tests {
         gbt["potdroughtlimit"] = serde_json::json!(5u64);
         // claim_jackpots=false, claim_pot=true on an all-draw height.
         let (t0, tx0, b0, p0, c0, _, _, _, _) =
-            build_template(&gbt, false, true, 100, 1, &SeedClaim::default(), false).expect("pot template");
+            build_template(&gbt, false, true, 100, 1, &SeedClaim::default(), false)
+                .expect("pot template");
         assert_eq!((b0, p0), (0, 2_500_000));
         assert_eq!(c0, 0x01_22a4c3);
         let l = crate::tx::parse_coinbase_layout(&tx0[0]).expect("layout");
@@ -1442,7 +1542,8 @@ mod tests {
         // potcredited 0: passthrough.
         gbt["potcredited"] = serde_json::json!(0);
         let (_, _, b1, p1, c1, _, _, _, _) =
-            build_template(&gbt, false, true, 100, 1, &SeedClaim::default(), false).expect("zero pot");
+            build_template(&gbt, false, true, 100, 1, &SeedClaim::default(), false)
+                .expect("zero pot");
         assert_eq!((b1, p1), (0, 0));
         assert_eq!(c1, 0x01_22a4c3);
     }
@@ -1454,7 +1555,8 @@ mod tests {
         gbt["potcredited"] = serde_json::json!(2_500_000u64);
         gbt["potdrought"] = serde_json::json!(0u64);
         gbt["potdroughtlimit"] = serde_json::json!(5u64);
-        let (t, tx, b, p, c, _, _, _, _) = build_template(&gbt, true, true, 1, 1, &SeedClaim::default(), false).expect("both");
+        let (t, tx, b, p, c, _, _, _, _) =
+            build_template(&gbt, true, true, 1, 1, &SeedClaim::default(), false).expect("both");
         assert_eq!((b, p), (1_142_856, 2_500_000));
         assert_eq!(c, 0x01_22a4c3);
         let l = crate::tx::parse_coinbase_layout(&tx[0]).expect("layout");
@@ -1478,7 +1580,8 @@ mod tests {
         ]);
         gbt["jackpotbonus"] = serde_json::json!(1_142_856u64);
         let (t, txs, b, p, _, _, _, _, _) =
-            build_template(&gbt, true, false, 1, 1000, &SeedClaim::default(), false).expect("claim + mempool");
+            build_template(&gbt, true, false, 1, 1000, &SeedClaim::default(), false)
+                .expect("claim + mempool");
         assert_eq!((b, p), (1_142_856, 0));
         assert_eq!(txs.len(), 3);
         let ids: Vec<_> = txs.iter().map(|x| txid(x)).collect();
@@ -1500,13 +1603,15 @@ mod tests {
         // invents a destination.
         let mut gbt: serde_json::Value = serde_json::from_str(GBT_FIXTURE).expect("json");
         gbt["faucetdrip"] = serde_json::json!(1_000u64);
-        gbt["faucetscript"] = serde_json::json!("76a914ba38cfe49e436bb2a43898083a98becc148c204488ac");
+        gbt["faucetscript"] =
+            serde_json::json!("76a914ba38cfe49e436bb2a43898083a98becc148c204488ac");
         gbt["devdrip"] = serde_json::json!(500u64);
         gbt["devscript"] = serde_json::json!("a914f581da35b024c755572850ad3a9d6f5bd8b1afcc87");
         gbt["devepoch"] = serde_json::json!(true);
         let seed = SeedClaim {
             faucet: 1_000,
-            faucet_script: hex_bytes("76a914ba38cfe49e436bb2a43898083a98becc148c204488ac").expect("hex"),
+            faucet_script: hex_bytes("76a914ba38cfe49e436bb2a43898083a98becc148c204488ac")
+                .expect("hex"),
             dev: 500,
             dev_script: hex_bytes("a914f581da35b024c755572850ad3a9d6f5bd8b1afcc87").expect("hex"),
         };
@@ -1570,7 +1675,10 @@ mod tests {
     fn parse_seed_fields_tolerates_absent_pins() {
         let gbt: serde_json::Value = serde_json::from_str(GBT_FIXTURE).expect("json");
         // Old node (fields absent): no seed claims.
-        assert_eq!(parse_seed_fields(&gbt), (0, Vec::new(), 0, Vec::new(), false));
+        assert_eq!(
+            parse_seed_fields(&gbt),
+            (0, Vec::new(), 0, Vec::new(), false)
+        );
         let mut gbt2 = gbt.clone();
         gbt2["faucetdrip"] = serde_json::json!(1_000u64);
         gbt2["faucetscript"] = serde_json::json!("76a91400");
@@ -1606,13 +1714,27 @@ mod tests {
 
         // Near-target wallet + pending in-flight claim: top-up shrinks.
         let mut unm = std::collections::BTreeMap::from([(150u64, 400u64)]);
-        let s = decide_seed_claim(&|_| Some(FAUCET_TOPUP_TARGET - 500), &gbt, 200, true, true, &mut unm);
+        let s = decide_seed_claim(
+            &|_| Some(FAUCET_TOPUP_TARGET - 500),
+            &gbt,
+            200,
+            true,
+            true,
+            &mut unm,
+        );
         assert_eq!(s.faucet, 100); // 500 shortfall - 400 pending = 100
         assert!(unm.contains_key(&150)); // retained: not yet matured
 
         // Matured pending entries prune instead of suppressing.
         let mut unm = std::collections::BTreeMap::from([(50u64, 400u64)]);
-        let s = decide_seed_claim(&|_| Some(FAUCET_TOPUP_TARGET - 500), &gbt, 200, true, true, &mut unm);
+        let s = decide_seed_claim(
+            &|_| Some(FAUCET_TOPUP_TARGET - 500),
+            &gbt,
+            200,
+            true,
+            true,
+            &mut unm,
+        );
         assert_eq!(s.faucet, 500);
         assert!(!unm.contains_key(&50));
 
@@ -1634,7 +1756,8 @@ mod tests {
     }
 
     #[test]
-    fn prize_inflow_parses_and_defaults_to_zero() {        let gbt: serde_json::Value = serde_json::from_str(GBT_FIXTURE).expect("fixture json");
+    fn prize_inflow_parses_and_defaults_to_zero() {
+        let gbt: serde_json::Value = serde_json::from_str(GBT_FIXTURE).expect("fixture json");
         // Old node (field absent): no prize credit.
         assert_eq!(parse_prize_inflow(&gbt), 0);
         // New node: the exact per-height overflow rides through.
@@ -1643,7 +1766,8 @@ mod tests {
         assert_eq!(parse_prize_inflow(&gbt2), 50794);
         // ... and into the template, where the refresh loop records it
         // per height for the tip-change reconcile.
-        let (tpl, ..) = build_template(&gbt2, true, true, 100, 1000, &SeedClaim::default(), false).expect("tpl");
+        let (tpl, ..) = build_template(&gbt2, true, true, 100, 1000, &SeedClaim::default(), false)
+            .expect("tpl");
         assert_eq!(tpl.prize, 50794);
     }
 
@@ -1658,18 +1782,21 @@ mod tests {
         gbt["potdrought"] = serde_json::json!(0u64);
         gbt["potdroughtlimit"] = serde_json::json!(5u64);
         let (_, _, b0, p0, _, pity0, _, _, _) =
-            build_template(&gbt, true, true, 100, 1000, &SeedClaim::default(), false).expect("plain height");
+            build_template(&gbt, true, true, 100, 1000, &SeedClaim::default(), false)
+                .expect("plain height");
         assert_eq!((b0, p0, pity0), (0, 0, false));
         // Regtest divisor 1: every height draws — exact advertised amounts
         // are spliced verbatim.
         let (_, tx, b1, p1, _, pity1, _, _, _) =
-            build_template(&gbt, true, true, 1, 1, &SeedClaim::default(), false).expect("all-draw height");
+            build_template(&gbt, true, true, 1, 1, &SeedClaim::default(), false)
+                .expect("all-draw height");
         assert_eq!((b1, p1, pity1), (500, 250, false));
         let l = crate::tx::parse_coinbase_layout(&tx[0]).expect("layout");
         assert_eq!(l.last_value, 250); // pot splice on top of bonus
                                        // Claims off: no splices even on a draw height.
         let (_, _, b2, p2, _, _, _, _, _) =
-            build_template(&gbt, false, false, 1, 1, &SeedClaim::default(), false).expect("claims off");
+            build_template(&gbt, false, false, 1, 1, &SeedClaim::default(), false)
+                .expect("claims off");
         assert_eq!((b2, p2), (0, 0));
     }
 
@@ -1682,12 +1809,14 @@ mod tests {
         gbt["potdrought"] = serde_json::json!(5u64);
         gbt["potdroughtlimit"] = serde_json::json!(5u64);
         let (_, _, b0, p0, _, pity0, _, _, _) =
-            build_template(&gbt, false, true, 100, 1000, &SeedClaim::default(), false).expect("pity due");
+            build_template(&gbt, false, true, 100, 1000, &SeedClaim::default(), false)
+                .expect("pity due");
         assert_eq!((b0, p0, pity0), (0, 250_000, true));
         // Below the limit with no event: nothing claimed.
         gbt["potdrought"] = serde_json::json!(4u64);
         let (_, _, b1, p1, _, pity1, _, _, _) =
-            build_template(&gbt, false, true, 100, 1000, &SeedClaim::default(), false).expect("below limit");
+            build_template(&gbt, false, true, 100, 1000, &SeedClaim::default(), false)
+                .expect("below limit");
         assert_eq!((b1, p1, pity1), (0, 0, false));
     }
 
@@ -1731,8 +1860,7 @@ mod tests {
         assert!(script4.is_empty());
     }
 
-    const PRIZE_WINNER_SCRIPT: &str =
-        "76a914ba38cfe49e436bb2a43898083a98becc148c204488ac";
+    const PRIZE_WINNER_SCRIPT: &str = "76a914ba38cfe49e436bb2a43898083a98becc148c204488ac";
 
     fn gbt_with_prize_draw() -> serde_json::Value {
         let mut gbt: serde_json::Value = serde_json::from_str(GBT_FIXTURE).expect("json");
@@ -1771,15 +1899,15 @@ mod tests {
             build_template(&gbt, false, false, 100, 1000, &SeedClaim::default(), true)
                 .expect("prize template");
         assert_eq!((b, p, f, d), (0, 0, 0, 0)); // only the prize leg fires
-        assert_eq!((prize.amount, prize.winner.as_str()), (159_200_000, "LtPrizeWinner111111111111111111"));
+        assert_eq!(
+            (prize.amount, prize.winner.as_str()),
+            (159_200_000, "LtPrizeWinner111111111111111111")
+        );
         assert_eq!(c, 0x01_22a4c3); // normal value untouched
         let l = crate::tx::parse_coinbase_layout(&txs[0]).expect("layout");
         assert_eq!(l.vout_count, 2); // normal + dedicated claim output
         assert_eq!(l.last_value, 159_200_000);
-        assert_eq!(
-            l.last_script,
-            hex_bytes(PRIZE_WINNER_SCRIPT).expect("hex")
-        );
+        assert_eq!(l.last_script, hex_bytes(PRIZE_WINNER_SCRIPT).expect("hex"));
         // The normal output keeps the node's own script and value.
         let scripts = crate::tx::output_scripts(&txs[0]).expect("scripts");
         assert_eq!(scripts.len(), 2);

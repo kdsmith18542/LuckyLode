@@ -214,10 +214,14 @@ mod tests {
     }
 
     #[test]
-    fn p2pkh_script_shape() {        let k = Keypair::from_secret([9u8; 32]).expect("key");
+    fn p2pkh_script_shape() {
+        let k = Keypair::from_secret([9u8; 32]).expect("key");
         let s = k.p2pkh_script(Network::Testnet);
         assert_eq!(s.len(), 25);
-        assert_eq!((s[0], s[1], s[2], s[23], s[24]), (0x76, 0xa9, 0x14, 0x88, 0xac));
+        assert_eq!(
+            (s[0], s[1], s[2], s[23], s[24]),
+            (0x76, 0xa9, 0x14, 0x88, 0xac)
+        );
         assert_eq!(&s[3..23], &hash160(k.pubkey()));
     }
 }

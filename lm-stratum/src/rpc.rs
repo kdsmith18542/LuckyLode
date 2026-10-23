@@ -347,10 +347,14 @@ mod tests {
         let user = std::env::var("LUCKYLODE_RPC_USER").unwrap_or_default();
         let pass = std::env::var("LUCKYLODE_RPC_PASS").unwrap_or_default();
         let c = RpcClient::from_url(&url, &user, &pass).expect("client");
-        let v = c.call("getblockcount", serde_json::json!([])).expect("live rpc");
+        let v = c
+            .call("getblockcount", serde_json::json!([]))
+            .expect("live rpc");
         assert!(v.is_u64(), "expected a block count, got {v}");
         // A wallet method (larger, definitely chunked behind the proxy).
-        let w = c.call("getwalletinfo", serde_json::json!([])).expect("live rpc");
+        let w = c
+            .call("getwalletinfo", serde_json::json!([]))
+            .expect("live rpc");
         assert!(w.get("balance").is_some(), "expected wallet info, got {w}");
     }
 }

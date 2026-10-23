@@ -171,13 +171,16 @@ mod tests {
         assert_eq!(p.miner, (100 - 5) + 500);
         assert_eq!(p.reserve, 5_000 - 500);
         // Conservation: miner + Δreserve + prize == R + F.
-        assert_eq!(p.miner as i128 + (p.reserve as i128 - 5_000) + p.to_prize as i128, 100);
+        assert_eq!(
+            p.miner as i128 + (p.reserve as i128 - 5_000) + p.to_prize as i128,
+            100
+        );
     }
 
     #[test]
     fn cap_overflow_feeds_prize_pool() {
         let cap = reserve_cap(100); // 5000
-        // Levy that fits entirely under the cap stays in the reserve.
+                                    // Levy that fits entirely under the cap stays in the reserve.
         let p = apply_block(cap - 5, 100, 2, false);
         assert_eq!(p.to_reserve, 5);
         assert_eq!(p.to_prize, 0);
@@ -223,7 +226,7 @@ mod tests {
         assert_eq!(p.bonus, u64::MAX);
         assert_eq!(p.reserve, 0);
         assert_eq!(p.miner, u64::MAX); // (MAX − levy) + MAX saturates
-        // Large-but-sane values still conserve exactly.
+                                       // Large-but-sane values still conserve exactly.
         let p = apply_block(1_000_000, 12_500_000_000, 500_000, true);
         assert_eq!(
             p.miner as u128 + p.reserve as u128 + p.to_prize as u128 - 1_000_000u128,
@@ -251,7 +254,10 @@ mod tests {
                 let inflow = base as u128 + fees as u128;
                 let outflow =
                     p.miner as u128 + p.reserve as u128 + p.to_prize as u128 - reserve as u128;
-                assert_eq!(outflow, inflow, "reserve={reserve} base={base} jackpot={jackpot}");
+                assert_eq!(
+                    outflow, inflow,
+                    "reserve={reserve} base={base} jackpot={jackpot}"
+                );
             }
         }
     }

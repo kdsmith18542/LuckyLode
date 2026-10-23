@@ -12,6 +12,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Test workspace (unit + KAT + difficulty + jackpot gates)
         run: cargo test --workspace --locked
+      - name: Formatting gate
+        run: cargo fmt --all -- --check
       - name: Clippy (consensus code must be lint-clean)
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Bench smoke (compile only, timing is device-matrix work)
@@ -75,6 +77,9 @@ jobs:
       - name: Wallet backend clippy
         working-directory: lm-wallet/src-tauri
         run: cargo clippy --all-targets -- -D warnings
+      - name: Wallet formatting gate
+        working-directory: lm-wallet/src-tauri
+        run: cargo fmt -- --check
 
   # Kotlin app unit tests (the JNI .so is only needed at packaging time;
   # these tests cover the decision-packing contract on the JVM).

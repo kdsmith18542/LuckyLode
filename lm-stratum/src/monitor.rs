@@ -22,23 +22,10 @@ pub struct Snapshot {
 /// What the tracker decided about a sample.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Event {
-    TipAdvanced {
-        from: u64,
-        to: u64,
-    },
-    TipStalled {
-        height: u64,
-        stalled_secs: u64,
-    },
-    ReserveRose {
-        from: u64,
-        to: u64,
-    },
-    ReserveFell {
-        from: u64,
-        to: u64,
-        height: u64,
-    },
+    TipAdvanced { from: u64, to: u64 },
+    TipStalled { height: u64, stalled_secs: u64 },
+    ReserveRose { from: u64, to: u64 },
+    ReserveFell { from: u64, to: u64, height: u64 },
 }
 
 impl Event {
@@ -219,11 +206,7 @@ mod tests {
         assert!(!t.observe(300, 5, 100).iter().any(|e| e.is_critical()));
         // Past the window: stall, once.
         let e = t.observe(700, 5, 100);
-        assert_eq!(
-            e.iter().filter(|e| e.is_critical()).count(),
-            1,
-            "{e:?}"
-        );
+        assert_eq!(e.iter().filter(|e| e.is_critical()).count(), 1, "{e:?}");
         let e = t.observe(800, 5, 100);
         assert!(!e.iter().any(|e| e.is_critical()), "must not repeat: {e:?}");
         // Recovery resets; a later stall reports again.
@@ -245,7 +228,15 @@ mod tests {
     fn resume_does_not_false_alarm() {
         // Restart after a long pause: last_advance persisted as old, but
         // the process just started, so the grace window applies.
-        let t0 = Tracker::resume(10_000, 600, Some(Snapshot { height: 42, reserve: 7 }), 1_000);
+        let t0 = Tracker::resume(
+            10_000,
+            600,
+            Some(Snapshot {
+                height: 42,
+                reserve: 7,
+            }),
+            1_000,
+        );
         let mut t = t0;
         let e = t.observe(10_000, 42, 7);
         assert!(!e.iter().any(|e| e.is_critical()), "{e:?}");

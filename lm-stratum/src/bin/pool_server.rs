@@ -438,7 +438,10 @@ fn stats_json<P: TemplateProvider + 'static>(
     for (class, rows) in &boards {
         let class_size = rows.len() as u32;
         for (rank, e) in rows {
-            rank_map.insert(e.miner.clone(), (class.as_str().to_string(), *rank, class_size));
+            rank_map.insert(
+                e.miner.clone(),
+                (class.as_str().to_string(), *rank, class_size),
+            );
         }
     }
     let attestations = server.attestations();
@@ -498,7 +501,8 @@ fn stats_json<P: TemplateProvider + 'static>(
     let payout_totals = server.payout_totals();
     let payouts_json: Vec<serde_json::Value> = ctx
         .history
-        .lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .iter()
         .rev()
         .take(25)
@@ -645,7 +649,10 @@ fn resolve_divisions(
 /// `cap` limits entries per family (0 = uncapped). Fresh attestation
 /// verdicts decorate rows (`attested` + the verdict's provider/time).
 fn division_boards_json(
-    boards: &[(lm_pool::division::DeviceFamily, Vec<(u32, lm_pool::ledger::BoardEntry)>)],
+    boards: &[(
+        lm_pool::division::DeviceFamily,
+        Vec<(u32, lm_pool::ledger::BoardEntry)>,
+    )],
     names: &HashMap<String, String>,
     attestations: &lm_stratum::server::Attestations,
     now: u64,
@@ -730,7 +737,12 @@ fn worker_row_json(
 ) -> Option<serde_json::Value> {
     let st = streaks.get(miner);
     let lg = ranks.get(miner);
-    let seen = live.is_some() || st.is_some() || owed > 0 || paid > 0 || !name.is_empty() || attestation.is_some();
+    let seen = live.is_some()
+        || st.is_some()
+        || owed > 0
+        || paid > 0
+        || !name.is_empty()
+        || attestation.is_some();
     if !seen {
         return None;
     }
@@ -790,7 +802,10 @@ fn worker_api<P: TemplateProvider + 'static>(
     }
     if server.worker_tokens_active() {
         let authed = authorization
-            .and_then(|a| a.strip_prefix("Bearer ").or_else(|| a.strip_prefix("bearer ")))
+            .and_then(|a| {
+                a.strip_prefix("Bearer ")
+                    .or_else(|| a.strip_prefix("bearer "))
+            })
             .map(str::trim)
             .filter(|t| !t.is_empty())
             .and_then(|t| server.miner_for_token(t));
@@ -901,7 +916,10 @@ fn attest_api<P: TemplateProvider + 'static>(
         );
     }
     let bearer = authorization
-        .and_then(|a| a.strip_prefix("Bearer ").or_else(|| a.strip_prefix("bearer ")))
+        .and_then(|a| {
+            a.strip_prefix("Bearer ")
+                .or_else(|| a.strip_prefix("bearer "))
+        })
         .map(str::trim)
         .filter(|t| !t.is_empty());
     let body_token = req
@@ -916,7 +934,10 @@ fn attest_api<P: TemplateProvider + 'static>(
         .trim()
         .to_string();
     let miner = if server.worker_tokens_active() {
-        match bearer.or(body_token).and_then(|t| server.miner_for_token(t)) {
+        match bearer
+            .or(body_token)
+            .and_then(|t| server.miner_for_token(t))
+        {
             Some(m) => m,
             None => {
                 return (
@@ -1065,11 +1086,9 @@ fn http_reply<P: TemplateProvider + 'static>(
     };
     let node = ctx.node.as_ref();
     let (status, ctype, resp) = match (method, path) {
-        ("GET", "/") | ("GET", "/index.html") => (
-            "200 OK",
-            "text/html; charset=utf-8",
-            INDEX_HTML.to_string(),
-        ),
+        ("GET", "/") | ("GET", "/index.html") => {
+            ("200 OK", "text/html; charset=utf-8", INDEX_HTML.to_string())
+        }
         ("GET", "/api/stats") => (
             "200 OK",
             "application/json",
@@ -1093,8 +1112,11 @@ fn http_reply<P: TemplateProvider + 'static>(
             (status, "application/json", json)
         }
         ("GET", p) if p.starts_with("/api/worker/") => {
-            let (status, json) =
-                worker_api(server, &p["/api/worker/".len()..], Some(authorization.as_str()));
+            let (status, json) = worker_api(
+                server,
+                &p["/api/worker/".len()..],
+                Some(authorization.as_str()),
+            );
             (status, "application/json", json)
         }
         _ => (
@@ -1122,7 +1144,10 @@ fn miner_api<P: TemplateProvider + 'static>(
     auth: Option<&str>,
 ) -> (&'static str, String) {
     let bearer = auth
-        .and_then(|a| a.strip_prefix("Bearer ").or_else(|| a.strip_prefix("bearer ")))
+        .and_then(|a| {
+            a.strip_prefix("Bearer ")
+                .or_else(|| a.strip_prefix("bearer "))
+        })
         .map(str::trim)
         .map(str::to_string);
     let token = match bearer {
@@ -1139,7 +1164,8 @@ fn miner_api<P: TemplateProvider + 'static>(
     if token.is_empty() {
         return (
             "400 Bad Request",
-            serde_json::json!({"error": "missing token (Authorization: Bearer … or POST {token})"}).to_string(),
+            serde_json::json!({"error": "missing token (Authorization: Bearer … or POST {token})"})
+                .to_string(),
         );
     }
     let Some(miner) = server.miner_for_token(&token) else {
@@ -1273,7 +1299,12 @@ fn http_serve<P: TemplateProvider + 'static>(
             // every API route was already dead — the counter never drains
             // when handler threads wedge, so log it instead of failing
             // silently into per-client 503s.
-            eprintln!("http: connection cap hit, 503 for peer {}", s.peer_addr().map(|a| a.to_string()).unwrap_or_else(|_| "?".to_string()));
+            eprintln!(
+                "http: connection cap hit, 503 for peer {}",
+                s.peer_addr()
+                    .map(|a| a.to_string())
+                    .unwrap_or_else(|_| "?".to_string())
+            );
             let mut s = s;
             let _ = writeln!(
                 s,
@@ -1420,10 +1451,7 @@ const STATE_VERSION: u32 = 2;
 /// restored block records (exact while retained history is complete —
 /// the cap is 1000 blocks, noted on BLOCK_HISTORY_CAP). A fresh pool
 /// has no blocks, so the seed is 0 as well.
-fn resolve_credited_total(
-    stored: u64,
-    blocks: &[lm_stratum::server::BlockRecord],
-) -> u64 {
+fn resolve_credited_total(stored: u64, blocks: &[lm_stratum::server::BlockRecord]) -> u64 {
     if stored == 0 && !blocks.is_empty() {
         blocks.iter().map(|b| b.value + b.bonus + b.pot).sum()
     } else {
@@ -1489,7 +1517,10 @@ fn apply_force_fresh(state_file: &Option<std::path::PathBuf>) {
             aside.display()
         ),
         Err(e) => {
-            eprintln!("error: --force-fresh could not move {} aside: {e}", path.display());
+            eprintln!(
+                "error: --force-fresh could not move {} aside: {e}",
+                path.display()
+            );
             std::process::exit(1);
         }
     }
@@ -1575,11 +1606,10 @@ static SAVE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// Atomic snapshot write (tmp + rename) so a crash mid-save never leaves
 /// a truncated state file.
-fn save_state<P: TemplateProvider + 'static>(
-    server: &RunningServer<P>,
-    path: &Path,
-) {
-    let _guard = SAVE_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+fn save_state<P: TemplateProvider + 'static>(server: &RunningServer<P>, path: &Path) {
+    let _guard = SAVE_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let st = PoolState {
         version: STATE_VERSION,
         ledger: server.ledger_snapshot(),
@@ -1623,10 +1653,7 @@ fn save_state<P: TemplateProvider + 'static>(
 
 /// Periodic saver: the ledger moves on every block and payout, so a
 /// bounded 10 s loss window is the crash story.
-fn state_saver<P: TemplateProvider + 'static>(
-    server: Arc<RunningServer<P>>,
-    path: PathBuf,
-) {
+fn state_saver<P: TemplateProvider + 'static>(server: Arc<RunningServer<P>>, path: PathBuf) {
     loop {
         std::thread::sleep(std::time::Duration::from_secs(10));
         save_state(&server, &path);
@@ -1688,10 +1715,7 @@ fn due_miners(
 
 /// Payout destination for one miner: their own address override, else the
 /// worker name (which doubles as an address).
-fn payout_destination(
-    miner: &str,
-    settings: &lm_stratum::server::PayoutSettings,
-) -> String {
+fn payout_destination(miner: &str, settings: &lm_stratum::server::PayoutSettings) -> String {
     // The worker name IS the payout identity —
     // it doubles as the address unless the miner set an override.
     settings
@@ -1717,8 +1741,7 @@ fn payout_loop<P: TemplateProvider + 'static>(
     loop {
         std::thread::sleep(std::time::Duration::from_secs(cfg.interval_secs.max(10)));
         let settings = server.payout_settings();
-        let due: Vec<(String, u64)> =
-            due_miners(server.balances(), &settings, cfg.threshold);
+        let due: Vec<(String, u64)> = due_miners(server.balances(), &settings, cfg.threshold);
         if due.is_empty() {
             continue;
         }
@@ -1764,7 +1787,9 @@ fn payout_loop<P: TemplateProvider + 'static>(
                         save_state(&server, path);
                     }
                     budget = budget.saturating_sub(pay);
-                    let mut h = history.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                    let mut h = history
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
                     h.push_back(PayoutRecord {
                         time: now_secs(),
                         miner: miner.clone(),
@@ -1932,8 +1957,14 @@ fn main() -> std::process::ExitCode {
     // (SIGINT used to take the default terminate path and lose up to 10 s
     // of ledger/block changes despite the "Ctrl-C to stop" banner.)
     unsafe {
-        libc::signal(libc::SIGTERM, on_sigterm as extern "C" fn(libc::c_int) as libc::sighandler_t);
-        libc::signal(libc::SIGINT, on_sigterm as extern "C" fn(libc::c_int) as libc::sighandler_t);
+        libc::signal(
+            libc::SIGTERM,
+            on_sigterm as extern "C" fn(libc::c_int) as libc::sighandler_t,
+        );
+        libc::signal(
+            libc::SIGINT,
+            on_sigterm as extern "C" fn(libc::c_int) as libc::sighandler_t,
+        );
     }
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.iter().any(|a| a == "-h" || a == "--help") {
@@ -2133,17 +2164,19 @@ fn main() -> std::process::ExitCode {
                 network = Some(v);
             }
             "--jackpot-divisor" => {
-                jackpot_divisor = Some(parse_u64(
-                    &next("jackpot-divisor").unwrap_or_else(|e| {
+                jackpot_divisor = Some(
+                    parse_u64(
+                        &next("jackpot-divisor").unwrap_or_else(|e| {
+                            eprintln!("error: {e}");
+                            std::process::exit(2);
+                        }),
+                        "jackpot-divisor",
+                    )
+                    .unwrap_or_else(|e| {
                         eprintln!("error: {e}");
                         std::process::exit(2);
                     }),
-                    "jackpot-divisor",
-                )
-                .unwrap_or_else(|e| {
-                    eprintln!("error: {e}");
-                    std::process::exit(2);
-                }));
+                );
                 if jackpot_divisor == Some(0) {
                     eprintln!("error: --jackpot-divisor must be >= 1");
                     return std::process::ExitCode::from(2);
@@ -2187,17 +2220,19 @@ fn main() -> std::process::ExitCode {
                 }))
             }
             "--pot-divisor" => {
-                pot_divisor = Some(parse_u64(
-                    &next("pot-divisor").unwrap_or_else(|e| {
+                pot_divisor = Some(
+                    parse_u64(
+                        &next("pot-divisor").unwrap_or_else(|e| {
+                            eprintln!("error: {e}");
+                            std::process::exit(2);
+                        }),
+                        "pot-divisor",
+                    )
+                    .unwrap_or_else(|e| {
                         eprintln!("error: {e}");
                         std::process::exit(2);
                     }),
-                    "pot-divisor",
-                )
-                .unwrap_or_else(|e| {
-                    eprintln!("error: {e}");
-                    std::process::exit(2);
-                }));
+                );
                 if pot_divisor == Some(0) {
                     eprintln!("error: --pot-divisor must be >= 1");
                     return std::process::ExitCode::from(2);
@@ -2498,12 +2533,7 @@ fn main() -> std::process::ExitCode {
             resolved_pot_divisor,
         )
         .with_restored_unmatured(read_unmatured(&state_file));
-        let provider = match NodeProvider::connect_with_config(
-            &node,
-            &rpc_user,
-            &rpc_pass,
-            cfg,
-        ) {
+        let provider = match NodeProvider::connect_with_config(&node, &rpc_user, &rpc_pass, cfg) {
             Ok(p) => p,
             Err(e) => {
                 eprintln!("error: cannot reach node RPC {node}: {e}");
@@ -2636,12 +2666,7 @@ fn main() -> std::process::ExitCode {
             server.set_dev_fee(addr, dev_fee_pp);
             println!("dev fee: {dev_fee_pp} per-myriad of each block to {addr}");
         }
-        maybe_spawn_v2(
-            &mut server,
-            &v2_bind,
-            &v2_authority_key,
-            v2_cert_validity,
-        );
+        maybe_spawn_v2(&mut server, &v2_bind, &v2_authority_key, v2_cert_validity);
         let server = Arc::new(server);
         if let Some(path) = &state_file {
             std::thread::spawn({
@@ -2785,12 +2810,7 @@ fn main() -> std::process::ExitCode {
         if let Some(addr) = &dev_fee_addr {
             server.set_dev_fee(addr, dev_fee_pp);
         }
-        maybe_spawn_v2(
-            &mut server,
-            &v2_bind,
-            &v2_authority_key,
-            v2_cert_validity,
-        );
+        maybe_spawn_v2(&mut server, &v2_bind, &v2_authority_key, v2_cert_validity);
         let server = Arc::new(server);
         if let Some(path) = &state_file {
             std::thread::spawn({
@@ -2882,7 +2902,15 @@ mod tests {
         // balance is due (empty ones are skipped so they can't stall the
         // budget loop), with or without per-miner overrides.
         let settings = PayoutSettings::new();
-        let due = due_miners(vec![("m1".to_string(), 5), ("m2".to_string(), 0), ("m3".to_string(), 999)], &settings, 0);
+        let due = due_miners(
+            vec![
+                ("m1".to_string(), 5),
+                ("m2".to_string(), 0),
+                ("m3".to_string(), 999),
+            ],
+            &settings,
+            0,
+        );
         assert_eq!(due, vec![("m1".to_string(), 5), ("m3".to_string(), 999)]);
     }
 
@@ -2897,7 +2925,11 @@ mod tests {
                 threshold: Some(1_000),
             },
         );
-        let bals = vec![("m1".to_string(), 500u64), ("m2".to_string(), 500), ("m3".to_string(), 500)];
+        let bals = vec![
+            ("m1".to_string(), 500u64),
+            ("m2".to_string(), 500),
+            ("m3".to_string(), 500),
+        ];
         // Global 100: 1 and 3 are due; 2's own threshold (1000) holds it.
         assert_eq!(
             due_miners(bals.clone(), &settings, 100),
@@ -2939,9 +2971,15 @@ mod tests {
         );
         // The worker name is the payout identity: override wins when set,
         // otherwise the name itself is the destination.
-        assert_eq!(payout_destination("worker-name", &settings), "override-addr");
+        assert_eq!(
+            payout_destination("worker-name", &settings),
+            "override-addr"
+        );
         assert_eq!(payout_destination("worker-2", &settings), "worker-2");
-        assert_eq!(payout_destination("unregistered", &settings), "unregistered");
+        assert_eq!(
+            payout_destination("unregistered", &settings),
+            "unregistered"
+        );
     }
 
     #[test]
@@ -2974,17 +3012,38 @@ mod tests {
         let mut streaks = HashMap::new();
         streaks.insert(
             "w1".to_string(),
-            StreakState { miner: "w1".to_string(), days_active: 5, streak_days: 2, best_streak_days: 9 },
+            StreakState {
+                miner: "w1".to_string(),
+                days_active: 5,
+                streak_days: 2,
+                best_streak_days: 9,
+            },
         );
         streaks.insert(
             "w2".to_string(),
-            StreakState { miner: "w2".to_string(), days_active: 3, streak_days: 3, best_streak_days: 3 },
+            StreakState {
+                miner: "w2".to_string(),
+                days_active: 3,
+                streak_days: 3,
+                best_streak_days: 3,
+            },
         );
         let mut ranks: HashMap<String, (String, u32, u32)> = HashMap::new();
         ranks.insert("w1".to_string(), ("cpu".to_string(), 4, 11));
         ranks.insert("w2".to_string(), ("cpu".to_string(), 9, 11));
         // Online: live rates + ledger streak/rank side by side.
-        let row = worker_row_json("w1", Some(&live), &streaks, &ranks, 50, 500, "w1", None, 200).unwrap();
+        let row = worker_row_json(
+            "w1",
+            Some(&live),
+            &streaks,
+            &ranks,
+            50,
+            500,
+            "w1",
+            None,
+            200,
+        )
+        .unwrap();
         assert_eq!(row["online"], true);
         assert_eq!(row["shares"], 7);
         assert_eq!(row["rate60"], 1.0);
@@ -3001,7 +3060,7 @@ mod tests {
         assert_eq!(row["streak"], 3);
         assert_eq!(row["division_rank"], 9);
         assert_eq!(row["name"], "w2"); // no registered name → the miner id
-        // Never seen: None (the route 404s).
+                                       // Never seen: None (the route 404s).
         assert!(worker_row_json("ghost", None, &streaks, &ranks, 0, 0, "", None, 200).is_none());
     }
 
@@ -3022,23 +3081,63 @@ mod tests {
             agents: Vec::new(),
             shares: lm_pool::ledger::Ledger::new(),
         };
-        let back: PoolState =
-            serde_json::from_str(&serde_json::to_string(&st).expect("serialize")).expect("deserialize");
+        let back: PoolState = serde_json::from_str(&serde_json::to_string(&st).expect("serialize"))
+            .expect("deserialize");
         assert_eq!(back.credited_total, 9_999_999);
         // Pre-counter files (no credited_total key) default to 0 and get
         // seeded from the restored block records instead.
         let seeded = resolve_credited_total(
             0,
             &[
-                BlockRecord { height: 1, finder: "a".to_string(), value: 1_000_000, bonus: 100_000, pot: 0, prize_inflow: 0, faucet: 0, dev: 0, prize_claim: 0, prize_winner: String::new(), payouts: vec![] },
-                BlockRecord { height: 2, finder: "a".to_string(), value: 2_000_000, bonus: 0, pot: 300_000, prize_inflow: 0, faucet: 0, dev: 0, prize_claim: 0, prize_winner: String::new(), payouts: vec![] },
+                BlockRecord {
+                    height: 1,
+                    finder: "a".to_string(),
+                    value: 1_000_000,
+                    bonus: 100_000,
+                    pot: 0,
+                    prize_inflow: 0,
+                    faucet: 0,
+                    dev: 0,
+                    prize_claim: 0,
+                    prize_winner: String::new(),
+                    payouts: vec![],
+                },
+                BlockRecord {
+                    height: 2,
+                    finder: "a".to_string(),
+                    value: 2_000_000,
+                    bonus: 0,
+                    pot: 300_000,
+                    prize_inflow: 0,
+                    faucet: 0,
+                    dev: 0,
+                    prize_claim: 0,
+                    prize_winner: String::new(),
+                    payouts: vec![],
+                },
             ],
         );
         assert_eq!(seeded, 3_400_000);
         // An explicit stored value always wins, even with blocks present.
-        assert_eq!(resolve_credited_total(42, &[
-            BlockRecord { height: 1, finder: "a".to_string(), value: 1_000_000, bonus: 0, pot: 0, prize_inflow: 0, faucet: 0, dev: 0, prize_claim: 0, prize_winner: String::new(), payouts: vec![] },
-        ]), 42);
+        assert_eq!(
+            resolve_credited_total(
+                42,
+                &[BlockRecord {
+                    height: 1,
+                    finder: "a".to_string(),
+                    value: 1_000_000,
+                    bonus: 0,
+                    pot: 0,
+                    prize_inflow: 0,
+                    faucet: 0,
+                    dev: 0,
+                    prize_claim: 0,
+                    prize_winner: String::new(),
+                    payouts: vec![]
+                },]
+            ),
+            42
+        );
         // Fresh pool: nothing to seed from.
         assert_eq!(resolve_credited_total(0, &[]), 0);
     }
@@ -3069,7 +3168,10 @@ mod tests {
             kept.to_string_lossy().contains(".pre-fresh-"),
             "timestamped suffix: {kept:?}"
         );
-        assert_eq!(std::fs::read_to_string(&kept).expect("read backup"), r#"{"version":2}"#);
+        assert_eq!(
+            std::fs::read_to_string(&kept).expect("read backup"),
+            r#"{"version":2}"#
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -3114,8 +3216,18 @@ mod tests {
         // A shares snapshot round-trips share data (streaks survive a
         // restart through the state file).
         let mut led = lm_pool::ledger::Ledger::new();
-        led.submit(lm_pool::ledger::ShareRec { miner: "w1".to_string(), ts: 100, work: 10, overnight: false });
-        led.submit(lm_pool::ledger::ShareRec { miner: "w1".to_string(), ts: 100 + 86_400, work: 10, overnight: false });
+        led.submit(lm_pool::ledger::ShareRec {
+            miner: "w1".to_string(),
+            ts: 100,
+            work: 10,
+            overnight: false,
+        });
+        led.submit(lm_pool::ledger::ShareRec {
+            miner: "w1".to_string(),
+            ts: 100 + 86_400,
+            work: 10,
+            overnight: false,
+        });
         let st2 = PoolState {
             version: STATE_VERSION,
             ledger: lm_pool::payout::PayoutLedger::default(),
@@ -3129,7 +3241,9 @@ mod tests {
             agents: Vec::new(),
             shares: led,
         };
-        let back2: PoolState = serde_json::from_str(&serde_json::to_string(&st2).expect("serialize")).expect("deserialize");
+        let back2: PoolState =
+            serde_json::from_str(&serde_json::to_string(&st2).expect("serialize"))
+                .expect("deserialize");
         let streaks = back2.shares.streaks(u64::MAX / 2);
         assert_eq!(streaks.len(), 1);
         assert_eq!(streaks[0].miner, "w1");
@@ -3307,9 +3421,7 @@ mod tests {
             r#"{"worker":"w1","provider":"self","detail":"Pixel 8"}"#,
         );
         assert_eq!(status, "200 OK");
-        let att = server
-            .attestation_for("w1", now_secs())
-            .expect("recorded");
+        let att = server.attestation_for("w1", now_secs()).expect("recorded");
         assert_eq!(att.provider, "self");
         assert_eq!(att.detail, "Pixel 8");
         let (status, _) = attest_api(
@@ -3319,7 +3431,10 @@ mod tests {
         );
         assert_eq!(status, "200 OK");
         assert_eq!(
-            server.attestation_for("w1", now_secs()).expect("kept").detail,
+            server
+                .attestation_for("w1", now_secs())
+                .expect("kept")
+                .detail,
             "Pixel 9"
         );
         server.stop();
@@ -3458,7 +3573,9 @@ mod tests {
         .expect("spawn");
         load_state(&s2, &dir).expect("valid state loads");
         assert_eq!(s2.credited_total(), 123_456_789);
-        assert!(s2.names().contains(&("w1".to_string(), "worker one".to_string())));
+        assert!(s2
+            .names()
+            .contains(&("w1".to_string(), "worker one".to_string())));
         assert_eq!(s2.prize_credits(), vec![(42, 777)]);
         s2.stop();
 
@@ -3485,8 +3602,8 @@ mod tests {
         use std::time::{Duration, Instant};
         // Normal line.
         let mut r = std::io::Cursor::new(b"GET / HTTP/1.1\r\n".to_vec());
-        let line = read_line_capped(&mut r, 1024, Instant::now() + Duration::from_secs(1))
-            .expect("line");
+        let line =
+            read_line_capped(&mut r, 1024, Instant::now() + Duration::from_secs(1)).expect("line");
         assert_eq!(line, "GET / HTTP/1.1\r");
         // Over the cap: rejected, not buffered forever.
         let mut r = std::io::Cursor::new(vec![b'a'; 100]);
@@ -3499,5 +3616,4 @@ mod tests {
             .expect_err("deadline");
         assert_eq!(err.kind(), std::io::ErrorKind::TimedOut);
     }
-
 }

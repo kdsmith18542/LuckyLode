@@ -202,7 +202,9 @@ mod tests {
         assert_eq!(c.xprv(), "xprv9wSp6B7kry3Vj9m1zSnLvN3xH8RdsPP1Mh7fAaR7aRLcQMKTR2vidYEeEg2mUCTAwCd6vnxVrcjfy2kRgVsFawNzmjuHc2YmYRmagcEPdU9");
         let c = c.derive(1).expect("m/0/2147483647H/1");
         assert_eq!(c.xprv(), "xprv9zFnWC6h2cLgpmSA46vutJzBcfJ8yaJGg8cX1e5StJh45BBciYTRXSd25UEPVuesF9yog62tGAQtHjXajPPdbRCHuWS6T8XA2ECKADdw4Ef");
-        let c = c.derive(HARDENED | 2147483646).expect("m/0/2147483647H/1/2147483646H");
+        let c = c
+            .derive(HARDENED | 2147483646)
+            .expect("m/0/2147483647H/1/2147483646H");
         assert_eq!(c.xpub().expect("xpub"), "xpub6ERApfZwUNrhLCkDtcHTcxd75RbzS1ed54G1LkBUHQVHQKqhMkhgbmJbZRkrgZw4koxb5JaHWkY4ALHY2grBGRjaDMzQLcgJvLJuZZvRcEL");
         let c = c.derive(2).expect("m/0/2147483647H/1/2147483646H/2");
         assert_eq!(c.xpub().expect("xpub"), "xpub6FnCn6nSzZAw5Tw7cgR9bi15UV96gLZhjDstkXXxvCLsUXBGXPdSnLFbdpq8p9HmGsApME5hQTZ3emM2rnY5agb9rXpVGyy3bdW6EEgAtqt");

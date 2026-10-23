@@ -32,21 +32,50 @@ fn make_cert(dir: &std::path::Path) -> Option<(PathBuf, PathBuf, PathBuf)> {
         status.success().then_some(())
     };
     run(&[
-        "req", "-x509", "-newkey", "rsa:2048", "-nodes",
-        "-keyout", ca_key.to_str()?, "-out", ca.to_str()?,
-        "-days", "1", "-subj", "/CN=LuckyLode Test CA",
+        "req",
+        "-x509",
+        "-newkey",
+        "rsa:2048",
+        "-nodes",
+        "-keyout",
+        ca_key.to_str()?,
+        "-out",
+        ca.to_str()?,
+        "-days",
+        "1",
+        "-subj",
+        "/CN=LuckyLode Test CA",
     ])?;
     run(&[
-        "req", "-newkey", "rsa:2048", "-nodes",
-        "-keyout", key.to_str()?, "-out", csr.to_str()?,
-        "-subj", "/CN=localhost",
-        "-addext", "subjectAltName=DNS:localhost,IP:127.0.0.1",
+        "req",
+        "-newkey",
+        "rsa:2048",
+        "-nodes",
+        "-keyout",
+        key.to_str()?,
+        "-out",
+        csr.to_str()?,
+        "-subj",
+        "/CN=localhost",
+        "-addext",
+        "subjectAltName=DNS:localhost,IP:127.0.0.1",
     ])?;
     run(&[
-        "x509", "-req", "-in", csr.to_str()?, "-CA", ca.to_str()?,
-        "-CAkey", ca_key.to_str()?, "-CAcreateserial",
-        "-out", cert.to_str()?, "-days", "1",
-        "-copy_extensions", "copy",
+        "x509",
+        "-req",
+        "-in",
+        csr.to_str()?,
+        "-CA",
+        ca.to_str()?,
+        "-CAkey",
+        ca_key.to_str()?,
+        "-CAcreateserial",
+        "-out",
+        cert.to_str()?,
+        "-days",
+        "1",
+        "-copy_extensions",
+        "copy",
     ])?;
     Some((ca, cert, key))
 }
@@ -73,14 +102,9 @@ fn tls_pool_round_trip_and_plaintext_rejected() {
     let addr = server.addr();
 
     // Trusting the self-signed cert as an extra CA must work.
-    let mut c = PoolClient::connect_tls(
-        addr,
-        "localhost",
-        Some(&ca),
-        false,
-        Duration::from_secs(10),
-    )
-    .expect("tls connect");
+    let mut c =
+        PoolClient::connect_tls(addr, "localhost", Some(&ca), false, Duration::from_secs(10))
+            .expect("tls connect");
     assert!(c.subscribe("tls-probe").expect("subscribe"));
     assert!(c.authorize("tls-worker").expect("authorize"));
     let job = c

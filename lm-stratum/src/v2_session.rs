@@ -235,8 +235,8 @@ fn base58_decode(s: &str) -> Result<Vec<u8>, String> {
 /// When the secret is not a valid secp256k1 scalar (all-zero or ≥ order).
 pub fn authority_from_secret(secret: &[u8; 32]) -> Result<([u8; 32], [u8; 32]), String> {
     let secp = secp256k1::Secp256k1::new();
-    let sk = secp256k1::SecretKey::from_slice(secret)
-        .map_err(|e| format!("authority secret: {e}"))?;
+    let sk =
+        secp256k1::SecretKey::from_slice(secret).map_err(|e| format!("authority secret: {e}"))?;
     let kp = secp256k1::Keypair::from_secret_key(&secp, &sk);
     let (xonly, _parity) = kp.x_only_public_key();
     Ok((xonly.serialize(), kp.secret_bytes()))
@@ -353,7 +353,8 @@ impl<S: Read + Write> V2Session<S> {
         if frame.payload.len() > MAX_FRAME_LEN {
             return Err(SessionError::TooLong(frame.payload.len()));
         }
-        let mut out = Vec::with_capacity(NOISE_ENCRYPTED_HEADER_LEN + frame.payload.len() + MAC_LEN);
+        let mut out =
+            Vec::with_capacity(NOISE_ENCRYPTED_HEADER_LEN + frame.payload.len() + MAC_LEN);
         let mut header = frame.header().to_vec();
         self.encryptor
             .encrypt(&mut header)
@@ -409,10 +410,7 @@ impl<S: Read + Write> V2Session<S> {
 impl V2Session<std::net::TcpStream> {
     /// Read timeout control for the miner's poll loop (short timeouts make
     /// `recv` return a timeout error the caller treats as "no job yet").
-    pub fn set_read_timeout(
-        &self,
-        dur: Option<std::time::Duration>,
-    ) -> std::io::Result<()> {
+    pub fn set_read_timeout(&self, dur: Option<std::time::Duration>) -> std::io::Result<()> {
         self.stream.set_read_timeout(dur)
     }
 }
@@ -501,11 +499,7 @@ mod tests {
                     tx: Arc::clone(&b),
                     flip: Arc::clone(&flip),
                 },
-                Self {
-                    rx: b,
-                    tx: a,
-                    flip,
-                },
+                Self { rx: b, tx: a, flip },
             )
         }
     }
@@ -515,7 +509,10 @@ mod tests {
             let deadline = Instant::now() + Duration::from_secs(5);
             loop {
                 {
-                    let mut q = self.rx.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                    let mut q = self
+                        .rx
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
                     if !q.is_empty() {
                         let n = buf.len().min(q.len());
                         for (i, byte) in q.drain(..n).enumerate() {
@@ -541,7 +538,10 @@ mod tests {
             if !out.is_empty() && self.flip.swap(false, Ordering::SeqCst) {
                 out[0] ^= 0x01;
             }
-            self.tx.lock().unwrap_or_else(std::sync::PoisonError::into_inner).extend(out);
+            self.tx
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .extend(out);
             Ok(buf.len())
         }
         fn flush(&mut self) -> std::io::Result<()> {
@@ -611,7 +611,10 @@ mod tests {
         assert_eq!(ciphertext_len(1), 17);
         assert_eq!(ciphertext_len(6), 22);
         assert_eq!(ciphertext_len(MAX_PLAINTEXT_CHUNK), MAX_CIPHERTEXT_CHUNK);
-        assert_eq!(ciphertext_len(MAX_PLAINTEXT_CHUNK + 1), MAX_CIPHERTEXT_CHUNK + 17);
+        assert_eq!(
+            ciphertext_len(MAX_PLAINTEXT_CHUNK + 1),
+            MAX_CIPHERTEXT_CHUNK + 17
+        );
         assert_eq!(
             ciphertext_len(2 * MAX_PLAINTEXT_CHUNK),
             2 * MAX_CIPHERTEXT_CHUNK
@@ -683,8 +686,8 @@ mod tests {
         let authority = generate_authority();
         let (client, server) = Duplex::pair();
         let server_thread = std::thread::spawn(move || {
-            let mut s = V2Session::accept(server, authority, Duration::from_secs(3600))
-                .expect("accept");
+            let mut s =
+                V2Session::accept(server, authority, Duration::from_secs(3600)).expect("accept");
             s.recv().expect("recv empty")
         });
         let mut c = V2Session::connect(client, Some(authority.0)).expect("connect");
@@ -764,8 +767,7 @@ mod tests {
         // (both speak noise_sv2 2.0.0, so the transcript must agree).
         let authority = generate_authority();
         let (mut io, server) = Duplex::pair();
-        let xonly =
-            secp256k1::XOnlyPublicKey::from_slice(&authority.0).expect("authority xonly");
+        let xonly = secp256k1::XOnlyPublicKey::from_slice(&authority.0).expect("authority xonly");
         let (msg0, hs) = Handshake::initiator(Initiator::new(Some(xonly)))
             .step_0()
             .expect("ref step_0");
@@ -795,7 +797,12 @@ mod tests {
                 sequence_number: 3,
                 nonce: 0xdead_beef_1234_5678,
             }),
-            Frame::new(0, 0x21, true, (0..70_000).map(|i| (i % 251) as u8).collect()),
+            Frame::new(
+                0,
+                0x21,
+                true,
+                (0..70_000).map(|i| (i % 251) as u8).collect(),
+            ),
             Frame::new(0, 0x04, false, Vec::new()),
         ];
 
@@ -957,9 +964,8 @@ mod tests {
             version: 0x2000_0000,
         }))
         .expect("send share");
-        let accepted =
-            from_frame::<SubmitSharesSuccess>(&c.recv().expect("recv share success"))
-                .expect("decode share success");
+        let accepted = from_frame::<SubmitSharesSuccess>(&c.recv().expect("recv share success"))
+            .expect("decode share success");
         assert_eq!(accepted.new_submits_accepted_count, 1);
         assert_eq!(accepted.last_sequence_number, 1);
         server_thread.join().expect("server thread");

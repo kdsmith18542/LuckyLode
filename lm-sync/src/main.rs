@@ -37,9 +37,7 @@ impl Endpoint {
     }
     fn block_hex(&self, hash: &str) -> Result<String, String> {
         // verbosity 0 → raw hex.
-        let v = self
-            .rpc
-            .call("getblock", serde_json::json!([hash, 0]))?;
+        let v = self.rpc.call("getblock", serde_json::json!([hash, 0]))?;
         v.as_str()
             .map(|s| s.to_string())
             .ok_or_else(|| "bad getblock hex".to_string())
@@ -68,14 +66,17 @@ impl Endpoint {
 
 fn is_duplicate(e: &str) -> bool {
     let l = e.to_lowercase();
-    l.contains("duplicate")
-        || l.contains("already have")
-        || l.contains("block-already")
+    l.contains("duplicate") || l.contains("already have") || l.contains("block-already")
 }
 
 /// Copy every block in (to_height, from_height] from `src` to `dst`.
 /// Returns (blocks_copied, elapsed).
-fn pull_range(src: &Endpoint, dst: &Endpoint, from_h: u64, to_h: u64) -> Result<(u64, Duration), String> {
+fn pull_range(
+    src: &Endpoint,
+    dst: &Endpoint,
+    from_h: u64,
+    to_h: u64,
+) -> Result<(u64, Duration), String> {
     if from_h <= to_h {
         return Ok((0, Duration::ZERO));
     }
@@ -84,7 +85,8 @@ fn pull_range(src: &Endpoint, dst: &Endpoint, from_h: u64, to_h: u64) -> Result<
     for h in (to_h + 1)..=from_h {
         let hash = src.hash_at(h)?;
         let hex = src.block_hex(&hash)?;
-        dst.submit(&hex).map_err(|e| format!("height {h} ({hash}): {e}"))?;
+        dst.submit(&hex)
+            .map_err(|e| format!("height {h} ({hash}): {e}"))?;
         n += 1;
         if n.is_multiple_of(25) || h == from_h {
             let el = t0.elapsed().as_secs_f64().max(0.001);
@@ -292,7 +294,10 @@ fn cmd_watch(args: &[String]) -> Result<(), String> {
             // to look identical to a healthy idle watch. Rate-limited so
             // a dead node pages at most once a minute.
             _ => {
-                if err_since.map(|t| t.elapsed() >= Duration::from_secs(60)).unwrap_or(true) {
+                if err_since
+                    .map(|t| t.elapsed() >= Duration::from_secs(60))
+                    .unwrap_or(true)
+                {
                     eprintln!("watch: source/target RPC failing (wrong credentials or node down?) — retrying");
                     err_since = Some(Instant::now());
                 }
@@ -304,8 +309,10 @@ fn cmd_watch(args: &[String]) -> Result<(), String> {
             last_change = Instant::now();
         }
         if sh > th && last_change.elapsed() >= Duration::from_secs(stall) {
-            eprintln!("stall: target {th} vs source {sh} for {}s — pulling gap",
-                last_change.elapsed().as_secs());
+            eprintln!(
+                "stall: target {th} vs source {sh} for {}s — pulling gap",
+                last_change.elapsed().as_secs()
+            );
             // Heal the P2P path too: unban everyone, one-shot redial source.
             let _ = dst.rpc.call("clearbanned", serde_json::json!([]));
             if !p2p.is_empty() {

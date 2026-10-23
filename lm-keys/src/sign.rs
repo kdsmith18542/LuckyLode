@@ -15,8 +15,8 @@ use secp256k1::{Message, PublicKey, Secp256k1, SecretKey};
 
 use crate::address::sha256d;
 use crate::tx::{
-    put_bytes, put_compactsize, put_i64, put_u32, txid_display, OutPoint, SIGHASH_ALL,
-    SEQUENCE_FINAL, Transaction, TxIn, TxOut,
+    put_bytes, put_compactsize, put_i64, put_u32, txid_display, OutPoint, Transaction, TxIn, TxOut,
+    SEQUENCE_FINAL, SIGHASH_ALL,
 };
 pub use crate::zip243::{Epoch, SAPLING_BRANCH_ID};
 
@@ -51,8 +51,9 @@ fn b64_encode(b: &[u8]) -> String {
     const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(b.len().div_ceil(3) * 4);
     for chunk in b.chunks(3) {
-        let n =
-            ((chunk[0] as u32) << 16) | ((*chunk.get(1).unwrap_or(&0)) as u32) << 8 | (*chunk.get(2).unwrap_or(&0)) as u32;
+        let n = ((chunk[0] as u32) << 16)
+            | ((*chunk.get(1).unwrap_or(&0)) as u32) << 8
+            | (*chunk.get(2).unwrap_or(&0)) as u32;
         out.push(T[(n >> 18) as usize & 63] as char);
         out.push(T[(n >> 12) as usize & 63] as char);
         if chunk.len() > 1 {
@@ -153,7 +154,8 @@ pub fn verify_message(sig_b64: &str, message: &str) -> Result<[u8; 33], String> 
     }
     let recid = RecoveryId::from_i32(i32::from(sig[0] - 27) & 3)
         .map_err(|e| format!("recovery id: {e}"))?;
-    let rs = RecoverableSignature::from_compact(&sig[1..], recid).map_err(|e| format!("sig: {e}"))?;
+    let rs =
+        RecoverableSignature::from_compact(&sig[1..], recid).map_err(|e| format!("sig: {e}"))?;
     let h2 = signed_data_hash(message);
     let pk = Secp256k1::new()
         .recover_ecdsa(&Message::from_digest(h2), &rs)
@@ -198,7 +200,10 @@ pub fn legacy_sighash(
 }
 
 fn is_p2pkh(script: &[u8]) -> bool {
-    script.len() == 25 && script[0] == 0x76 && script[1] == 0xa9 && script[2] == 0x14
+    script.len() == 25
+        && script[0] == 0x76
+        && script[1] == 0xa9
+        && script[2] == 0x14
         && script[23] == 0x88
         && script[24] == 0xac
 }
@@ -244,11 +249,15 @@ pub fn sign_input(
                     "epoch/tx format mismatch: epoch wants tx v{want}, tx is v{v}"
                 ));
             }
-            let branch = epoch.branch_id().expect("overwintered epochs carry a branch id");
+            let branch = epoch
+                .branch_id()
+                .expect("overwintered epochs carry a branch id");
             crate::zip243::sighash(tx, input, script_code, amount as i64, SIGHASH_ALL, branch)?
         }
         (_, false, _) => {
-            return Err("overwintered epoch but the tx is sprout-era (format mismatch)".to_string());
+            return Err(
+                "overwintered epoch but the tx is sprout-era (format mismatch)".to_string(),
+            );
         }
     };
     let mut sig = secp.sign_ecdsa(&Message::from_digest(sighash), &sk);
@@ -343,7 +352,10 @@ pub fn build_spend(
     let mut outs = 2;
     let mut fee = fee_for(n, outs);
     if total < amount + fee {
-        return Err(format!("insufficient funds: have {total}, need {}", amount + fee));
+        return Err(format!(
+            "insufficient funds: have {total}, need {}",
+            amount + fee
+        ));
     }
     let mut change = total - amount - fee;
     if change < DUST_SATS {
@@ -403,23 +415,31 @@ mod tests {
     /// verify against our recomputed digest.
     #[test]
     fn bitcoin_mainnet_p2pkh_spend_verifies() {
-        let kat: serde_json::Value = serde_json::from_str(include_str!(
-            "../tests/fixtures/btc_p2pkh_spend.json"
-        ))
-        .expect("fixture");
+        let kat: serde_json::Value =
+            serde_json::from_str(include_str!("../tests/fixtures/btc_p2pkh_spend.json"))
+                .expect("fixture");
         let raw = hex::decode(kat["hex"].as_str().expect("hex")).expect("hex");
         let (tx, used) = Transaction::deserialize(&raw).expect("decode");
         assert_eq!(used, raw.len());
         // Re-serialization is byte-identical (decoder understands the wire).
-        assert_eq!(hex::encode(tx.serialize()), kat["hex"].as_str().expect("hex"));
-        assert_eq!(txid_display(&tx.txid()), kat["txid"].as_str().expect("txid"));
+        assert_eq!(
+            hex::encode(tx.serialize()),
+            kat["hex"].as_str().expect("hex")
+        );
+        assert_eq!(
+            txid_display(&tx.txid()),
+            kat["txid"].as_str().expect("txid")
+        );
         assert_eq!(tx.vin.len(), 1);
         let vin0 = &kat["vin0"];
         assert_eq!(
             txid_display(&tx.vin[0].prevout.txid),
             vin0["txid"].as_str().expect("prev txid")
         );
-        assert_eq!(tx.vin[0].prevout.vout, vin0["vout"].as_u64().expect("vout") as u32);
+        assert_eq!(
+            tx.vin[0].prevout.vout,
+            vin0["vout"].as_u64().expect("vout") as u32
+        );
         assert_eq!(
             hex::encode(&tx.vin[0].script_sig),
             vin0["scriptsig"].as_str().expect("scriptsig")
@@ -429,9 +449,7 @@ mod tests {
         assert_eq!(ss[0] as usize, ss.len() - 2 - 33);
         let sig = &ss[1..1 + ss[0] as usize];
         assert_eq!(ss[1 + ss[0] as usize], 33);
-        let pk: &[u8; 33] = ss[2 + ss[0] as usize..]
-            .try_into()
-            .expect("33-byte pubkey");
+        let pk: &[u8; 33] = ss[2 + ss[0] as usize..].try_into().expect("33-byte pubkey");
         let script_code =
             hex::decode(vin0["prevout_script"].as_str().expect("script")).expect("script");
         let sighash = legacy_sighash(&tx, 0, &script_code).expect("sighash");
@@ -497,8 +515,8 @@ mod tests {
         assert_eq!(s1.fee, 374);
         assert_eq!(s1.change, 300_000 - 150_000 - 374);
         // Every input verifies against the built tx.
-        let (tx, _) = Transaction::deserialize(&hex::decode(&s1.hex).expect("hex"))
-            .expect("decode own tx");
+        let (tx, _) =
+            Transaction::deserialize(&hex::decode(&s1.hex).expect("hex")).expect("decode own tx");
         assert_eq!(tx.vin.len(), 2);
         for (i, u) in utxos[..2].iter().enumerate() {
             let h = legacy_sighash(&tx, i, &u.script).expect("sighash");
@@ -540,12 +558,21 @@ mod tests {
             script: ka.p2pk_script(),
             secret: *ka.secret(),
         }];
-        let s = build_spend(&utxos, &kb.p2pkh_script(Network::Testnet), 100_000, &ka.p2pkh_script(Network::Testnet), 1000, Epoch::Sprout)
-            .expect("build");
-        let (tx, _) =
-            Transaction::deserialize(&hex::decode(&s.hex).expect("hex")).expect("decode");
+        let s = build_spend(
+            &utxos,
+            &kb.p2pkh_script(Network::Testnet),
+            100_000,
+            &ka.p2pkh_script(Network::Testnet),
+            1000,
+            Epoch::Sprout,
+        )
+        .expect("build");
+        let (tx, _) = Transaction::deserialize(&hex::decode(&s.hex).expect("hex")).expect("decode");
         // P2PK scriptSig is a single push (no pubkey).
-        assert_eq!(tx.vin[0].script_sig.len(), 1 + tx.vin[0].script_sig[0] as usize);
+        assert_eq!(
+            tx.vin[0].script_sig.len(),
+            1 + tx.vin[0].script_sig[0] as usize
+        );
         let h = legacy_sighash(&tx, 0, &utxos[0].script).expect("sighash");
         let ss = &tx.vin[0].script_sig;
         assert!(verify_sig(&h, &ss[1..], ka.pubkey()).expect("verify"));
@@ -561,7 +588,9 @@ mod tests {
         assert_eq!(pk, *kp.pubkey(), "recovered pubkey must be the signer's");
         // The pubkey maps to the P2PKH address the node derives.
         assert_eq!(
-            Keypair::from_secret(*kp.secret()).expect("kp").p2pkh_address(net),
+            Keypair::from_secret(*kp.secret())
+                .expect("kp")
+                .p2pkh_address(net),
             kp.p2pkh_address(net)
         );
     }
@@ -573,16 +602,11 @@ mod tests {
         let sig = sign_message(kp.secret(), msg).expect("sign");
         // Wrong message → recovery either fails or yields a pubkey that is
         // NOT the signer's (never accept a signature over a different msg).
-        if let Ok(pk) =
-            verify_message(&sig, "luckynode-register:v1:abc123:addrXYZ:1792195726")
-        {
+        if let Ok(pk) = verify_message(&sig, "luckynode-register:v1:abc123:addrXYZ:1792195726") {
             assert_ne!(pk, *kp.pubkey());
         }
         // Wrong key (different secret) → different recovered pubkey.
         let other = Keypair::from_secret([7u8; 32]).expect("keypair");
-        assert_ne!(
-            verify_message(&sig, msg).expect("verify"),
-            *other.pubkey()
-        );
+        assert_ne!(verify_message(&sig, msg).expect("verify"), *other.pubkey());
     }
 }

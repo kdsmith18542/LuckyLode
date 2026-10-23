@@ -62,8 +62,8 @@ impl Rpc {
             body.len(),
             body
         );
-        let mut s = TcpStream::connect(&self.node)
-            .map_err(|e| format!("connect {}: {e}", self.node))?;
+        let mut s =
+            TcpStream::connect(&self.node).map_err(|e| format!("connect {}: {e}", self.node))?;
         s.set_read_timeout(Some(Duration::from_secs(30)))
             .map_err(|e| format!("timeout: {e}"))?;
         s.write_all(req.as_bytes())
@@ -71,7 +71,9 @@ impl Rpc {
         let mut raw = Vec::new();
         s.read_to_end(&mut raw).map_err(|e| format!("read: {e}"))?;
         let text = String::from_utf8_lossy(&raw);
-        let (_, rbody) = text.split_once("\r\n\r\n").ok_or("malformed http response")?;
+        let (_, rbody) = text
+            .split_once("\r\n\r\n")
+            .ok_or("malformed http response")?;
         let v: Value =
             serde_json::from_str(rbody).map_err(|e| format!("bad json: {e}: {rbody:.120}"))?;
         if let Some(err) = v.get("error").filter(|e| !e.is_null()) {
@@ -174,7 +176,12 @@ fn main() {
             }
             "--epoch" => {
                 i += 1;
-                epoch = Some(args.get(i).unwrap_or_else(|| usage()).parse().unwrap_or_else(|_| usage()));
+                epoch = Some(
+                    args.get(i)
+                        .unwrap_or_else(|| usage())
+                        .parse()
+                        .unwrap_or_else(|_| usage()),
+                );
             }
             "--state-file" => {
                 i += 1;
@@ -182,7 +189,11 @@ fn main() {
             }
             "--heartbeat-interval" => {
                 i += 1;
-                interval = args.get(i).unwrap_or_else(|| usage()).parse().unwrap_or_else(|_| usage());
+                interval = args
+                    .get(i)
+                    .unwrap_or_else(|| usage())
+                    .parse()
+                    .unwrap_or_else(|_| usage());
             }
             "--register-only" => register_only = true,
             "--once" => once = true,
@@ -216,11 +227,7 @@ fn main() {
     let chain = rpc
         .call("getblockchaininfo", serde_json::json!([]))
         .ok()
-        .and_then(|v| {
-            v.get("chain")
-                .and_then(|c| c.as_str())
-                .map(str::to_string)
-        });
+        .and_then(|v| v.get("chain").and_then(|c| c.as_str()).map(str::to_string));
     match chain.as_deref() {
         Some("test") => {}
         Some(other) if allow_mainnet => {
@@ -293,7 +300,9 @@ fn main() {
             }
         };
         let v: serde_json::Value = serde_json::from_str(&text).map_err(|e| {
-            format!("corrupt state file {p}: {e} (refusing to run blind — move it aside or delete it)")
+            format!(
+                "corrupt state file {p}: {e} (refusing to run blind — move it aside or delete it)"
+            )
         })?;
         if let (Some(txid), Some(reservation)) = (
             v.get("commitment_txid").and_then(|t| t.as_str()),
@@ -341,20 +350,17 @@ fn main() {
         }
     }
     let st = loop {
-        match identity::ensure_identity(
-            &rpc,
-            &name,
-            &payout,
-            epoch_len,
-            state.pending.clone(),
-        ) {
+        match identity::ensure_identity(&rpc, &name, &payout, epoch_len, state.pending.clone()) {
             Ok(EnsureOutcome::Ready(st)) => {
                 println!("ready: {}", show(&st));
                 state.pending = None;
                 save_state(&state_file, &state);
                 break st;
             }
-            Ok(EnsureOutcome::Waiting { message, commitment }) => {
+            Ok(EnsureOutcome::Waiting {
+                message,
+                commitment,
+            }) => {
                 eprintln!("waiting: {message} — mine a block (or wait for one)");
                 state.pending = commitment;
                 save_state(&state_file, &state);

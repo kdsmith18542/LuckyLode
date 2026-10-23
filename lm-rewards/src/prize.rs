@@ -111,11 +111,20 @@ mod tests {
         assert_eq!(seed_release(PRIZE_SEED), 100_000_000);
         assert_eq!(seed_release(0), 0);
         assert_eq!(budget(0, PRIZE_SEED, PRIZE_SLICE_BPS, 0), 0);
-        assert_eq!(budget(0, PRIZE_SEED, PRIZE_SLICE_BPS, PRIZE_SEED), 100_000_000);
-        assert_eq!(budget(1000, PRIZE_SEED, PRIZE_SLICE_BPS, PRIZE_SEED), 100_000_100);
-        assert_eq!(budget(999, PRIZE_SEED, PRIZE_SLICE_BPS, PRIZE_SEED), 100_000_099);
+        assert_eq!(
+            budget(0, PRIZE_SEED, PRIZE_SLICE_BPS, PRIZE_SEED),
+            100_000_000
+        );
+        assert_eq!(
+            budget(1000, PRIZE_SEED, PRIZE_SLICE_BPS, PRIZE_SEED),
+            100_000_100
+        );
+        assert_eq!(
+            budget(999, PRIZE_SEED, PRIZE_SLICE_BPS, PRIZE_SEED),
+            100_000_099
+        );
         assert_eq!(budget(100, 5, PRIZE_SLICE_BPS, PRIZE_SEED), 5); // capped at balance
-        // Draw 51 live vector (v1 shape, seed 0): inflow 2,952,381 -> floor 10%.
+                                                                    // Draw 51 live vector (v1 shape, seed 0): inflow 2,952,381 -> floor 10%.
         assert_eq!(budget(2_952_381, 2_952_381, PRIZE_SLICE_BPS, 0), 295_238);
     }
 

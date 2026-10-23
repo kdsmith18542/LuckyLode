@@ -15,7 +15,12 @@ const D: u64 = 86_400;
 
 fn phone_share(day: u64) -> ShareRec {
     // ~1.5 kH/s phone-class miner: 1500 H/s × 86400 s of nominal credit per daily share.
-    ShareRec { miner: "m1".to_string(), ts: day * D + 3_600, work: 1_500 * D, overnight: true }
+    ShareRec {
+        miner: "m1".to_string(),
+        ts: day * D + 3_600,
+        work: 1_500 * D,
+        overnight: true,
+    }
 }
 
 #[test]
@@ -27,13 +32,33 @@ fn season_rewards_loyalty_over_raw_rate() {
     }
     // Miner 2: cpu warrior, 6 weekend days, 10x the per-share work.
     for day in [6, 7, 13, 14, 20, 21] {
-        l.submit(ShareRec { miner: "m2".to_string(), ts: day * D + 3_600, work: 15_000 * D, overnight: false });
+        l.submit(ShareRec {
+            miner: "m2".to_string(),
+            ts: day * D + 3_600,
+            work: 15_000 * D,
+            overnight: false,
+        });
     }
     // Miner 3: comeback — days 1..2, silent 15 days, returns day 18..20.
-    l.submit(ShareRec { miner: "m3".to_string(), ts: D, work: 1_500 * D, overnight: false });
-    l.submit(ShareRec { miner: "m3".to_string(), ts: 2 * D, work: 1_500 * D, overnight: false });
+    l.submit(ShareRec {
+        miner: "m3".to_string(),
+        ts: D,
+        work: 1_500 * D,
+        overnight: false,
+    });
+    l.submit(ShareRec {
+        miner: "m3".to_string(),
+        ts: 2 * D,
+        work: 1_500 * D,
+        overnight: false,
+    });
     for day in 18..=20u64 {
-        l.submit(ShareRec { miner: "m3".to_string(), ts: day * D, work: 1_500 * D, overnight: false });
+        l.submit(ShareRec {
+            miner: "m3".to_string(),
+            ts: day * D,
+            work: 1_500 * D,
+            overnight: false,
+        });
     }
 
     let now = 30 * D + 7_200;
@@ -45,7 +70,14 @@ fn season_rewards_loyalty_over_raw_rate() {
 
     // Loyalist: 30-day streak capped at +300‰, arm class by rate.
     let loyal = &agg[0];
-    assert_eq!((loyal.miner.clone(), loyal.streak_days, loyal.streak_per_mille), ("m1".to_string(), 30, 300));
+    assert_eq!(
+        (
+            loyal.miner.clone(),
+            loyal.streak_days,
+            loyal.streak_per_mille
+        ),
+        ("m1".to_string(), 30, 300)
+    );
     assert_eq!(loyal.class, DeviceFamily::Phone);
     // 3 window shares × 1500·D × 1.05 overnight × 1.30 streak.
     let expect_loyal = 3 * 1_500 * D * 105 / 100 * 130 / 100;
@@ -56,8 +88,8 @@ fn season_rewards_loyalty_over_raw_rate() {
     assert_eq!(wide.len(), 3);
     assert_eq!(wide[1].streak_days, 0); // warrior, silent since day 21
     assert_eq!(wide[2].streak_days, 0); // comeback miner, silent since day 20
-    // The comeback miner's post-return shares still carry the +100‰ boost:
-    // days 1–2 plain (2 × 1500·D), days 18–20 boosted (3 × 1500·D × 1.1).
+                                        // The comeback miner's post-return shares still carry the +100‰ boost:
+                                        // days 1–2 plain (2 × 1500·D), days 18–20 boosted (3 × 1500·D × 1.1).
     assert_eq!(wide[2].eff_work, 2 * 1_500 * D + 3 * 1_500 * D * 110 / 100);
 
     // Jackpot over a season-long window: all three share the bonus, total conserved.
@@ -70,13 +102,28 @@ fn season_rewards_loyalty_over_raw_rate() {
 fn comeback_boost_lands_in_window() {
     let mut l = Ledger::new();
     // Miner 7: one share day 1, returns day 20 (19 idle days), mines 20..22.
-    l.submit(ShareRec { miner: "m7".to_string(), ts: D, work: 1000, overnight: false });
+    l.submit(ShareRec {
+        miner: "m7".to_string(),
+        ts: D,
+        work: 1000,
+        overnight: false,
+    });
     for day in 20..=22u64 {
-        l.submit(ShareRec { miner: "m7".to_string(), ts: day * D, work: 1000, overnight: false });
+        l.submit(ShareRec {
+            miner: "m7".to_string(),
+            ts: day * D,
+            work: 1000,
+            overnight: false,
+        });
     }
     // Miner 8: same raw work, no gap (days 20..22 only, first share day 20).
     for day in 20..=22u64 {
-        l.submit(ShareRec { miner: "m8".to_string(), ts: day * D, work: 1000, overnight: false });
+        l.submit(ShareRec {
+            miner: "m8".to_string(),
+            ts: day * D,
+            work: 1000,
+            overnight: false,
+        });
     }
     let now = 22 * D + 100;
     let agg = l.aggregate(30 * D, now);
@@ -97,7 +144,12 @@ fn leaderboard_ranks_and_flags_farm() {
     let mut l = Ledger::new();
     for day in 28..=30u64 {
         l.submit(phone_share(day)); // miner 1, eff ≈ 3 × 1500·D × 1.05 × 1.03
-        l.submit(ShareRec { miner: "m2".to_string(), ts: day * D, work: 100, overnight: false });
+        l.submit(ShareRec {
+            miner: "m2".to_string(),
+            ts: day * D,
+            work: 100,
+            overnight: false,
+        });
         l.submit(ShareRec {
             miner: "m9".to_string(),
             ts: day * D,
@@ -126,9 +178,19 @@ fn audit_replay_recomputes_identically() {
     let mut b = Ledger::new();
     let recs = vec![
         phone_share(28),
-        ShareRec { miner: "m2".to_string(), ts: 29 * D, work: 700, overnight: true },
+        ShareRec {
+            miner: "m2".to_string(),
+            ts: 29 * D,
+            work: 700,
+            overnight: true,
+        },
         phone_share(29),
-        ShareRec { miner: "m2".to_string(), ts: 30 * D, work: 700, overnight: false },
+        ShareRec {
+            miner: "m2".to_string(),
+            ts: 30 * D,
+            work: 700,
+            overnight: false,
+        },
         phone_share(30),
     ];
     for r in &recs {
@@ -138,10 +200,16 @@ fn audit_replay_recomputes_identically() {
         b.submit(r.clone());
     }
     let now = 30 * D + 7_200;
-    assert_eq!(a.aggregate(PPLNS_WINDOW_SECS, now), b.aggregate(PPLNS_WINDOW_SECS, now));
+    assert_eq!(
+        a.aggregate(PPLNS_WINDOW_SECS, now),
+        b.aggregate(PPLNS_WINDOW_SECS, now)
+    );
     assert_eq!(
         a.jackpot_payout(500_000, PPLNS_WINDOW_SECS, now),
         b.jackpot_payout(500_000, PPLNS_WINDOW_SECS, now)
     );
-    assert_eq!(a.leaderboard(PPLNS_WINDOW_SECS, now), b.leaderboard(PPLNS_WINDOW_SECS, now));
+    assert_eq!(
+        a.leaderboard(PPLNS_WINDOW_SECS, now),
+        b.leaderboard(PPLNS_WINDOW_SECS, now)
+    );
 }

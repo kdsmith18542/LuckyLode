@@ -7,7 +7,10 @@ use lm_stratum::rpc::RpcClient;
 /// path prefixes are honoured so a reverse-proxied public node works —
 /// e.g. `https://luckylode.cc/node/`).
 pub fn client(state: &AppState) -> Result<RpcClient, String> {
-    let cfg = state.cfg.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let cfg = state
+        .cfg
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let url = cfg.rpc_url.trim();
     if url.is_empty() {
         return Err("node RPC URL is empty (Settings)".to_string());
@@ -21,7 +24,11 @@ pub fn client(state: &AppState) -> Result<RpcClient, String> {
 }
 
 /// Call and return the JSON `result`, with a friendlier auth error.
-pub fn call(state: &AppState, method: &str, params: serde_json::Value) -> Result<serde_json::Value, String> {
+pub fn call(
+    state: &AppState,
+    method: &str,
+    params: serde_json::Value,
+) -> Result<serde_json::Value, String> {
     client(state)?.call(method, params).map_err(|e| {
         if e.contains("401") || e.contains("403") {
             format!(

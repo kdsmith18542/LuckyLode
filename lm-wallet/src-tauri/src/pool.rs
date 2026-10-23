@@ -14,7 +14,9 @@ fn split(url: &str) -> Result<(bool, String, String, String), String> {
     } else if let Some(r) = url.strip_prefix("http://") {
         (false, r)
     } else {
-        return Err(format!("pool URL must start with http:// or https://: {url}"));
+        return Err(format!(
+            "pool URL must start with http:// or https://: {url}"
+        ));
     };
     let (hostport, path) = match rest.split_once('/') {
         Some((h, p)) => (h.to_string(), format!("/{p}")),
@@ -31,7 +33,16 @@ fn split(url: &str) -> Result<(bool, String, String, String), String> {
     if host.is_empty() {
         return Err(format!("empty host in pool URL: {url}"));
     }
-    Ok((tls, host, format!("{}:{}", hostport.split(':').next().unwrap_or(&hostport), port), path))
+    Ok((
+        tls,
+        host,
+        format!(
+            "{}:{}",
+            hostport.split(':').next().unwrap_or(&hostport),
+            port
+        ),
+        path,
+    ))
 }
 
 fn request(method: &str, url: &str, body: Option<&str>) -> Result<String, String> {
@@ -45,8 +56,7 @@ fn request(method: &str, url: &str, body: Option<&str>) -> Result<String, String
     sock.set_read_timeout(Some(Duration::from_secs(15)))
         .map_err(|e| e.to_string())?;
     let mut stream: Box<dyn tls::ReadWrite> = if tls {
-        let cfg = tls::client_config(None, false)
-            .map_err(|e| format!("tls config: {e}"))?;
+        let cfg = tls::client_config(None, false).map_err(|e| format!("tls config: {e}"))?;
         tls::connect(sock, &server_name, Some(&cfg)).map_err(|e| format!("tls: {e}"))?
     } else {
         tls::connect(sock, &server_name, None).map_err(|e| format!("tls: {e}"))?
@@ -70,7 +80,11 @@ fn request(method: &str, url: &str, body: Option<&str>) -> Result<String, String
 
 /// GET `<pool_url>/<path>` (path like "api/luckynodes").
 pub fn get(pool_url: &str, path: &str) -> Result<String, String> {
-    request("GET", &format!("{}/{}", pool_url.trim_end_matches('/'), path), None)
+    request(
+        "GET",
+        &format!("{}/{}", pool_url.trim_end_matches('/'), path),
+        None,
+    )
 }
 
 #[cfg(test)]
@@ -80,8 +94,7 @@ mod live_tests {
     #[test]
     #[ignore]
     fn https_pool_stats_roundtrip() {
-        let body = super::get("https://luckylode.cc/pool", "api/stats")
-            .expect("https pool api");
+        let body = super::get("https://luckylode.cc/pool", "api/stats").expect("https pool api");
         assert!(body.contains("last_blocks") || body.contains("pool"));
     }
 }

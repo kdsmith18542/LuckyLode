@@ -80,11 +80,7 @@ pub fn identity_status(
     status_inner(rpc, name, epoch_len)
 }
 
-fn status_inner(
-    rpc: &dyn NodeRpc,
-    name: &str,
-    epoch_len: u64,
-) -> Result<IdentityState, String> {
+fn status_inner(rpc: &dyn NodeRpc, name: &str, epoch_len: u64) -> Result<IdentityState, String> {
     let tip: Value = rpc.call("getblockcount", json!([]))?;
     let tip_height = tip.as_u64().unwrap_or(0);
     let epoch = tip_height.checked_div(epoch_len.max(1)).unwrap_or(0);
@@ -184,14 +180,16 @@ pub fn ensure_identity(
             if control.is_empty() {
                 return Err("getnewaddress returned no address".to_string());
             }
-            let commitment: Value =
-                rpc.call("registernamecommitment", json!([name, control]))?;
+            let commitment: Value = rpc.call("registernamecommitment", json!([name, control]))?;
             let txid = commitment
                 .get("txid")
                 .and_then(|t| t.as_str())
                 .unwrap_or("")
                 .to_string();
-            let reservation = commitment.get("namereservation").cloned().unwrap_or(Value::Null);
+            let reservation = commitment
+                .get("namereservation")
+                .cloned()
+                .unwrap_or(Value::Null);
             if txid.is_empty() || reservation.is_null() {
                 return Err(format!("registernamecommitment failed: {commitment}"));
             }
@@ -334,9 +332,7 @@ mod tests {
 
     impl NodeRpc for Mock {
         fn call(&self, method: &str, params: Value) -> Result<Value, String> {
-            self.calls
-                .borrow_mut()
-                .push((method.to_string(), params));
+            self.calls.borrow_mut().push((method.to_string(), params));
             self.out
                 .get(method)
                 .and_then(|q| q.first())
@@ -359,19 +355,27 @@ mod tests {
             }
         }
         fn push(&self, method: &str, v: Value) {
-            self.out.borrow_mut().entry(method.to_string()).or_default().push(v);
+            self.out
+                .borrow_mut()
+                .entry(method.to_string())
+                .or_default()
+                .push(v);
         }
     }
 
     impl NodeRpc for Seq {
         fn call(&self, method: &str, params: Value) -> Result<Value, String> {
-            self.calls
-                .borrow_mut()
-                .push((method.to_string(), params));
+            self.calls.borrow_mut().push((method.to_string(), params));
             self.out
                 .borrow_mut()
                 .get_mut(method)
-                .and_then(|q| if q.is_empty() { None } else { Some(q.remove(0)) })
+                .and_then(|q| {
+                    if q.is_empty() {
+                        None
+                    } else {
+                        Some(q.remove(0))
+                    }
+                })
                 .ok_or_else(|| format!("no mock for {method}"))
         }
     }
@@ -418,7 +422,10 @@ mod tests {
             fn call(&self, method: &str, _params: Value) -> Result<Value, String> {
                 match method {
                     "getblockcount" => Ok(json!(55u64)),
-                    _ => Err("node getidentity: {\"code\":-5,\"message\":\"Identity not found\"}".to_string()),
+                    _ => Err(
+                        "node getidentity: {\"code\":-5,\"message\":\"Identity not found\"}"
+                            .to_string(),
+                    ),
                 }
             }
         }
@@ -429,16 +436,14 @@ mod tests {
 
     #[test]
     fn status_reads_live_identity() {
-        let m = Mock::new()
-            .push("getblockcount", json!(46u64))
-            .push(
-                "getidentity",
-                json!({
-                    "identity": {"primaryaddresses": ["Laddr"]},
-                    "status": "active",
-                    "blockheight": 44u64,
-                }),
-            );
+        let m = Mock::new().push("getblockcount", json!(46u64)).push(
+            "getidentity",
+            json!({
+                "identity": {"primaryaddresses": ["Laddr"]},
+                "status": "active",
+                "blockheight": 44u64,
+            }),
+        );
         let st = identity_status(&m, "ln-test", 3).expect("status");
         assert!(st.exists);
         assert_eq!(st.address, "Laddr");
@@ -447,32 +452,28 @@ mod tests {
 
     #[test]
     fn status_revoked_is_not_exists() {
-        let m = Mock::new()
-            .push("getblockcount", json!(46u64))
-            .push(
-                "getidentity",
-                json!({
-                    "identity": {"primaryaddresses": ["Laddr"]},
-                    "status": "revoked",
-                    "blockheight": 44u64,
-                }),
-            );
+        let m = Mock::new().push("getblockcount", json!(46u64)).push(
+            "getidentity",
+            json!({
+                "identity": {"primaryaddresses": ["Laddr"]},
+                "status": "revoked",
+                "blockheight": 44u64,
+            }),
+        );
         let st = identity_status(&m, "ln-test", 3).expect("status");
         assert!(!st.exists);
     }
 
     #[test]
     fn heartbeat_skips_when_current() {
-        let m = Mock::new()
-            .push("getblockcount", json!(40u64))
-            .push(
-                "getidentity",
-                json!({
-                    "identity": {"primaryaddresses": ["Laddr"]},
-                    "status": "active",
-                    "blockheight": 39u64,
-                }),
-            );
+        let m = Mock::new().push("getblockcount", json!(40u64)).push(
+            "getidentity",
+            json!({
+                "identity": {"primaryaddresses": ["Laddr"]},
+                "status": "active",
+                "blockheight": 39u64,
+            }),
+        );
         // epoch 13 at both heights: no update.
         assert_eq!(heartbeat_if_due(&m, "ln-test", 3, None).expect("hb"), None);
         assert_eq!(m.calls.borrow().len(), 2);
@@ -502,16 +503,14 @@ mod tests {
         // Epoch crossed, but the tip has not moved since the last
         // submission: the pending update cannot confirm on an idle
         // chain, so resubmitting would only spam the mempool.
-        let m = Mock::new()
-            .push("getblockcount", json!(42u64))
-            .push(
-                "getidentity",
-                json!({
-                    "identity": {"primaryaddresses": ["Laddr"]},
-                    "status": "active",
-                    "blockheight": 41u64,
-                }),
-            );
+        let m = Mock::new().push("getblockcount", json!(42u64)).push(
+            "getidentity",
+            json!({
+                "identity": {"primaryaddresses": ["Laddr"]},
+                "status": "active",
+                "blockheight": 41u64,
+            }),
+        );
         assert_eq!(
             heartbeat_if_due(&m, "ln-test", 3, Some(42)).expect("hb"),
             None
@@ -548,16 +547,14 @@ mod tests {
 
     #[test]
     fn ensure_is_noop_when_live() {
-        let m = Mock::new()
-            .push("getblockcount", json!(52u64))
-            .push(
-                "getidentity",
-                json!({
-                    "identity": {"primaryaddresses": ["LM"]},
-                    "status": "active",
-                    "blockheight": 49u64,
-                }),
-            );
+        let m = Mock::new().push("getblockcount", json!(52u64)).push(
+            "getidentity",
+            json!({
+                "identity": {"primaryaddresses": ["LM"]},
+                "status": "active",
+                "blockheight": 49u64,
+            }),
+        );
         match ensure_identity(&m, "ln-test", "LM", 3, None).expect("ensure") {
             EnsureOutcome::Ready(st) => assert!(st.exists),
             EnsureOutcome::Waiting { .. } => panic!("should be ready"),
@@ -580,7 +577,10 @@ mod tests {
         s.push("gettransaction", json!({"confirmations": 0u64}));
         // First pass: commitment unconfirmed → waiting.
         match ensure_identity(&s, "ln-new", "LM", 3, None).expect("ensure") {
-            EnsureOutcome::Waiting { message: m, commitment } => {
+            EnsureOutcome::Waiting {
+                message: m,
+                commitment,
+            } => {
                 assert!(m.contains("cmtx"));
                 assert_eq!(commitment.map(|c| c.txid), Some("cmtx".to_string()));
             }

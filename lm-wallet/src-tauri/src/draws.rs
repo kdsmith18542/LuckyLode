@@ -80,7 +80,12 @@ pub struct NextDraw {
 }
 
 #[must_use]
-pub fn next_draw(tip_display_hex: &str, next_height: u64, jdiv: u64, pdiv: u64) -> Option<NextDraw> {
+pub fn next_draw(
+    tip_display_hex: &str,
+    next_height: u64,
+    jdiv: u64,
+    pdiv: u64,
+) -> Option<NextDraw> {
     let prev = display_hex_to_internal(tip_display_hex)?;
     let d = draw_digest(&prev, next_height);
     let t = tier(&d);

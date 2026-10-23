@@ -118,7 +118,10 @@ pub fn search_with_policy(
                     let out = hasher.pow_hash(header, n, height);
                     if meets_target(&out, target) {
                         if !stop.swap(true, Ordering::SeqCst) {
-                            *found.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Solution { nonce: n, out });
+                            *found
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                                Some(Solution { nonce: n, out });
                         }
                         return;
                     }
@@ -147,7 +150,10 @@ pub fn search_with_policy(
         }
     });
 
-    let result = found.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
+    let result = found
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .take();
     result
 }
 

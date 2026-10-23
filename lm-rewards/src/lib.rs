@@ -24,8 +24,8 @@
 pub mod emission;
 pub mod luck;
 pub mod pot;
-pub mod reserve;
 pub mod prize;
+pub mod reserve;
 pub mod seed;
 pub mod units;
 
@@ -307,7 +307,16 @@ mod tests {
             })
             .collect();
         let out = split_jackpot(&shares, 7);
-        assert_eq!(out, vec![("m1".to_string(), 2), ("m2".to_string(), 2), ("m3".to_string(), 1), ("m4".to_string(), 1), ("m5".to_string(), 1)]);
+        assert_eq!(
+            out,
+            vec![
+                ("m1".to_string(), 2),
+                ("m2".to_string(), 2),
+                ("m3".to_string(), 1),
+                ("m4".to_string(), 1),
+                ("m5".to_string(), 1)
+            ]
+        );
     }
 
     #[test]
@@ -329,7 +338,14 @@ mod tests {
             },
         ];
         let out = split_jackpot(&shares, 160_000);
-        assert_eq!(out, vec![("m1".to_string(), 100_000), ("m2".to_string(), 50_000), ("m3".to_string(), 10_000)]);
+        assert_eq!(
+            out,
+            vec![
+                ("m1".to_string(), 100_000),
+                ("m2".to_string(), 50_000),
+                ("m3".to_string(), 10_000)
+            ]
+        );
     }
 
     #[test]

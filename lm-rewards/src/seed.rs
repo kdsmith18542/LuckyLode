@@ -117,7 +117,10 @@ mod tests {
 
     #[test]
     fn claims_debit_actuals_and_conserve() {
-        let r = SeedState { faucet: FAUCET_SEED, dev: DEV_SEED };
+        let r = SeedState {
+            faucet: FAUCET_SEED,
+            dev: DEV_SEED,
+        };
         let p = apply_seed_block(r, 100, 1_000, 50, true, true, DEV_EPOCH);
         assert!(p.ok);
         assert_eq!((p.faucet_claimed, p.dev_claimed), (1_000, 50));
@@ -130,21 +133,40 @@ mod tests {
 
     #[test]
     fn over_allowance_claims_fail_closed() {
-        let r = SeedState { faucet: 1_000, dev: 1_000 };
+        let r = SeedState {
+            faucet: 1_000,
+            dev: 1_000,
+        };
         let p = apply_seed_block(r, 200, 1_001, 0, true, true, DEV_EPOCH);
         assert!(!p.ok && p.faucet == 1_000 && p.dev == 1_000);
         let q = apply_seed_block(r, 200, 0, 1_001, true, true, DEV_EPOCH);
         assert!(!q.ok);
         // Unpinned legs cannot pay even with full reserves.
         let s = apply_seed_block(
-            SeedState { faucet: FAUCET_SEED, dev: DEV_SEED },
-            300, 1, 1, false, false, DEV_EPOCH,
+            SeedState {
+                faucet: FAUCET_SEED,
+                dev: DEV_SEED,
+            },
+            300,
+            1,
+            1,
+            false,
+            false,
+            DEV_EPOCH,
         );
         assert!(!s.ok && s.faucet == FAUCET_SEED && s.dev == DEV_SEED);
         // Dev claims off-epoch fail even within cap.
         let t = apply_seed_block(
-            SeedState { faucet: FAUCET_SEED, dev: DEV_SEED },
-            301, 0, 10, true, true, DEV_EPOCH,
+            SeedState {
+                faucet: FAUCET_SEED,
+                dev: DEV_SEED,
+            },
+            301,
+            0,
+            10,
+            true,
+            true,
+            DEV_EPOCH,
         );
         assert!(!t.ok && t.dev == DEV_SEED);
     }

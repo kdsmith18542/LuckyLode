@@ -131,7 +131,11 @@ fn usage_errors_exit_2() {
 #[test]
 fn version_reports_the_crate_version() {
     let out = bin().arg("--version").output().expect("run --version");
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let stdout = String::from_utf8(out.stdout).expect("utf8");
     assert_eq!(
         stdout.trim_end(),
@@ -165,13 +169,29 @@ fn mine_requires_the_full_header() {
 #[test]
 fn bench_json_stdout_is_pure_json_even_with_a_gpu() {
     let out = bin()
-        .args(["bench", "--threads", "1", "--hashes", "1", "--json", "--device", "auto"])
+        .args([
+            "bench",
+            "--threads",
+            "1",
+            "--hashes",
+            "1",
+            "--json",
+            "--device",
+            "auto",
+        ])
         .output()
         .expect("run bench");
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let stdout = String::from_utf8(out.stdout).expect("utf8");
     let t = stdout.trim();
-    assert!(t.starts_with('{') && t.ends_with('}'), "stdout must be one JSON object: {t:.200}");
+    assert!(
+        t.starts_with('{') && t.ends_with('}'),
+        "stdout must be one JSON object: {t:.200}"
+    );
     assert_eq!(t.lines().count(), 1, "no extra stdout lines: {t:.200}");
     assert!(t.contains("\"total_hashes\""));
 }
@@ -179,8 +199,13 @@ fn bench_json_stdout_is_pure_json_even_with_a_gpu() {
 #[test]
 fn pool_rejects_silently_ignored_flag_combinations() {
     let base = [
-        "pool", "--pool", "127.0.0.1:1", "--worker",
-        "m1111111111111111111111111111111111", "--threads", "1",
+        "pool",
+        "--pool",
+        "127.0.0.1:1",
+        "--worker",
+        "m1111111111111111111111111111111111",
+        "--threads",
+        "1",
     ];
     let cases: &[&[&str]] = &[
         &["--v2-authority", "00"],

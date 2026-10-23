@@ -11,7 +11,14 @@ use std::process::Command;
 
 #[test]
 fn binary_mines_two_shares_against_live_pool() {
-    let server = spawn_server(MockProvider::instant(1_000_000), "127.0.0.1:0", None, None, None).expect("bind");
+    let server = spawn_server(
+        MockProvider::instant(1_000_000),
+        "127.0.0.1:0",
+        None,
+        None,
+        None,
+    )
+    .expect("bind");
     let out = Command::new(env!("CARGO_BIN_EXE_lm-miner"))
         .args([
             "pool",
@@ -59,7 +66,14 @@ fn pool_connection_and_usage_failures_are_typed() {
         .expect("run");
     assert_eq!(out.status.code(), Some(2));
     // Closed port (bound then released): connection failure, exit 1.
-    let probe = spawn_server(MockProvider::instant(1_000_000), "127.0.0.1:0", None, None, None).expect("bind");
+    let probe = spawn_server(
+        MockProvider::instant(1_000_000),
+        "127.0.0.1:0",
+        None,
+        None,
+        None,
+    )
+    .expect("bind");
     let addr = probe.addr().to_string();
     probe.stop();
     let out = Command::new(env!("CARGO_BIN_EXE_lm-miner"))
@@ -86,12 +100,21 @@ fn hex(bytes: &[u8]) -> String {
 fn binary_mines_two_shares_over_v2() {
     // Parity gate for the single session loop: the same two-share session
     // over the V2 (Noise + Lucky jobs) wire must accept and land blocks.
-    let mut server =
-        spawn_server(MockProvider::instant(1_000_000), "127.0.0.1:0", None, None, None)
-            .expect("bind");
+    let mut server = spawn_server(
+        MockProvider::instant(1_000_000),
+        "127.0.0.1:0",
+        None,
+        None,
+        None,
+    )
+    .expect("bind");
     let authority = lm_stratum::v2_session::generate_authority();
     let v2 = server
-        .spawn_v2_listener("127.0.0.1:0", authority, std::time::Duration::from_secs(3600))
+        .spawn_v2_listener(
+            "127.0.0.1:0",
+            authority,
+            std::time::Duration::from_secs(3600),
+        )
         .expect("v2 listen");
     let out = Command::new(env!("CARGO_BIN_EXE_lm-miner"))
         .args([

@@ -3,8 +3,8 @@
 use crate::node;
 use crate::node_proc;
 use crate::{luckynode, miner, pool, wallet, AppState};
-use lm_luckynode::identity::NodeRpc;
 use lm_keys::chain::Network;
+use lm_luckynode::identity::NodeRpc;
 use lm_stratum::rpc::RpcClient;
 use serde_json::json;
 use std::sync::atomic::Ordering;
@@ -26,7 +26,10 @@ fn ticker(net: Network) -> &'static str {
 pub fn node_status(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
     // Reap a managed child that died on its own (non-blocking).
     let managed = {
-        let mut slot = state.node_proc.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut slot = state
+            .node_proc
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         match slot.as_mut() {
             Some(m) => match m.child.try_wait() {
                 Ok(None) => json!({"managed": true, "running": true, "pid": m.pid}),
@@ -40,7 +43,10 @@ pub fn node_status(state: State<'_, AppState>) -> Result<serde_json::Value, Stri
     };
     // Binary configured (without it Start refuses immediately)?
     let (bin_set, shared_node, creds_missing) = {
-        let cfg = state.cfg.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let cfg = state
+            .cfg
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         (
             !cfg.node_bin.trim().is_empty(),
             is_shared_url(&cfg.rpc_url),
@@ -88,8 +94,14 @@ pub fn node_discover() -> Result<serde_json::Value, String> {
 ///   creds are replaced with wallet-generated ones (the wallet passes
 ///   them to the node itself — the user never sees them).
 #[tauri::command]
-pub fn use_connection_preset(state: State<'_, AppState>, preset: String) -> Result<serde_json::Value, String> {
-    let mut cfg = state.cfg.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+pub fn use_connection_preset(
+    state: State<'_, AppState>,
+    preset: String,
+) -> Result<serde_json::Value, String> {
+    let mut cfg = state
+        .cfg
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let (url, generated) = match preset.as_str() {
         "shared" => {
             cfg.rpc_url = "https://luckylode.cc/node/".to_string();
@@ -126,7 +138,10 @@ pub fn node_start(state: State<'_, AppState>) -> Result<serde_json::Value, Strin
     // Resolve bin + creds (auto-detect / auto-generate), persisting any
     // change so Start/Stop and the connection stay consistent.
     let (bin, datadir_cfg, user, pass, url, extra, auto_bin) = {
-        let mut cfg = state.cfg.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut cfg = state
+            .cfg
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let auto_bin = cfg.node_bin.trim().is_empty();
         if auto_bin {
             match node_proc::find_luckyd().first() {
@@ -161,11 +176,17 @@ pub fn node_start(state: State<'_, AppState>) -> Result<serde_json::Value, Strin
         ));
     }
     {
-        let mut slot = state.node_proc.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut slot = state
+            .node_proc
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(m) = slot.as_mut() {
             match m.child.try_wait() {
                 Ok(None) => {
-                    return Err(format!("managed node already running (pid {}) — stop it first", m.pid));
+                    return Err(format!(
+                        "managed node already running (pid {}) — stop it first",
+                        m.pid
+                    ));
                 }
                 _ => {
                     slot.take(); // reaped a dead child; proceed to start
@@ -199,18 +220,24 @@ pub fn node_start(state: State<'_, AppState>) -> Result<serde_json::Value, Strin
     let child = node_proc::spawn(&bin, &args)?;
     let pid = child.id();
     {
-        let mut slot = state.node_proc.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut slot = state
+            .node_proc
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         *slot = Some(node_proc::ManagedNode { child, pid });
     }
     // Wait for RPC (rebuilds the client from current settings each poll).
     let rpc = node::client(&state)?;
     match node_proc::wait_for_rpc(&rpc, &datadir, std::time::Duration::from_secs(180)) {
-        Ok(height) => {
-            Ok(json!({"pid": pid, "height": height, "node_bin": bin, "auto_bin": auto_bin, "datadir": datadir}))
-        }
+        Ok(height) => Ok(
+            json!({"pid": pid, "height": height, "node_bin": bin, "auto_bin": auto_bin, "datadir": datadir}),
+        ),
         Err(e) => {
             // Never leave a deaf child behind: kill, reap, clear.
-            let mut slot = state.node_proc.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut slot = state
+                .node_proc
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             if let Some(mut m) = slot.take() {
                 let _ = m.child.kill();
                 let _ = m.child.wait();
@@ -228,7 +255,10 @@ pub fn node_start(state: State<'_, AppState>) -> Result<serde_json::Value, Strin
 #[tauri::command(async)]
 pub fn node_stop(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
     let managed_pid = {
-        let slot = state.node_proc.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let slot = state
+            .node_proc
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         slot.as_ref().map(|m| m.pid)
     };
     if let Some(pid) = managed_pid {
@@ -237,7 +267,10 @@ pub fn node_stop(state: State<'_, AppState>) -> Result<serde_json::Value, String
         let t0 = std::time::Instant::now();
         loop {
             let done = {
-                let mut slot = state.node_proc.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                let mut slot = state
+                    .node_proc
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 match slot.as_mut() {
                     Some(m) => match m.child.try_wait() {
                         Ok(None) => false,
@@ -253,7 +286,10 @@ pub fn node_stop(state: State<'_, AppState>) -> Result<serde_json::Value, String
                 return Ok(json!({"stopped": true, "pid": pid}));
             }
             if t0.elapsed() >= std::time::Duration::from_secs(30) {
-                let mut slot = state.node_proc.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                let mut slot = state
+                    .node_proc
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 if let Some(mut m) = slot.take() {
                     let _ = m.child.kill();
                     let _ = m.child.wait();
@@ -267,7 +303,10 @@ pub fn node_stop(state: State<'_, AppState>) -> Result<serde_json::Value, String
     // (never the shared/remote node). Snapshot the URL under a scoped
     // lock — node::call locks cfg itself.
     let url = {
-        let cfg = state.cfg.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let cfg = state
+            .cfg
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         cfg.rpc_url.clone()
     };
     let host = node_host(&url);
@@ -313,7 +352,10 @@ pub fn staking_info(state: State<'_, AppState>) -> Result<serde_json::Value, Str
         (v.and_then(|x| x.as_f64()).unwrap_or(0.0) * 100_000_000.0).round() as u64
     };
     let node_host = {
-        let cfg = state.cfg.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let cfg = state
+            .cfg
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         node_host(&cfg.rpc_url)
     };
     Ok(json!({
@@ -341,12 +383,11 @@ pub fn staking_info(state: State<'_, AppState>) -> Result<serde_json::Value, Str
 /// rule), so funding happens app → node address, then Start stakes them.
 #[tauri::command(async)]
 pub fn node_funding_address(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
-    let addr: String = node::call(&state, "getnewaddress", json!([]))
-        .and_then(|v| {
-            v.as_str()
-                .map(|s| s.to_string())
-                .ok_or_else(|| "getnewaddress: unexpected result".to_string())
-        })?;
+    let addr: String = node::call(&state, "getnewaddress", json!([])).and_then(|v| {
+        v.as_str()
+            .map(|s| s.to_string())
+            .ok_or_else(|| "getnewaddress: unexpected result".to_string())
+    })?;
     Ok(json!({ "address": addr }))
 }
 
@@ -359,7 +400,10 @@ pub fn node_funding_address(state: State<'_, AppState>) -> Result<serde_json::Va
 #[tauri::command(async)]
 pub fn stake_app_coins(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
     let host = {
-        let cfg = state.cfg.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let cfg = state
+            .cfg
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         node_host(&cfg.rpc_url)
     };
     if !is_loopback_host(&host) {
@@ -368,7 +412,14 @@ pub fn stake_app_coins(state: State<'_, AppState>) -> Result<serde_json::Value, 
         ));
     }
     let c = wctx(&state)?;
-    let scan = wallet::scan(&c.rpc, &c.seed, c.net, c.recv_next, c.change_next, &app_dir(&state))?;
+    let scan = wallet::scan(
+        &c.rpc,
+        &c.seed,
+        c.net,
+        c.recv_next,
+        c.change_next,
+        &app_dir(&state),
+    )?;
     let mut slots: Vec<(u32, u32)> = scan.utxos.iter().map(|u| (u.change, u.index)).collect();
     slots.sort_unstable();
     slots.dedup();
@@ -381,11 +432,19 @@ pub fn stake_app_coins(state: State<'_, AppState>) -> Result<serde_json::Value, 
         wifs.push(kp.wif(c.net));
     }
     for wif in &wifs {
-        node::call(&state, "importprivkey", json!([wif, "lucky-lode-app", false]))?;
+        node::call(
+            &state,
+            "importprivkey",
+            json!([wif, "lucky-lode-app", false]),
+        )?;
     }
     // One rescan (idempotent re-import of the first key with rescan=true)
     // so the node recognizes the UTXOs; eligibility follows from chain age.
-    node::call(&state, "importprivkey", json!([&wifs[0], "lucky-lode-app", true]))?;
+    node::call(
+        &state,
+        "importprivkey",
+        json!([&wifs[0], "lucky-lode-app", true]),
+    )?;
     let wallet_info = node::call(&state, "getwalletinfo", json!([]))?;
     let coins = |v: Option<&serde_json::Value>| -> u64 {
         (v.and_then(|x| x.as_f64()).unwrap_or(0.0) * 100_000_000.0).round() as u64
@@ -409,7 +468,10 @@ pub fn stake_app_coins(state: State<'_, AppState>) -> Result<serde_json::Value, 
 #[tauri::command(async)]
 pub fn set_staking(state: State<'_, AppState>, on: bool) -> Result<serde_json::Value, String> {
     let host = {
-        let cfg = state.cfg.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let cfg = state
+            .cfg
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         node_host(&cfg.rpc_url)
     };
     if !is_loopback_host(&host) {
@@ -430,7 +492,11 @@ pub fn set_staking(state: State<'_, AppState>, on: bool) -> Result<serde_json::V
 fn node_host(url: &str) -> String {
     let no_scheme = url.rsplit("://").next().unwrap_or(url);
     let hostport = no_scheme.split('/').next().unwrap_or(no_scheme);
-    hostport.split(':').next().unwrap_or(hostport).to_lowercase()
+    hostport
+        .split(':')
+        .next()
+        .unwrap_or(hostport)
+        .to_lowercase()
 }
 
 fn is_loopback_host(h: &str) -> bool {
@@ -448,13 +514,23 @@ pub fn send_preview(
 ) -> Result<serde_json::Value, String> {
     let amt = wallet::parse_amount_lkyl(&amount)?;
     let c = wctx(&state)?;
-    let scan = wallet::scan(&c.rpc, &c.seed, c.net, c.recv_next, c.change_next, &app_dir(&state))?;
+    let scan = wallet::scan(
+        &c.rpc,
+        &c.seed,
+        c.net,
+        c.recv_next,
+        c.change_next,
+        &app_dir(&state),
+    )?;
     let (rmax, cmax) = utxo_maxes(&scan.utxos);
     advance_cursors(&state, rmax, cmax);
     // Bond lock: never spend luckynode payout addresses — one stray Send
     // stops the node being draw-eligible (ownership gate).
     let protected: Vec<String> = {
-        let cfg = state.cfg.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let cfg = state
+            .cfg
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         cfg.protected_addrs.clone()
     };
     let mut spendable = Vec::new();
@@ -496,7 +572,10 @@ pub fn send_preview(
     // Single-use 2-minute slot, keyed by the committed txid.
     let txid = draft.txid.clone();
     {
-        let mut pend = state.pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut pend = state
+            .pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let now = std::time::Instant::now();
         pend.retain(|_, p| p.expires_at > now);
         pend.insert(
@@ -524,7 +603,10 @@ pub fn send_preview(
 #[tauri::command(async)]
 pub fn send_confirm(state: State<'_, AppState>, txid: String) -> Result<serde_json::Value, String> {
     let pend = {
-        let mut p = state.pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut p = state
+            .pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         p.remove(&txid)
     };
     let Some(draft) = pend else {
@@ -536,7 +618,10 @@ pub fn send_confirm(state: State<'_, AppState>, txid: String) -> Result<serde_js
     let c = wctx(&state)?;
     let sent = wallet::broadcast_payment(&c.rpc, &draft.hex, &txid)?;
     if let Some(idx) = draft.change_used {
-        let mut cfg = state.cfg.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut cfg = state
+            .cfg
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if idx.saturating_add(1) > cfg.change_next {
             cfg.change_next = idx + 1;
             let _ = cfg.save(&state.cfg_path);
@@ -566,7 +651,10 @@ fn app_dir(state: &State<'_, AppState>) -> std::path::PathBuf {
 fn wctx(state: &State<'_, AppState>) -> Result<WCtx, String> {
     let rpc = node::client(state)?;
     let net = wallet::network_of(&rpc)?;
-    let cfg = state.cfg.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let cfg = state
+        .cfg
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     Ok(WCtx {
         rpc,
         net,
@@ -581,7 +669,10 @@ fn wctx(state: &State<'_, AppState>) -> Result<WCtx, String> {
 /// sign, or reveal.
 fn session_seed(state: &State<'_, AppState>) -> Result<[u8; 64], String> {
     use std::time::Instant;
-    let mut s = state.session.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut s = state
+        .session
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let sess = s
         .as_mut()
         .ok_or_else(|| "wallet is locked — unlock it first".to_string())?;
@@ -596,7 +687,10 @@ fn session_seed(state: &State<'_, AppState>) -> Result<[u8; 64], String> {
 
 /// Drop the session, wiping key material.
 fn lock_session(state: &State<'_, AppState>) {
-    let mut s = state.session.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut s = state
+        .session
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     if let Some(sess) = s.as_mut() {
         sess.wipe();
     }
@@ -605,7 +699,10 @@ fn lock_session(state: &State<'_, AppState>) {
 
 /// Advance HD cursors past the highest used index (persisted on change).
 fn advance_cursors(state: &State<'_, AppState>, recv_max: Option<u32>, change_max: Option<u32>) {
-    let mut cfg = state.cfg.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut cfg = state
+        .cfg
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let mut dirty = false;
     if let Some(m) = recv_max {
         let next = m.saturating_add(1);
@@ -646,7 +743,14 @@ pub fn wallet_balances(state: State<'_, AppState>) -> Result<serde_json::Value, 
     let tip = node::call(&state, "getblockcount", json!([]))?
         .as_u64()
         .ok_or("getblockcount: unexpected")?;
-    let scan = wallet::scan(&c.rpc, &c.seed, c.net, c.recv_next, c.change_next, &app_dir(&state))?;
+    let scan = wallet::scan(
+        &c.rpc,
+        &c.seed,
+        c.net,
+        c.recv_next,
+        c.change_next,
+        &app_dir(&state),
+    )?;
     let (rmax, cmax) = utxo_maxes(&scan.utxos);
     advance_cursors(&state, rmax, cmax);
     let b = wallet::balances_of(&scan, tip);
@@ -667,32 +771,52 @@ pub fn transactions(
     count: Option<u64>,
 ) -> Result<serde_json::Value, String> {
     let c = wctx(&state)?;
-    let scan = wallet::scan(&c.rpc, &c.seed, c.net, c.recv_next, c.change_next, &app_dir(&state))?;
+    let scan = wallet::scan(
+        &c.rpc,
+        &c.seed,
+        c.net,
+        c.recv_next,
+        c.change_next,
+        &app_dir(&state),
+    )?;
     let (rmax, cmax) = utxo_maxes(&scan.utxos);
     let map = wallet::own_script_map(&c.seed, c.net, c.recv_next, c.change_next)?;
     let n = count.unwrap_or(50) as usize;
     let start = scan.txids.len().saturating_sub(n);
-    let page = wallet::activity(&c.rpc, &scan.txids[start..], &map, n, scan.tip, &app_dir(&state))?;
-    advance_cursors(&state, rmax.max(page.used_recv_max), cmax.max(page.used_change_max));
-    Ok(json!(
-        page.rows
-            .iter()
-            .map(|r| json!({
-                "txid": r.txid,
-                "category": r.category,
-                "amount": r.amount,
-                "address": r.address,
-                "time": r.time,
-                "confirmations": r.confirmations,
-            }))
-            .collect::<Vec<_>>()
-    ))
+    let page = wallet::activity(
+        &c.rpc,
+        &scan.txids[start..],
+        &map,
+        n,
+        scan.tip,
+        &app_dir(&state),
+    )?;
+    advance_cursors(
+        &state,
+        rmax.max(page.used_recv_max),
+        cmax.max(page.used_change_max),
+    );
+    Ok(json!(page
+        .rows
+        .iter()
+        .map(|r| json!({
+            "txid": r.txid,
+            "category": r.category,
+            "amount": r.amount,
+            "address": r.address,
+            "time": r.time,
+            "confirmations": r.confirmations,
+        }))
+        .collect::<Vec<_>>()))
 }
 
 /// Saved contacts (address book, M2).
 #[tauri::command]
 pub fn contacts_list(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
-    let cfg = state.cfg.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let cfg = state
+        .cfg
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     serde_json::to_value(&cfg.contacts).map_err(|e| e.to_string())
 }
 
@@ -711,7 +835,10 @@ pub fn contact_add(
     if !lm_pool::payout::valid_payout_address(&address) {
         return Err(format!("'{address}' is not a valid Lucky Lode address"));
     }
-    let mut cfg = state.cfg.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut cfg = state
+        .cfg
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     match cfg.contacts.iter_mut().find(|c| c.address == address) {
         Some(c) => c.name = name,
         None => cfg.contacts.push(crate::config::Contact { name, address }),
@@ -722,7 +849,10 @@ pub fn contact_add(
 /// Remove a contact by address.
 #[tauri::command]
 pub fn contact_remove(state: State<'_, AppState>, address: String) -> Result<(), String> {
-    let mut cfg = state.cfg.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut cfg = state
+        .cfg
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     cfg.contacts.retain(|c| c.address != address);
     cfg.save(&state.cfg_path)
 }
@@ -730,8 +860,14 @@ pub fn contact_remove(state: State<'_, AppState>, address: String) -> Result<(),
 /// Bond lock: mark an address unspendable (Send refuses its UTXOs).
 /// Luckynode payout addresses land here automatically at register.
 #[tauri::command]
-pub fn protect_address(state: State<'_, AppState>, address: String) -> Result<serde_json::Value, String> {
-    let mut cfg = state.cfg.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+pub fn protect_address(
+    state: State<'_, AppState>,
+    address: String,
+) -> Result<serde_json::Value, String> {
+    let mut cfg = state
+        .cfg
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     if !cfg.protected_addrs.iter().any(|a| a == &address) {
         cfg.protected_addrs.push(address);
     }
@@ -742,8 +878,14 @@ pub fn protect_address(state: State<'_, AppState>, address: String) -> Result<se
 /// Bond lock release: make an address spendable again (draw eligibility
 /// stays protected until released here (legacy entries; new identities use on-chain registration).
 #[tauri::command]
-pub fn unprotect_address(state: State<'_, AppState>, address: String) -> Result<serde_json::Value, String> {
-    let mut cfg = state.cfg.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+pub fn unprotect_address(
+    state: State<'_, AppState>,
+    address: String,
+) -> Result<serde_json::Value, String> {
+    let mut cfg = state
+        .cfg
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     cfg.protected_addrs.retain(|a| a != &address);
     cfg.save(&state.cfg_path)?;
     Ok(json!({ "protected": cfg.protected_addrs }))
@@ -760,9 +902,7 @@ pub fn address_qr(address: String, amount: Option<String>) -> Result<String, Str
     }
     let mut text = address;
     if let Some(a) = amount.as_deref().map(str::trim).filter(|a| !a.is_empty()) {
-        let v: f64 = a
-            .parse()
-            .map_err(|_| format!("'{a}' is not a number"))?;
+        let v: f64 = a.parse().map_err(|_| format!("'{a}' is not a number"))?;
         if !(v.is_finite() && v > 0.0) {
             return Err("amount must be positive".to_string());
         }
@@ -811,7 +951,10 @@ pub fn new_address(state: State<'_, AppState>) -> Result<String, String> {
     let c = wctx(&state)?;
     let addr = wallet::current_receive(&c.seed, c.net, c.recv_next)?;
     {
-        let mut cfg = state.cfg.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut cfg = state
+            .cfg
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         cfg.recv_next = cfg.recv_next.saturating_add(1);
         cfg.save(&state.cfg_path)?;
     }
@@ -834,16 +977,30 @@ pub fn receive_list(state: State<'_, AppState>) -> Result<serde_json::Value, Str
 /// Send funds (transparent). Built AND signed locally — the node only
 /// broadcasts. Returns txid + exact fee/change.
 #[tauri::command(async)]
-pub fn send(state: State<'_, AppState>, to: String, amount: String) -> Result<serde_json::Value, String> {
+pub fn send(
+    state: State<'_, AppState>,
+    to: String,
+    amount: String,
+) -> Result<serde_json::Value, String> {
     let amt = wallet::parse_amount_lkyl(&amount)?;
     let c = wctx(&state)?;
-    let scan = wallet::scan(&c.rpc, &c.seed, c.net, c.recv_next, c.change_next, &app_dir(&state))?;
+    let scan = wallet::scan(
+        &c.rpc,
+        &c.seed,
+        c.net,
+        c.recv_next,
+        c.change_next,
+        &app_dir(&state),
+    )?;
     let (rmax, cmax) = utxo_maxes(&scan.utxos);
     advance_cursors(&state, rmax, cmax);
     // Bond lock: never spend luckynode payout addresses — one stray Send
     // stops the node being draw-eligible (ownership gate).
     let protected: Vec<String> = {
-        let cfg = state.cfg.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let cfg = state
+            .cfg
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         cfg.protected_addrs.clone()
     };
     let mut spendable = Vec::new();
@@ -883,7 +1040,10 @@ pub fn send(state: State<'_, AppState>, to: String, amount: String) -> Result<se
         }
     })?;
     if let Some(idx) = r.change_used {
-        let mut cfg = state.cfg.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut cfg = state
+            .cfg
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if idx.saturating_add(1) > cfg.change_next {
             cfg.change_next = idx + 1;
             let _ = cfg.save(&state.cfg_path);
@@ -897,14 +1057,22 @@ pub fn send(state: State<'_, AppState>, to: String, amount: String) -> Result<se
 /// First-run gate + Settings display (no seed material, ever, in this).
 #[tauri::command(async)]
 pub fn wallet_status(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
-    let dir = state.cfg_path.parent().ok_or("no config dir")?.to_path_buf();
+    let dir = state
+        .cfg_path
+        .parent()
+        .ok_or("no config dir")?
+        .to_path_buf();
     if !wallet::has_any_wallet(&dir) {
         return Ok(json!({ "has_wallet": false }));
     }
     if wallet::is_legacy_plaintext(&dir) {
         return Ok(json!({ "has_wallet": true, "legacy": true, "locked": true }));
     }
-    let locked = state.session.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_none();
+    let locked = state
+        .session
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .is_none();
     if locked {
         return Ok(json!({ "has_wallet": true, "legacy": false, "locked": true }));
     }
@@ -912,12 +1080,11 @@ pub fn wallet_status(state: State<'_, AppState>) -> Result<serde_json::Value, St
     // `cfg` itself, so holding our guard across it deadlocked the app
     // (frozen main thread right after unlock — 2026-10-16).
     let (recv_next, change_next, protected_addrs) = {
-        let cfg = state.cfg.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        (
-            cfg.recv_next,
-            cfg.change_next,
-            cfg.protected_addrs.clone(),
-        )
+        let cfg = state
+            .cfg
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        (cfg.recv_next, cfg.change_next, cfg.protected_addrs.clone())
     };
     // Network follows the connected node; failure just omits it.
     let pair: Option<(String, String)> = (|| {
@@ -946,33 +1113,67 @@ pub fn wallet_status(state: State<'_, AppState>) -> Result<serde_json::Value, St
 /// Create a fresh 12-word wallet, sealed immediately. Returns the phrase
 /// ONCE for backup, and unlocks the session.
 #[tauri::command(async)]
-pub fn wallet_create(state: State<'_, AppState>, password: String) -> Result<serde_json::Value, String> {
-    let dir = state.cfg_path.parent().ok_or("no config dir")?.to_path_buf();
+pub fn wallet_create(
+    state: State<'_, AppState>,
+    password: String,
+) -> Result<serde_json::Value, String> {
+    let dir = state
+        .cfg_path
+        .parent()
+        .ok_or("no config dir")?
+        .to_path_buf();
     let phrase = wallet::create_wallet_enc(&dir, &password)?;
     let (seed, phrase2) = wallet::unlock_seed(&dir, &password)?;
-    *state.session.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(wallet::Session::new(seed, phrase2));
+    *state
+        .session
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) =
+        Some(wallet::Session::new(seed, phrase2));
     Ok(json!({ "phrase": phrase }))
 }
 
 /// Install a backup phrase (replaces any wallet), then rescan cursors.
 #[tauri::command(async)]
-pub fn wallet_restore(state: State<'_, AppState>, phrase: String, password: String) -> Result<serde_json::Value, String> {
-    let dir = state.cfg_path.parent().ok_or("no config dir")?.to_path_buf();
+pub fn wallet_restore(
+    state: State<'_, AppState>,
+    phrase: String,
+    password: String,
+) -> Result<serde_json::Value, String> {
+    let dir = state
+        .cfg_path
+        .parent()
+        .ok_or("no config dir")?
+        .to_path_buf();
     wallet::restore_wallet_enc(&dir, &phrase, &password)?;
     let (seed, phrase2) = wallet::unlock_seed(&dir, &password)?;
-    *state.session.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(wallet::Session::new(seed, phrase2));
+    *state
+        .session
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) =
+        Some(wallet::Session::new(seed, phrase2));
     rescan_inner(&state)
 }
 
 /// Unlock with the spending password.
 #[tauri::command(async)]
-pub fn wallet_unlock(state: State<'_, AppState>, password: String) -> Result<serde_json::Value, String> {
-    let dir = state.cfg_path.parent().ok_or("no config dir")?.to_path_buf();
+pub fn wallet_unlock(
+    state: State<'_, AppState>,
+    password: String,
+) -> Result<serde_json::Value, String> {
+    let dir = state
+        .cfg_path
+        .parent()
+        .ok_or("no config dir")?
+        .to_path_buf();
     if wallet::is_legacy_plaintext(&dir) {
         return Err("this wallet predates encryption — migrate it first".to_string());
     }
     let (seed, phrase) = wallet::unlock_seed(&dir, &password)?;
-    *state.session.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(wallet::Session::new(seed, phrase));
+    *state
+        .session
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) =
+        Some(wallet::Session::new(seed, phrase));
     Ok(json!({ "ok": true }))
 }
 
@@ -986,12 +1187,23 @@ pub fn wallet_lock(state: State<'_, AppState>) -> Result<serde_json::Value, Stri
 /// One-time upgrade for pre-encryption wallets: set a password, seal the
 /// seed, shred the plaintext, unlock.
 #[tauri::command(async)]
-pub fn wallet_migrate(state: State<'_, AppState>, password: String) -> Result<serde_json::Value, String> {
-    let dir = state.cfg_path.parent().ok_or("no config dir")?.to_path_buf();
+pub fn wallet_migrate(
+    state: State<'_, AppState>,
+    password: String,
+) -> Result<serde_json::Value, String> {
+    let dir = state
+        .cfg_path
+        .parent()
+        .ok_or("no config dir")?
+        .to_path_buf();
     let phrase = wallet::migrate_plaintext(&dir, &password)?;
     let (seed, phrase2) = wallet::unlock_seed(&dir, &password)?;
     debug_assert_eq!(phrase, phrase2);
-    *state.session.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(wallet::Session::new(seed, phrase2));
+    *state
+        .session
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) =
+        Some(wallet::Session::new(seed, phrase2));
     Ok(json!({ "ok": true }))
 }
 
@@ -1002,7 +1214,11 @@ pub fn wallet_change_password(
     old_password: String,
     new_password: String,
 ) -> Result<serde_json::Value, String> {
-    let dir = state.cfg_path.parent().ok_or("no config dir")?.to_path_buf();
+    let dir = state
+        .cfg_path
+        .parent()
+        .ok_or("no config dir")?
+        .to_path_buf();
     wallet::change_password(&dir, &old_password, &new_password)?;
     Ok(json!({ "ok": true }))
 }
@@ -1011,7 +1227,10 @@ pub fn wallet_change_password(
 /// gate this behind a warning).
 #[tauri::command]
 pub fn wallet_reveal(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
-    let s = state.session.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let s = state
+        .session
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let sess = s
         .as_ref()
         .ok_or_else(|| "wallet is locked — unlock it first".to_string())?;
@@ -1022,7 +1241,10 @@ fn rescan_inner(state: &State<'_, AppState>) -> Result<serde_json::Value, String
     let c = wctx(state)?;
     let (recv_next, change_next, used) = wallet::full_scan_used(&c.rpc, &c.seed, c.net)?;
     {
-        let mut cfg = state.cfg.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut cfg = state
+            .cfg
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         // Never move cursors backwards (shown addresses stay valid).
         if recv_next > cfg.recv_next {
             cfg.recv_next = recv_next;
@@ -1032,7 +1254,10 @@ fn rescan_inner(state: &State<'_, AppState>) -> Result<serde_json::Value, String
         }
         cfg.save(&state.cfg_path)?;
     }
-    let cfg = state.cfg.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let cfg = state
+        .cfg
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     Ok(json!({
         "recv_next": cfg.recv_next,
         "change_next": cfg.change_next,
@@ -1145,7 +1370,12 @@ pub fn luckynodes(
 /// Pool dashboard stats (blocks, hashrate, workers, payouts, draws).
 #[tauri::command(async)]
 pub fn pool_stats(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
-    let url = state.cfg.lock().unwrap_or_else(std::sync::PoisonError::into_inner).pool_url.clone();
+    let url = state
+        .cfg
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .pool_url
+        .clone();
     let body = pool::get(&url, "api/stats")?;
     serde_json::from_str(&body).map_err(|e| format!("pool json: {e}"))
 }
@@ -1164,7 +1394,9 @@ pub fn luckynode_register(
 ) -> Result<serde_json::Value, String> {
     use lm_luckynode::identity::{self, EnsureOutcome};
     if !identity::is_ln_name(&name) {
-        return Err(format!("identity name must live in the ln- namespace (got {name:?})"));
+        return Err(format!(
+            "identity name must live in the ln- namespace (got {name:?})"
+        ));
     }
     if !lm_pool::payout::valid_payout_address(&address) {
         return Err(format!("'{address}' is not a valid payout address"));
@@ -1197,12 +1429,17 @@ pub fn luckynode_service_start(
 ) -> Result<serde_json::Value, String> {
     use lm_luckynode::identity;
     if !identity::is_ln_name(&name) {
-        return Err(format!("identity name must live in the ln- namespace (got {name:?})"));
+        return Err(format!(
+            "identity name must live in the ln- namespace (got {name:?})"
+        ));
     }
     if !lm_pool::payout::valid_payout_address(&address) {
         return Err(format!("'{address}' is not a valid payout address"));
     }
-    let mut services = state.services.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut services = state
+        .services
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     if services.contains_key(&name) {
         return Ok(json!({ "running": true, "already": true }));
     }
@@ -1220,7 +1457,10 @@ pub fn luckynode_service_stop(
     state: State<'_, AppState>,
     name: String,
 ) -> Result<serde_json::Value, String> {
-    let mut services = state.services.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut services = state
+        .services
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     if let Some(svc) = services.remove(&name) {
         svc.stop.store(true, Ordering::Relaxed);
         return Ok(json!({ "running": false }));
@@ -1230,14 +1470,20 @@ pub fn luckynode_service_stop(
 
 #[tauri::command]
 pub fn luckynode_service_status(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
-    let services = state.services.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let services = state
+        .services
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let ids: Vec<&String> = services.keys().collect();
     Ok(json!({ "running": ids }))
 }
 
 #[tauri::command]
 pub fn get_config(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
-    let cfg = state.cfg.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let cfg = state
+        .cfg
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     serde_json::to_value(&*cfg).map_err(|e| e.to_string())
 }
 
@@ -1266,7 +1512,10 @@ pub fn set_config(
     node_args: Option<String>,
     notifications: Option<bool>,
 ) -> Result<(), String> {
-    let mut cfg = state.cfg.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut cfg = state
+        .cfg
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     cfg.rpc_url = rpc_url;
     cfg.rpc_user = rpc_user;
     cfg.rpc_pass = rpc_pass;
@@ -1297,7 +1546,10 @@ pub fn set_mining_config(
     pool_stratum: String,
     mining_worker: String,
 ) -> Result<(), String> {
-    let mut cfg = state.cfg.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut cfg = state
+        .cfg
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     cfg.pool_stratum = pool_stratum;
     cfg.mining_worker = mining_worker;
     cfg.save(&state.cfg_path)
@@ -1319,9 +1571,16 @@ pub fn miner_start(
     gpu_batch: Option<usize>,
     max_power: Option<u32>,
 ) -> Result<(), String> {
-    let mut slot = state.miner.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut slot = state
+        .miner
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     if let Some(m) = slot.as_ref() {
-        if m.status.lock().unwrap_or_else(std::sync::PoisonError::into_inner).running {
+        if m.status
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .running
+        {
             return Err("miner already running".to_string());
         }
     }
@@ -1331,7 +1590,11 @@ pub fn miner_start(
         let seed = session_seed(&state)?;
         let rpc = node::client(&state)?;
         let net = wallet::network_of(&rpc)?;
-        let recv_next = state.cfg.lock().unwrap_or_else(std::sync::PoisonError::into_inner).recv_next;
+        let recv_next = state
+            .cfg
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .recv_next;
         wallet::current_receive(&seed, net, recv_next)?
     } else {
         worker
@@ -1383,29 +1646,47 @@ pub fn miner_solo_start(
     max_power: Option<u32>,
 ) -> Result<(), String> {
     {
-        let slot = state.miner.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let slot = state
+            .miner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(m) = slot.as_ref() {
-            if m.status.lock().unwrap_or_else(std::sync::PoisonError::into_inner).running {
+            if m.status
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .running
+            {
                 return Err("miner already running".to_string());
             }
         }
     }
     let host = {
-        let cfg = state.cfg.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let cfg = state
+            .cfg
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         node_host(&cfg.rpc_url)
     };
     if !is_loopback_host(&host) {
-        return Err("solo mining needs Node on this computer (pool mode works with any node)".to_string());
+        return Err(
+            "solo mining needs Node on this computer (pool mode works with any node)".to_string(),
+        );
     }
     let rpc = node::client(&state)?;
     let seed = session_seed(&state)?;
     let net = wallet::network_of(&rpc)?;
     let (recv_next, change_next) = {
-        let cfg = state.cfg.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let cfg = state
+            .cfg
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         (cfg.recv_next, cfg.change_next)
     };
     let label = {
-        let cfg = state.cfg.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let cfg = state
+            .cfg
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         node_host(&cfg.rpc_url)
     };
     let m = miner::start_solo(
@@ -1424,7 +1705,10 @@ pub fn miner_solo_start(
         recv_next,
         change_next,
     )?;
-    *state.miner.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(m);
+    *state
+        .miner
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(m);
     Ok(())
 }
 
@@ -1436,7 +1720,10 @@ pub fn miner_solo_start(
 #[tauri::command]
 pub fn miner_solo_point_payouts(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
     let host = {
-        let cfg = state.cfg.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let cfg = state
+            .cfg
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         node_host(&cfg.rpc_url)
     };
     if !is_loopback_host(&host) {
@@ -1445,9 +1732,16 @@ pub fn miner_solo_point_payouts(state: State<'_, AppState>) -> Result<serde_json
     let seed = session_seed(&state)?;
     let rpc = node::client(&state)?;
     let net = wallet::network_of(&rpc)?;
-    let recv_next = state.cfg.lock().unwrap_or_else(std::sync::PoisonError::into_inner).recv_next;
+    let recv_next = state
+        .cfg
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .recv_next;
     let addr = wallet::current_receive(&seed, net, recv_next)?;
-    let mut cfg = state.cfg.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut cfg = state
+        .cfg
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let mut kept: Vec<String> = cfg
         .node_args
         .split_whitespace()
@@ -1465,7 +1759,12 @@ pub fn miner_solo_point_payouts(state: State<'_, AppState>) -> Result<serde_json
 /// search loop reaches a chunk boundary).
 #[tauri::command]
 pub fn miner_stop(state: State<'_, AppState>) -> Result<(), String> {
-    if let Some(m) = state.miner.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref() {
+    if let Some(m) = state
+        .miner
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .as_ref()
+    {
         m.stop.store(true, Ordering::Relaxed);
     }
     Ok(())
@@ -1473,10 +1772,17 @@ pub fn miner_stop(state: State<'_, AppState>) -> Result<(), String> {
 
 #[tauri::command]
 pub fn miner_status(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
-    let slot = state.miner.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let slot = state
+        .miner
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     match slot.as_ref() {
         Some(m) => {
-            let s = m.status.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+            let s = m
+                .status
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
             serde_json::to_value(s).map_err(|e| e.to_string())
         }
         None => Ok(json!({ "running": false })),
@@ -1486,10 +1792,20 @@ pub fn miner_status(state: State<'_, AppState>) -> Result<serde_json::Value, Str
 /// Recent miner log lines (ring buffer, oldest first).
 #[tauri::command]
 pub fn miner_log(state: State<'_, AppState>) -> Result<Vec<String>, String> {
-    let slot = state.miner.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let slot = state
+        .miner
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     Ok(slot
         .as_ref()
-        .map(|m| m.log.lock().unwrap_or_else(std::sync::PoisonError::into_inner).iter().cloned().collect())
+        .map(|m| {
+            m.log
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .iter()
+                .cloned()
+                .collect()
+        })
         .unwrap_or_default())
 }
 
@@ -1504,7 +1820,12 @@ pub fn notify(
     title: String,
     body: String,
 ) -> Result<serde_json::Value, String> {
-    if !state.cfg.lock().unwrap_or_else(std::sync::PoisonError::into_inner).notifications {
+    if !state
+        .cfg
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .notifications
+    {
         return Ok(serde_json::json!({"ok": false, "skipped": "disabled"}));
     }
     let title: String = title.chars().take(80).collect();
@@ -1523,5 +1844,4 @@ pub fn notify(
 }
 
 #[cfg(test)]
-mod tests {
-}
+mod tests {}

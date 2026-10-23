@@ -23,7 +23,7 @@ use crate::v2::{
     MSG_LUCKY_JOB, MSG_OPEN_MINING_CHANNEL_ERROR, MSG_OPEN_STANDARD_MINING_CHANNEL_SUCCESS,
     MSG_SUBMIT_SHARES_ERROR, MSG_SUBMIT_SHARES_SUCCESS,
 };
-use crate::v2_session::{SessionError, V2Session, setup_connection};
+use crate::v2_session::{setup_connection, SessionError, V2Session};
 
 /// Blocking V2 miner client (one channel).
 pub struct V2Client {
@@ -197,16 +197,16 @@ impl V2Client {
                     continue;
                 }
                 MSG_SUBMIT_SHARES_SUCCESS => {
-                    let ack = SubmitSharesSuccess::from_frame(&frame)
-                        .map_err(|e| format!("{e:?}"))?;
+                    let ack =
+                        SubmitSharesSuccess::from_frame(&frame).map_err(|e| format!("{e:?}"))?;
                     if ack.last_sequence_number != sequence {
                         continue; // not ours; sequential sessions never hit this
                     }
                     return Ok((true, None));
                 }
                 MSG_SUBMIT_SHARES_ERROR => {
-                    let nack = SubmitSharesError::from_frame(&frame)
-                        .map_err(|e| format!("{e:?}"))?;
+                    let nack =
+                        SubmitSharesError::from_frame(&frame).map_err(|e| format!("{e:?}"))?;
                     if nack.sequence_number != sequence {
                         continue;
                     }
@@ -253,9 +253,14 @@ mod tests {
     #[test]
     fn v2_client_round_trip_on_mock_chain() {
         let authority = crate::v2_session::generate_authority();
-        let mut server =
-            spawn_server(MockProvider::instant(1_000_000), "127.0.0.1:0", None, None, None)
-                .expect("spawn");
+        let mut server = spawn_server(
+            MockProvider::instant(1_000_000),
+            "127.0.0.1:0",
+            None,
+            None,
+            None,
+        )
+        .expect("spawn");
         let v2_addr = server
             .spawn_v2_listener("127.0.0.1:0", authority, Duration::from_secs(3600))
             .expect("v2 listen");
@@ -276,12 +281,16 @@ mod tests {
             .expect("submit");
         assert!(accepted, "rejected: {err:?}");
         // The same share twice is a duplicate.
-        let (accepted, err) = client.submit(opened.channel_id, job.job_id, 0).expect("resubmit");
+        let (accepted, err) = client
+            .submit(opened.channel_id, job.job_id, 0)
+            .expect("resubmit");
         assert!(!accepted);
         assert_eq!(err.as_deref(), Some("duplicate share"));
         // Money moved through the shared ledger.
         assert_eq!(server.blocks().len(), 1);
-        assert!(server.paid("worker-v2") + server.balances().iter().map(|(_, o)| o).sum::<u64>() > 0);
+        assert!(
+            server.paid("worker-v2") + server.balances().iter().map(|(_, o)| o).sum::<u64>() > 0
+        );
         server.stop();
     }
 
@@ -305,8 +314,7 @@ mod tests {
             .expect("v2 listen");
         let mut bad = setup();
         bad.device_id = "wrong".to_string();
-        let mut client =
-            V2Client::connect(v2_addr, Some(authority.0), &bad).expect("connect");
+        let mut client = V2Client::connect(v2_addr, Some(authority.0), &bad).expect("connect");
         let err = client
             .open_channel(1, "gated", 1_000.0, [0xffu8; 32])
             .unwrap_err();

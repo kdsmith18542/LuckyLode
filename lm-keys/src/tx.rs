@@ -239,7 +239,8 @@ pub fn parse_txid_display(s: &str) -> Result<[u8; 32], String> {
     Ok(b)
 }
 
-pub(crate) fn put_u32(b: &mut Vec<u8>, v: u32) {    b.extend_from_slice(&v.to_le_bytes());
+pub(crate) fn put_u32(b: &mut Vec<u8>, v: u32) {
+    b.extend_from_slice(&v.to_le_bytes());
 }
 
 pub(crate) fn put_i64(b: &mut Vec<u8>, v: i64) {
@@ -292,11 +293,15 @@ impl<'a> Reader<'a> {
     }
 
     fn u32(&mut self) -> Result<u32, String> {
-        Ok(u32::from_le_bytes(self.take(4)?.try_into().expect("4 bytes")))
+        Ok(u32::from_le_bytes(
+            self.take(4)?.try_into().expect("4 bytes"),
+        ))
     }
 
     fn i64(&mut self) -> Result<i64, String> {
-        Ok(i64::from_le_bytes(self.take(8)?.try_into().expect("8 bytes")))
+        Ok(i64::from_le_bytes(
+            self.take(8)?.try_into().expect("8 bytes"),
+        ))
     }
 
     fn compactsize(&mut self) -> Result<u64, String> {
@@ -304,7 +309,9 @@ impl<'a> Reader<'a> {
         match f {
             0xfd => Ok(u16::from_le_bytes(self.take(2)?.try_into().expect("2 bytes")) as u64),
             0xfe => Ok(u32::from_le_bytes(self.take(4)?.try_into().expect("4 bytes")) as u64),
-            0xff => Ok(u64::from_le_bytes(self.take(8)?.try_into().expect("8 bytes"))),
+            0xff => Ok(u64::from_le_bytes(
+                self.take(8)?.try_into().expect("8 bytes"),
+            )),
             n => Ok(n as u64),
         }
     }

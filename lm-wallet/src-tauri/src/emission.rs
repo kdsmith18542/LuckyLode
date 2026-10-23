@@ -14,9 +14,7 @@
 // The schedule and its constants live in `lm_rewards::emission` (one
 // Rust mirror shared with the explorer). `subsidy`/`net_subsidy` are
 // re-exported so existing wallet call sites keep their names.
-pub use lm_rewards::emission::{
-    net_subsidy, subsidy, ERA2_END, HALVING, RAMP_END, TAIL_REWARD,
-};
+pub use lm_rewards::emission::{net_subsidy, subsidy, ERA2_END, HALVING, RAMP_END, TAIL_REWARD};
 
 /// Live emission phase for display.
 #[derive(Debug, Clone, PartialEq)]
@@ -109,7 +107,14 @@ mod tests {
 
     #[test]
     fn net_never_exceeds_gross() {
-        for h in [1u64, 1_000, RAMP_END, RAMP_END + HALVING, ERA2_END, ERA2_END + 999] {
+        for h in [
+            1u64,
+            1_000,
+            RAMP_END,
+            RAMP_END + HALVING,
+            ERA2_END,
+            ERA2_END + 999,
+        ] {
             let (g, n) = (subsidy(h), net_subsidy(h));
             assert!(n < g || h == 0, "levy must be withheld at {h}");
             assert_eq!(n, g - g * 5 / 100);

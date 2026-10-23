@@ -63,7 +63,10 @@ pub fn start(
                         pending = None;
                         break true;
                     }
-                    Ok(EnsureOutcome::Waiting { message, commitment }) => {
+                    Ok(EnsureOutcome::Waiting {
+                        message,
+                        commitment,
+                    }) => {
                         eprintln!("luckynode {name}: waiting: {message}");
                         pending = commitment;
                     }

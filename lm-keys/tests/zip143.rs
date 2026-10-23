@@ -29,10 +29,17 @@ struct Vector {
 
 #[test]
 fn fork_zip143_vectors_replay_exactly() {
-    let data = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/zip143_vectors.json"))
-        .expect("fixture");
+    let data = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/zip143_vectors.json"
+    ))
+    .expect("fixture");
     let vectors: Vec<Vector> = serde_json::from_str(&data).expect("fixture json");
-    assert!(vectors.len() >= 40, "expected the full curated set, got {}", vectors.len());
+    assert!(
+        vectors.len() >= 40,
+        "expected the full curated set, got {}",
+        vectors.len()
+    );
 
     let mut checked = 0usize;
     for (idx, v) in vectors.iter().enumerate() {

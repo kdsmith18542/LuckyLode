@@ -79,13 +79,23 @@ fn split_feed_url(url: &str) -> Result<(bool, String, String, String, String), S
         }
         _ => (
             host_port.clone(),
-            if tls_on { "443".to_string() } else { "80".to_string() },
+            if tls_on {
+                "443".to_string()
+            } else {
+                "80".to_string()
+            },
         ),
     };
     if host.is_empty() {
         return Err(format!("bad url, empty host: {url}"));
     }
-    Ok((tls_on, host.clone(), format!("{host}:{port}"), host_port, path))
+    Ok((
+        tls_on,
+        host.clone(),
+        format!("{host}:{port}"),
+        host_port,
+        path,
+    ))
 }
 
 /// Minimal HTTP(S) GET (std + the workspace TLS stack) → parsed JSON.
@@ -188,10 +198,7 @@ impl Indexer {
         // Migration: game_blocks `league` column renamed to `prize`
         // (2026-10-21 Divisions/Prize Fund naming). Fresh DBs already have
         // `prize`; the rename is a no-op error on them, ignored.
-        let _ = db.execute(
-            "ALTER TABLE game_blocks RENAME COLUMN league TO prize",
-            [],
-        );
+        let _ = db.execute("ALTER TABLE game_blocks RENAME COLUMN league TO prize", []);
         // Migration: older DBs predate the `pos` column (minted-block
         // badges, 2026-10-18). CREATE TABLE IF NOT EXISTS will not add it.
         let _ = db.execute(
@@ -299,15 +306,24 @@ impl Indexer {
         let heights: Vec<i64> = self
             .db
             .prepare("SELECT height FROM blocks WHERE pos = 0 ORDER BY height DESC LIMIT 2000")
-            .and_then(|mut st| st.query_map([], |r| r.get(0)).and_then(|it| it.collect::<Result<Vec<_>, _>>()))
+            .and_then(|mut st| {
+                st.query_map([], |r| r.get(0))
+                    .and_then(|it| it.collect::<Result<Vec<_>, _>>())
+            })
             .unwrap_or_default();
         for h in heights {
-            let Ok(hash) = self.node_hash(h as u64) else { continue };
-            let Ok(hdr) = self.rpc.call("getblockheader", serde_json::json!([hash])) else { continue };
+            let Ok(hash) = self.node_hash(h as u64) else {
+                continue;
+            };
+            let Ok(hdr) = self.rpc.call("getblockheader", serde_json::json!([hash])) else {
+                continue;
+            };
             // A row that is genuinely PoW keeps pos = 0 — but only the
             // node knows, so mark every checked row with its verdict.
             if hdr.get("pos").and_then(|v| v.as_bool()).unwrap_or(false) {
-                let _ = self.db.execute("UPDATE blocks SET pos = 1 WHERE height = ?1", [h]);
+                let _ = self
+                    .db
+                    .execute("UPDATE blocks SET pos = 1 WHERE height = ?1", [h]);
             } else {
                 // Distinguish "checked, genuinely PoW" from "never
                 // checked": PoW needs no mark, and every new block is
@@ -315,11 +331,15 @@ impl Indexer {
                 // is safe as long as backfill runs to completion once.
                 // (No-op by design; the SELECT above re-checks them until
                 // a PoS row ends the ambiguity — bounded by chain size.)
-                let _ = self.db.execute("UPDATE blocks SET pos = -1 WHERE height = ?1", [h]);
+                let _ = self
+                    .db
+                    .execute("UPDATE blocks SET pos = -1 WHERE height = ?1", [h]);
             }
         }
         // Normalize the checked-PoW sentinel back to 0 (pos means PoS).
-        let _ = self.db.execute("UPDATE blocks SET pos = 0 WHERE pos = -1", []);
+        let _ = self
+            .db
+            .execute("UPDATE blocks SET pos = 0 WHERE pos = -1", []);
     }
 
     /// Fill `size`/`merkleroot` for rows indexed before those columns
@@ -329,14 +349,18 @@ impl Indexer {
     fn backfill_block_meta(&mut self) {
         let rows: Vec<(i64, String)> = self
             .db
-            .prepare("SELECT height, hash FROM blocks WHERE size = 0 ORDER BY height DESC LIMIT 5000")
+            .prepare(
+                "SELECT height, hash FROM blocks WHERE size = 0 ORDER BY height DESC LIMIT 5000",
+            )
             .and_then(|mut st| {
                 st.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
                     .and_then(|it| it.collect::<Result<Vec<_>, _>>())
             })
             .unwrap_or_default();
         for (h, hash) in rows {
-            let Ok(b) = self.rpc.call("getblock", serde_json::json!([hash, 1])) else { continue };
+            let Ok(b) = self.rpc.call("getblock", serde_json::json!([hash, 1])) else {
+                continue;
+            };
             let size = b.get("size").and_then(|v| v.as_i64()).unwrap_or(0);
             let root = b.get("merkleroot").and_then(|v| v.as_str()).unwrap_or("");
             if size > 0 {
@@ -361,7 +385,9 @@ impl Indexer {
             })
             .unwrap_or_default();
         for (h, hash) in rows {
-            let Ok(hdr) = self.rpc.call("getblockheader", serde_json::json!([hash])) else { continue };
+            let Ok(hdr) = self.rpc.call("getblockheader", serde_json::json!([hash])) else {
+                continue;
+            };
             let version = hdr.get("version").and_then(|v| v.as_i64()).unwrap_or(0);
             let bits = hdr.get("bits").and_then(|v| v.as_str()).unwrap_or("");
             let nonce = hdr
@@ -394,7 +420,9 @@ impl Indexer {
             })
             .unwrap_or_default();
         for (h, hash) in rows {
-            let Ok(b) = self.rpc.call("getblock", serde_json::json!([hash, 1])) else { continue };
+            let Ok(b) = self.rpc.call("getblock", serde_json::json!([hash, 1])) else {
+                continue;
+            };
             let cw = b.get("chainwork").and_then(|v| v.as_str()).unwrap_or("");
             if !cw.is_empty() {
                 let _ = self.db.execute(
@@ -418,7 +446,8 @@ impl Indexer {
                  ORDER BY height DESC LIMIT 20000",
             )
             .and_then(|mut st| {
-                st.query_map([], |r| r.get(0)).and_then(|it| it.collect::<Result<Vec<_>, _>>())
+                st.query_map([], |r| r.get(0))
+                    .and_then(|it| it.collect::<Result<Vec<_>, _>>())
             })
             .unwrap_or_default();
         for h in heights {
@@ -451,7 +480,8 @@ impl Indexer {
                  ORDER BY t.height DESC LIMIT ?1",
             )
             .and_then(|mut st| {
-                st.query_map([limit], |r| r.get(0)).and_then(|it| it.collect::<Result<Vec<_>, _>>())
+                st.query_map([limit], |r| r.get(0))
+                    .and_then(|it| it.collect::<Result<Vec<_>, _>>())
             })
             .unwrap_or_default();
         for txid in txids {
@@ -470,7 +500,9 @@ impl Indexer {
                 .unwrap_or(0);
             let height: i64 = self
                 .db
-                .query_row("SELECT height FROM txs WHERE txid = ?1", [&txid], |r| r.get(0))
+                .query_row("SELECT height FROM txs WHERE txid = ?1", [&txid], |r| {
+                    r.get(0)
+                })
                 .unwrap_or(0);
             let feerate = fee as f64 / size as f64;
             let _ = self.db.execute(
@@ -500,9 +532,7 @@ impl Indexer {
     }
 
     fn node_hash(&self, height: u64) -> Result<String, String> {
-        let v = self
-            .rpc
-            .call("getblockhash", serde_json::json!([height]))?;
+        let v = self.rpc.call("getblockhash", serde_json::json!([height]))?;
         v.as_str()
             .map(|s| s.to_string())
             .ok_or_else(|| "getblockhash: not a string".to_string())
@@ -521,8 +551,11 @@ impl Indexer {
             [height],
         )
         .map_err(|e| format!("rollback unspend: {e}"))?;
-        tx.execute("DELETE FROM outs WHERE txid IN (SELECT txid FROM txs WHERE height = ?1)", [height])
-            .map_err(|e| format!("rollback outs: {e}"))?;
+        tx.execute(
+            "DELETE FROM outs WHERE txid IN (SELECT txid FROM txs WHERE height = ?1)",
+            [height],
+        )
+        .map_err(|e| format!("rollback outs: {e}"))?;
         tx.execute("DELETE FROM txs WHERE height = ?1", [height])
             .map_err(|e| format!("rollback txs: {e}"))?;
         // Per-tx facts are keyed by txid (not height) so they would
@@ -539,10 +572,10 @@ impl Indexer {
     /// Index block `height` from the node (full txs + game state).
     fn index_height(&mut self, height: u64) -> Result<(), String> {
         let hash = self.node_hash(height)?;
-        let b = self
+        let b = self.rpc.call("getblock", serde_json::json!([hash, 2]))?;
+        let ji = self
             .rpc
-            .call("getblock", serde_json::json!([hash, 2]))?;
-        let ji = self.rpc.call("getjackpotinfo", serde_json::json!([height]))?;
+            .call("getjackpotinfo", serde_json::json!([height]))?;
         let time = b.get("time").and_then(|v| v.as_i64()).unwrap_or(0);
         let difficulty = b.get("difficulty").and_then(|v| v.as_f64()).unwrap_or(0.0);
         let txs = b
@@ -587,7 +620,11 @@ impl Indexer {
                 .get("txid")
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| format!("block {height}: tx without txid"))?;
-            let vin = t.get("vin").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+            let vin = t
+                .get("vin")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default();
             let coinbase = vin
                 .first()
                 .map(|v| v.get("coinbase").is_some())
@@ -610,18 +647,20 @@ impl Indexer {
                         )
                         .map_err(|e| format!("spend {prev}:{n}: {e}"))?;
                     if changed != 1 {
-                        return Err(format!("spend {prev}:{n} by {txid}: not found or double-spent"));
+                        return Err(format!(
+                            "spend {prev}:{n} by {txid}: not found or double-spent"
+                        ));
                     }
                 }
             }
-            let vout = t.get("vout").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+            let vout = t
+                .get("vout")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default();
             for o in &vout {
                 let n = o.get("n").and_then(|v| v.as_u64()).unwrap_or(0) as i64;
-                let value = (o
-                    .get("value")
-                    .and_then(|v| v.as_f64())
-                    .unwrap_or(0.0)
-                    * 100_000_000.0)
+                let value = (o.get("value").and_then(|v| v.as_f64()).unwrap_or(0.0) * 100_000_000.0)
                     .round() as i64;
                 let addr = o
                     .get("scriptPubKey")
@@ -637,7 +676,8 @@ impl Indexer {
                 .map_err(|e| format!("index out {txid}:{n}: {e}"))?;
             }
         }
-        txn.commit().map_err(|e| format!("index commit {height}: {e}"))?;
+        txn.commit()
+            .map_err(|e| format!("index commit {height}: {e}"))?;
         // Per-tx facts (exact size + fee rate) and the block's fee total.
         // Best-effort: a node that cannot serve the raw tx just leaves
         // size at 0 (the UI then shows "–" rather than a wrong number).
@@ -675,9 +715,19 @@ impl Indexer {
         );
 
         for t in txs {
-            let Some(txid) = t.get("txid").and_then(|v| v.as_str()) else { continue };
-            let vin = t.get("vin").and_then(|v| v.as_array()).cloned().unwrap_or_default();
-            if vin.first().map(|v| v.get("coinbase").is_some()).unwrap_or(false) {
+            let Some(txid) = t.get("txid").and_then(|v| v.as_str()) else {
+                continue;
+            };
+            let vin = t
+                .get("vin")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default();
+            if vin
+                .first()
+                .map(|v| v.get("coinbase").is_some())
+                .unwrap_or(false)
+            {
                 // Coinbase: no fee by definition. Record its size only if
                 // it is cheap to get; the fee rate is not meaningful.
                 continue;
@@ -708,7 +758,10 @@ impl Indexer {
     /// Exact serialized size of a transaction in bytes, from the node's
     /// raw hex. 0 when unavailable (node unreachable, tx not indexed).
     fn tx_size(&mut self, txid: &str) -> i64 {
-        if let Ok(v) = self.rpc.call("getrawtransaction", serde_json::json!([txid, 0])) {
+        if let Ok(v) = self
+            .rpc
+            .call("getrawtransaction", serde_json::json!([txid, 0]))
+        {
             if let Some(hex) = v.as_str() {
                 // Two hex chars per byte.
                 return (hex.len() / 2) as i64;
@@ -780,7 +833,11 @@ impl Indexer {
             indexed += 1;
         }
         self.refresh_node_caches();
-        Ok(SyncReport { rolled_back, indexed, tip })
+        Ok(SyncReport {
+            rolled_back,
+            indexed,
+            tip,
+        })
     }
 
     /// Pool-authoritative per-block game record (bonus/pot/prize inflow,
@@ -837,15 +894,14 @@ impl Indexer {
         // `last_blocks`, but their overflow still moved money. Upsert
         // prize only — never clobber bonus/pot/finder already recorded
         // from a pool-found block.
-        if let Some(credits) = v.get("prize").and_then(|p| p.get("credits")).and_then(|c| c.as_array()) {
+        if let Some(credits) = v
+            .get("prize")
+            .and_then(|p| p.get("credits"))
+            .and_then(|c| c.as_array())
+        {
             let rows: Vec<(i64, i64)> = credits
                 .iter()
-                .filter_map(|c| {
-                    Some((
-                        c.get("height")?.as_i64()?,
-                        c.get("amount")?.as_i64()?,
-                    ))
-                })
+                .filter_map(|c| Some((c.get("height")?.as_i64()?, c.get("amount")?.as_i64()?)))
                 .filter(|(h, a)| *h >= 0 && *a > 0)
                 .collect();
             n += self.apply_prize_credits(&rows)?;
@@ -880,7 +936,11 @@ impl Indexer {
         // pool's `divisions.boards` is a point-in-time snapshot, so the table
         // is replaced wholesale on each well-formed non-empty fetch (a
         // missing/empty fetch leaves the last boards in place).
-        if let Some(boards) = v.get("divisions").and_then(|d| d.get("boards")).and_then(|b| b.as_array()) {
+        if let Some(boards) = v
+            .get("divisions")
+            .and_then(|d| d.get("boards"))
+            .and_then(|b| b.as_array())
+        {
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_secs() as i64)
@@ -891,24 +951,50 @@ impl Indexer {
                 if class.is_empty() {
                     continue;
                 }
-                let entries = b.get("entries").and_then(|e| e.as_array()).cloned().unwrap_or_default();
+                let entries = b
+                    .get("entries")
+                    .and_then(|e| e.as_array())
+                    .cloned()
+                    .unwrap_or_default();
                 for e in entries.iter().take(500) {
                     let rank = e.get("rank").and_then(|r| r.as_i64()).unwrap_or(0);
                     if rank <= 0 {
                         continue;
                     }
-                    let miner = e.get("miner").and_then(|m| m.as_str()).unwrap_or("").to_string();
-                    let name = e.get("name").and_then(|x| x.as_str()).unwrap_or(&miner).to_string();
+                    let miner = e
+                        .get("miner")
+                        .and_then(|m| m.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let name = e
+                        .get("name")
+                        .and_then(|x| x.as_str())
+                        .unwrap_or(&miner)
+                        .to_string();
                     let eff = e.get("eff_work").and_then(|x| x.as_i64()).unwrap_or(0);
                     let days = e.get("days_active").and_then(|x| x.as_i64()).unwrap_or(0);
                     let streak = e.get("streak").and_then(|x| x.as_i64()).unwrap_or(0);
-                    let attested = e.get("attested").and_then(|x| x.as_bool()).unwrap_or(false) as i64;
-                    rows.push(DivisionBoardRow { class: class.to_string(), rank, miner, name, eff_work: eff, days, streak, attested });
+                    let attested =
+                        e.get("attested").and_then(|x| x.as_bool()).unwrap_or(false) as i64;
+                    rows.push(DivisionBoardRow {
+                        class: class.to_string(),
+                        rank,
+                        miner,
+                        name,
+                        eff_work: eff,
+                        days,
+                        streak,
+                        attested,
+                    });
                 }
             }
             if !rows.is_empty() {
-                let tx = self.db.transaction().map_err(|e| format!("division snapshot: {e}"))?;
-                tx.execute("DELETE FROM division_boards", []).map_err(|e| format!("division snapshot: {e}"))?;
+                let tx = self
+                    .db
+                    .transaction()
+                    .map_err(|e| format!("division snapshot: {e}"))?;
+                tx.execute("DELETE FROM division_boards", [])
+                    .map_err(|e| format!("division snapshot: {e}"))?;
                 {
                     let mut ins = tx
                         .prepare(
@@ -918,7 +1004,8 @@ impl Indexer {
                         .map_err(|e| format!("division snapshot: {e}"))?;
                     for r in &rows {
                         ins.execute(params![
-                            r.class, r.rank, r.miner, r.name, r.eff_work, r.days, r.streak, r.attested, now
+                            r.class, r.rank, r.miner, r.name, r.eff_work, r.days, r.streak,
+                            r.attested, now
                         ])
                         .map_err(|e| format!("division snapshot: {e}"))?;
                     }
@@ -946,7 +1033,22 @@ impl Indexer {
     }
 
     pub fn block_by_height(&self, height: i64) -> Result<Option<serde_json::Value>, String> {
-        type BlockRow = (String, i64, i64, f64, i64, i64, i64, i64, i64, String, i64, String, String, String);
+        type BlockRow = (
+            String,
+            i64,
+            i64,
+            f64,
+            i64,
+            i64,
+            i64,
+            i64,
+            i64,
+            String,
+            i64,
+            String,
+            String,
+            String,
+        );
         let row: Option<BlockRow> = self
             .db
             .query_row(
@@ -956,7 +1058,23 @@ impl Indexer {
             )
             .map(Some)
             .unwrap_or(None);
-        let Some((hash, time, ntx, difficulty, reserve, pot, drought, pos, size, merkleroot, version, bits, nonce, prevhash)) = row else {
+        let Some((
+            hash,
+            time,
+            ntx,
+            difficulty,
+            reserve,
+            pot,
+            drought,
+            pos,
+            size,
+            merkleroot,
+            version,
+            bits,
+            nonce,
+            prevhash,
+        )) = row
+        else {
             return Ok(None);
         };
         // Fees collected by this block: sum of spent inputs minus sum of
@@ -983,7 +1101,9 @@ impl Indexer {
     pub fn block_by_hash(&self, hash: &str) -> Result<Option<serde_json::Value>, String> {
         let height: Option<i64> = self
             .db
-            .query_row("SELECT height FROM blocks WHERE hash = ?1", [hash], |r| r.get(0))
+            .query_row("SELECT height FROM blocks WHERE hash = ?1", [hash], |r| {
+                r.get(0)
+            })
             .map(Some)
             .unwrap_or(None);
         match height {
@@ -1023,9 +1143,11 @@ impl Indexer {
     pub fn tx(&self, txid: &str) -> Result<Option<serde_json::Value>, String> {
         let row: Option<(i64, i32)> = self
             .db
-            .query_row("SELECT height, coinbase FROM txs WHERE txid = ?1", [txid], |r| {
-                Ok((r.get(0)?, r.get(1)?))
-            })
+            .query_row(
+                "SELECT height, coinbase FROM txs WHERE txid = ?1",
+                [txid],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
             .map(Some)
             .unwrap_or(None);
         let Some((height, coinbase)) = row else {
@@ -1035,11 +1157,18 @@ impl Indexer {
         // Inputs: walk our own spend edges backwards (outs spent BY this txid).
         let mut st = self
             .db
-            .prepare("SELECT txid, n, address, value FROM outs WHERE spent_by = ?1 ORDER BY spent_n")
+            .prepare(
+                "SELECT txid, n, address, value FROM outs WHERE spent_by = ?1 ORDER BY spent_n",
+            )
             .map_err(|e| format!("tx in: {e}"))?;
         let spent = st
             .query_map([txid], |r| {
-                Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, Option<String>>(2)?, r.get::<_, i64>(3)?))
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, i64>(1)?,
+                    r.get::<_, Option<String>>(2)?,
+                    r.get::<_, i64>(3)?,
+                ))
             })
             .map_err(|e| format!("tx in: {e}"))?;
         let mut in_total = 0i64;
@@ -1055,14 +1184,25 @@ impl Indexer {
             .map_err(|e| format!("tx out: {e}"))?;
         let outs = st
             .query_map([txid], |r| {
-                Ok((r.get::<_, i64>(0)?, r.get::<_, Option<String>>(1)?, r.get::<_, i64>(2)?, r.get::<_, bool>(3)?, r.get::<_, Option<String>>(4)?))
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, Option<String>>(1)?,
+                    r.get::<_, i64>(2)?,
+                    r.get::<_, bool>(3)?,
+                    r.get::<_, Option<String>>(4)?,
+                ))
             })
             .map_err(|e| format!("tx out: {e}"))?;
         let mut out_list = Vec::new();
         let mut out_total = 0i64;
         for o in outs {
-            let (n, addr, value, spent, spent_by): (i64, Option<String>, i64, bool, Option<String>) =
-                o.map_err(|e| format!("tx out: {e}"))?;
+            let (n, addr, value, spent, spent_by): (
+                i64,
+                Option<String>,
+                i64,
+                bool,
+                Option<String>,
+            ) = o.map_err(|e| format!("tx out: {e}"))?;
             out_total += value;
             out_list.push(serde_json::json!({"n": n, "address": addr, "value": value, "spent": spent, "spent_by": spent_by}));
         }
@@ -1157,7 +1297,12 @@ impl Indexer {
         let page = page.max(0);
         let rows = st
             .query_map(
-                rusqlite::params![addr, addr, Self::ADDRESS_PAGE_ROWS, page * Self::ADDRESS_PAGE_ROWS],
+                rusqlite::params![
+                    addr,
+                    addr,
+                    Self::ADDRESS_PAGE_ROWS,
+                    page * Self::ADDRESS_PAGE_ROWS
+                ],
                 |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)),
             )
             .map_err(|e| format!("addr history: {e}"))?;
@@ -1189,7 +1334,10 @@ impl Indexer {
 /// Unconfirmed net for one address, or Value::Null when the node lacks
 /// the address-mempool index (best-effort display field).
 fn address_unconfirmed_opt(rpc: &RpcClient, addr: &str) -> serde_json::Value {
-    match rpc.call("getaddressmempool", serde_json::json!([{"addresses": [addr]}])) {
+    match rpc.call(
+        "getaddressmempool",
+        serde_json::json!([{"addresses": [addr]}]),
+    ) {
         Ok(v) => v
             .as_array()
             .map(|arr| {
@@ -1249,9 +1397,11 @@ impl Indexer {
             .map_err(|e| format!("supply: {e}"))?;
         let tip_row: Option<(String, i64, f64)> = self
             .db
-            .query_row("SELECT hash, time, difficulty FROM blocks WHERE height = ?1", [tip], |r| {
-                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
-            })
+            .query_row(
+                "SELECT hash, time, difficulty FROM blocks WHERE height = ?1",
+                [tip],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
             .map(Some)
             .unwrap_or(None);
         Ok(serde_json::json!({
@@ -1379,16 +1529,22 @@ impl Indexer {
         for (txid, height, coinbase, time) in rows {
             let outs: i64 = self
                 .db
-                .query_row("SELECT COALESCE(SUM(value),0) FROM outs WHERE txid = ?1", [&txid], |r| r.get(0))
+                .query_row(
+                    "SELECT COALESCE(SUM(value),0) FROM outs WHERE txid = ?1",
+                    [&txid],
+                    |r| r.get(0),
+                )
                 .unwrap_or(0);
             let fee: i64 = if coinbase == 1 {
                 0
             } else {
                 let ins: i64 = self
                     .db
-                    .query_row("SELECT COALESCE(SUM(value),0) FROM outs WHERE spent_by = ?1", [&txid], |r| {
-                        r.get(0)
-                    })
+                    .query_row(
+                        "SELECT COALESCE(SUM(value),0) FROM outs WHERE spent_by = ?1",
+                        [&txid],
+                        |r| r.get(0),
+                    )
                     .unwrap_or(0);
                 ins.saturating_sub(outs)
             };
@@ -1429,13 +1585,13 @@ impl Indexer {
         let rows = st
             .query_map([days.max(1)], |r| {
                 Ok((
-                    r.get::<_, i64>(0)?, // day
-                    r.get::<_, i64>(1)?, // blocks
-                    r.get::<_, i64>(2)?, // txs
-                    r.get::<_, i64>(3)?, // fees
-                    r.get::<_, f64>(4)?, // avg difficulty
-                    r.get::<_, i64>(5)?, // first block time
-                    r.get::<_, i64>(6)?, // last block time
+                    r.get::<_, i64>(0)?,            // day
+                    r.get::<_, i64>(1)?,            // blocks
+                    r.get::<_, i64>(2)?,            // txs
+                    r.get::<_, i64>(3)?,            // fees
+                    r.get::<_, f64>(4)?,            // avg difficulty
+                    r.get::<_, i64>(5)?,            // first block time
+                    r.get::<_, i64>(6)?,            // last block time
                     r.get::<_, Option<String>>(7)?, // chainwork at first block
                     r.get::<_, Option<String>>(8)?, // chainwork at last block
                 ))
@@ -1518,10 +1674,11 @@ impl Indexer {
             // same quantity `getnetworkhashps` reports.
             let hashrate = match (cw0, cw1) {
                 (Some(a), Some(b)) if t1 > t0 => {
-                    match (u128::from_str_radix(a.trim_start_matches("0x"), 16), u128::from_str_radix(b.trim_start_matches("0x"), 16)) {
-                        (Ok(lo), Ok(hi)) if hi > lo => {
-                            Some((hi - lo) as f64 / (t1 - t0) as f64)
-                        }
+                    match (
+                        u128::from_str_radix(a.trim_start_matches("0x"), 16),
+                        u128::from_str_radix(b.trim_start_matches("0x"), 16),
+                    ) {
+                        (Ok(lo), Ok(hi)) if hi > lo => Some((hi - lo) as f64 / (t1 - t0) as f64),
                         _ => None,
                     }
                 }
@@ -1589,12 +1746,20 @@ impl Indexer {
         // coinbase sum would be higher by the fees paid.
         let supply: i64 = self
             .db
-            .query_row("SELECT COALESCE(SUM(value),0) FROM outs WHERE spent_by IS NULL", [], |r| r.get(0))
+            .query_row(
+                "SELECT COALESCE(SUM(value),0) FROM outs WHERE spent_by IS NULL",
+                [],
+                |r| r.get(0),
+            )
             .map_err(|e| format!("market supply: {e}"))?;
         // Value moved in the last 24h (non-coinbase outputs) and fees.
         let day_ago = self
             .db
-            .query_row("SELECT COALESCE(MAX(time),0) - 86400 FROM blocks", [], |r| r.get::<_, i64>(0))
+            .query_row(
+                "SELECT COALESCE(MAX(time),0) - 86400 FROM blocks",
+                [],
+                |r| r.get::<_, i64>(0),
+            )
             .unwrap_or(0);
         let (moved_24h, fees_24h, txs_24h, blocks_24h, addrs_24h): (i64, i64, i64, i64, i64) = self
             .db
@@ -1710,7 +1875,13 @@ impl Indexer {
             .query_row(
                 "SELECT size, fee, feerate FROM tx_facts WHERE txid = ?1",
                 [txid],
-                |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, f64>(2)?)),
+                |r| {
+                    Ok((
+                        r.get::<_, i64>(0)?,
+                        r.get::<_, i64>(1)?,
+                        r.get::<_, f64>(2)?,
+                    ))
+                },
             )
             .ok()
     }
@@ -1805,9 +1976,13 @@ impl Indexer {
                 .cloned()
                 .unwrap_or_default()
             {
-                out_total += o.get("valueSat").and_then(|x| x.as_i64()).unwrap_or_else(|| {
-                    (o.get("value").and_then(|x| x.as_f64()).unwrap_or(0.0) * 100_000_000.0).round() as i64
-                });
+                out_total += o
+                    .get("valueSat")
+                    .and_then(|x| x.as_i64())
+                    .unwrap_or_else(|| {
+                        (o.get("value").and_then(|x| x.as_f64()).unwrap_or(0.0) * 100_000_000.0)
+                            .round() as i64
+                    });
             }
             // No segwit on this chain: vsize == size == raw byte length.
             let vsize = v
@@ -1857,7 +2032,8 @@ impl Indexer {
         }
         let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
         let sql = format!("DELETE FROM mempool_seen WHERE txid NOT IN ({placeholders})");
-        let refs: Vec<&dyn rusqlite::ToSql> = ids.iter().map(|s| s as &dyn rusqlite::ToSql).collect();
+        let refs: Vec<&dyn rusqlite::ToSql> =
+            ids.iter().map(|s| s as &dyn rusqlite::ToSql).collect();
         let pruned = tx
             .prepare(&sql)
             .and_then(|mut st| st.execute(refs.as_slice()))
@@ -2119,7 +2295,8 @@ mod tests {
         idx.upsert_game_block(13, 0, 0, 1_385_727, "mx5tDPWs", 0, "")
             .expect("upsert plain");
         // External find: prize-only row gains claim/winner columns at defaults.
-        idx.apply_prize_credits(&[(14, 1_380_000)]).expect("credits");
+        idx.apply_prize_credits(&[(14, 1_380_000)])
+            .expect("credits");
 
         let claims = idx.game_claims_recent(50).expect("claims");
         assert_eq!(claims.len(), 1);
@@ -2157,7 +2334,10 @@ mod tests {
             .expect("old-schema fixture");
         }
         let idx = Indexer::open(dir.to_str().expect("path"), rpc).expect("open migrates");
-        let b = idx.game_block(7).expect("game block").expect("row survives");
+        let b = idx
+            .game_block(7)
+            .expect("game block")
+            .expect("row survives");
         assert_eq!(b["bonus"], 100);
         assert_eq!(b["claim"], 0);
         assert_eq!(b["winner"], "");
@@ -2185,7 +2365,10 @@ mod tests {
         assert_eq!(Indexer::subsidy_at(4_217_761), 100_000_000); // fixed tail
         assert_eq!(Indexer::subsidy_at(99_999_999), 100_000_000);
         // Next-change countdown.
-        assert_eq!(Indexer::next_subsidy_change(100), Some((10_081, 1_600_000_000)));
+        assert_eq!(
+            Indexer::next_subsidy_change(100),
+            Some((10_081, 1_600_000_000))
+        );
         assert_eq!(
             Indexer::next_subsidy_change(10_081),
             Some((1_062_000, 800_000_000))
@@ -2225,12 +2408,15 @@ mod tests {
         assert_eq!(b["fees"], 5); // 100 in - (90 + 5) out
         let b0 = idx.block_by_height(0).expect("block").expect("row");
         assert_eq!(b0["fees"], 0); // coinbase has no inputs
-        // Recent txs: newest first, with values and fees.
+                                   // Recent txs: newest first, with values and fees.
         let recent = idx.recent_txs(10).expect("recent");
         assert_eq!(recent.len(), 3);
         assert_eq!(recent[0]["txid"], "cb1");
         assert_eq!(recent[0]["value"], 500);
-        let spend = recent.iter().find(|t| t["txid"] == "spend1").expect("spend");
+        let spend = recent
+            .iter()
+            .find(|t| t["txid"] == "spend1")
+            .expect("spend");
         assert_eq!(spend["fee"], 5);
         assert_eq!(spend["height"], 1);
         // Rich list: unspent only, biggest first (B9's 5 + A1's 90 + A2's 500).
@@ -2354,12 +2540,22 @@ mod tests {
         assert_eq!(n, 2);
         // Pool-found row: prize updated, rewards preserved.
         let g7 = idx.game_block(7).expect("g7").expect("row");
-        assert_eq!((g7["prize"].as_i64(), g7["bonus"].as_i64(), g7["pot"].as_i64()), (Some(555), Some(111), Some(22)));
+        assert_eq!(
+            (
+                g7["prize"].as_i64(),
+                g7["bonus"].as_i64(),
+                g7["pot"].as_i64()
+            ),
+            (Some(555), Some(111), Some(22))
+        );
         assert_eq!(g7["finder"], "poolminer");
         // External-find row: created with prize only.
         let g290 = idx.game_block(290).expect("g290").expect("row");
         assert_eq!(g290["prize"], 1_841_270);
-        assert_eq!((g290["bonus"].as_i64(), g290["pot"].as_i64()), (Some(0), Some(0)));
+        assert_eq!(
+            (g290["bonus"].as_i64(), g290["pot"].as_i64()),
+            (Some(0), Some(0))
+        );
         // New rows identify themselves as non-pool finds.
         assert_eq!(g290["finder"], "external");
         let _ = std::fs::remove_file(&dir);
@@ -2411,7 +2607,11 @@ mod tests {
         let stats = idx.stats().expect("stats");
         assert_eq!(stats["supply"], 900);
         // The market view must use the same definition.
-        let mut idx2 = Indexer::open(dir.to_str().expect("path"), RpcClient::new("127.0.0.1:1", "u", "p")).expect("open");
+        let mut idx2 = Indexer::open(
+            dir.to_str().expect("path"),
+            RpcClient::new("127.0.0.1:1", "u", "p"),
+        )
+        .expect("open");
         let m = idx2.market().expect("market");
         assert_eq!(m["supply"], 900);
         // The supply curve ends at the same figure.
@@ -2443,17 +2643,19 @@ mod tests {
         idx.rollback_height(0).expect("rollback");
         let left: i64 = idx
             .db
-            .query_row("SELECT COUNT(*) FROM tx_facts WHERE height = 0", [], |r| r.get(0))
+            .query_row("SELECT COUNT(*) FROM tx_facts WHERE height = 0", [], |r| {
+                r.get(0)
+            })
             .expect("count");
         assert_eq!(left, 0);
         let _ = std::fs::remove_file(&dir);
     }
 
-
     #[test]
     fn feed_url_splitting_handles_both_schemes() {
         // Plain HTTP keeps the default port; SNI form carries no port.
-        let (tls, host, addr, hp, path) = split_feed_url("http://127.0.0.1:8081/api/stats").expect("http");
+        let (tls, host, addr, hp, path) =
+            split_feed_url("http://127.0.0.1:8081/api/stats").expect("http");
         assert!(!tls);
         assert_eq!(host, "127.0.0.1");
         assert_eq!(addr, "127.0.0.1:8081");
@@ -2463,7 +2665,8 @@ mod tests {
         let (tls, host, addr, _, path) = split_feed_url("http://example.com").expect("bare");
         assert!(!tls && host == "example.com" && addr == "example.com:80" && path == "/");
         // HTTPS defaults to 443 with a bare hostname for SNI.
-        let (tls, host, addr, hp, path) = split_feed_url("https://price.example.com/ticker").expect("https");
+        let (tls, host, addr, hp, path) =
+            split_feed_url("https://price.example.com/ticker").expect("https");
         assert!(tls);
         assert_eq!(host, "price.example.com");
         assert_eq!(addr, "price.example.com:443");
@@ -2486,7 +2689,10 @@ mod tests {
         // Empty before the first pool sync.
         let boards = idx.division_boards().expect("boards");
         assert_eq!(boards.len(), 4);
-        assert!(boards.iter().all(|b| b["entries"].as_array().map(|e| e.is_empty()).unwrap_or(false)));
+        assert!(boards.iter().all(|b| b["entries"]
+            .as_array()
+            .map(|e| e.is_empty())
+            .unwrap_or(false)));
         idx.db
             .execute_batch(
                 "INSERT INTO division_boards(class, rank, miner, name, eff_work, days, streak, attested, synced_at)
@@ -2502,7 +2708,10 @@ mod tests {
         assert_eq!(boards[0]["entries"][0]["miner"], "a1");
         assert_eq!(boards[0]["entries"][1]["attested"], true);
         assert_eq!(boards[1]["class"], "cpu");
-        assert!(boards[1]["entries"].as_array().map(|e| e.is_empty()).unwrap_or(false));
+        assert!(boards[1]["entries"]
+            .as_array()
+            .map(|e| e.is_empty())
+            .unwrap_or(false));
         assert_eq!(boards[2]["class"], "gpu");
         assert_eq!(boards[2]["entries"][0]["streak"], 2);
         let _ = std::fs::remove_file(&dir);

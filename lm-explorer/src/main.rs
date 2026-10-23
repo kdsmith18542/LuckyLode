@@ -66,14 +66,27 @@ fn main() -> std::process::ExitCode {
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
-            "--node-rpc" => node = arg_value(&args, &mut i, "node-rpc").unwrap_or_else(|e| fatal(e)),
-            "--rpc-user" => user = arg_value(&args, &mut i, "rpc-user").unwrap_or_else(|e| fatal(e)),
-            "--rpc-pass" => pass = arg_value(&args, &mut i, "rpc-pass").unwrap_or_else(|e| fatal(e)),
+            "--node-rpc" => {
+                node = arg_value(&args, &mut i, "node-rpc").unwrap_or_else(|e| fatal(e))
+            }
+            "--rpc-user" => {
+                user = arg_value(&args, &mut i, "rpc-user").unwrap_or_else(|e| fatal(e))
+            }
+            "--rpc-pass" => {
+                pass = arg_value(&args, &mut i, "rpc-pass").unwrap_or_else(|e| fatal(e))
+            }
             "--bind" => bind = arg_value(&args, &mut i, "bind").unwrap_or_else(|e| fatal(e)),
             "--db" => db = arg_value(&args, &mut i, "db").unwrap_or_else(|e| fatal(e)),
-            "--pool-api" => pool_api = arg_value(&args, &mut i, "pool-api").unwrap_or_else(|e| fatal(e)),
-            "--price-url" => price_url = Some(arg_value(&args, &mut i, "price-url").unwrap_or_else(|e| fatal(e))),
-            "--price-source" => price_source = Some(arg_value(&args, &mut i, "price-source").unwrap_or_else(|e| fatal(e))),
+            "--pool-api" => {
+                pool_api = arg_value(&args, &mut i, "pool-api").unwrap_or_else(|e| fatal(e))
+            }
+            "--price-url" => {
+                price_url = Some(arg_value(&args, &mut i, "price-url").unwrap_or_else(|e| fatal(e)))
+            }
+            "--price-source" => {
+                price_source =
+                    Some(arg_value(&args, &mut i, "price-source").unwrap_or_else(|e| fatal(e)))
+            }
             "--sync-interval" => {
                 interval = arg_value(&args, &mut i, "sync-interval")
                     .unwrap_or_else(|e| fatal(e))

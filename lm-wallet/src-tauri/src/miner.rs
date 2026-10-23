@@ -54,7 +54,9 @@ pub struct Status {
 }
 
 fn log_line(log: &Mutex<VecDeque<String>>, line: String) {
-    let mut l = log.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut l = log
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     if l.len() >= LOG_CAP {
         l.pop_front();
     }
@@ -65,7 +67,10 @@ fn set_error(status: &Mutex<Status>, log: &Mutex<VecDeque<String>>, err: Option<
     if let Some(e) = &err {
         log_line(log, format!("error: {e}"));
     }
-    status.lock().unwrap_or_else(std::sync::PoisonError::into_inner).error = err;
+    status
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .error = err;
 }
 
 /// Start mining. `device` = `cpu` | `opencl` | `auto`; `duty` = percent of
@@ -91,7 +96,12 @@ pub fn start(
     }
     // Surface a bad thermal/duty config before spawning anything.
     let _ = MiningPolicy::new(max_temp, duty.min(100) as i64)?;
-    if pool.to_socket_addrs().ok().and_then(|mut it| it.next()).is_none() {
+    if pool
+        .to_socket_addrs()
+        .ok()
+        .and_then(|mut it| it.next())
+        .is_none()
+    {
         return Err(format!("cannot resolve pool address '{pool}'"));
     }
 
@@ -158,7 +168,10 @@ fn run(
         Ok(p) => p,
         Err(e) => {
             set_error(&status, &log, Some(e));
-            status.lock().unwrap_or_else(std::sync::PoisonError::into_inner).running = false;
+            status
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .running = false;
             return;
         }
     };
@@ -171,7 +184,10 @@ fn run(
             Ok(g) => Some(g),
             Err(e) => {
                 set_error(&status, &log, Some(format!("opencl: {e}")));
-                status.lock().unwrap_or_else(std::sync::PoisonError::into_inner).running = false;
+                status
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .running = false;
                 return;
             }
         },
@@ -187,12 +203,20 @@ fn run(
             if max_power > 0 {
                 match lm_miner::gpu::apply_power_limit(max_power) {
                     Ok(()) => log_line(&log, format!("gpu power limit set to {max_power} W")),
-                    Err(e) => log_line(&log, format!("gpu power limit {max_power} W not applied: {e}")),
+                    Err(e) => log_line(
+                        &log,
+                        format!("gpu power limit {max_power} W not applied: {e}"),
+                    ),
                 }
             }
             (Backend::Gpu(g), GPU_CHUNK)
         }
-        None => (Backend::Cpu { threads: threads.max(1) }, CPU_CHUNK),
+        None => (
+            Backend::Cpu {
+                threads: threads.max(1),
+            },
+            CPU_CHUNK,
+        ),
     };
     let device_label = match &backend {
         Backend::Gpu(g) => format!("gpu: {}", g.name()),
@@ -206,7 +230,9 @@ fn run(
     }
     .to_string();
     {
-        let mut s = status.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut s = status
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         s.device = device_label.clone();
     }
     log_line(&log, format!("mining {device_label} → {pool} as {worker}"));
@@ -273,7 +299,10 @@ fn run(
                 log_line(log, format!("no job within {timeout_secs}s; reconnecting"));
             }
             Event::JobExhausted { job } => {
-                log_line(log, format!("job {job} exhausted, waiting for a new template"));
+                log_line(
+                    log,
+                    format!("job {job} exhausted, waiting for a new template"),
+                );
             }
             Event::JobAdopted { job, height } => {
                 log_line(log, format!("job {job} height {height}"));
@@ -282,7 +311,9 @@ fn run(
         }
         // Status snapshot on every event (the loop reports at least every
         // few seconds; gpu_status is cached 2 s so this stays cheap).
-        let mut s = status.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut s = status
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let (t, p) = if is_gpu {
             lm_miner::gpu::gpu_status()
         } else {
@@ -296,26 +327,38 @@ fn run(
         s.uptime_secs = started.elapsed().as_secs();
         s.temp_c = t;
         s.power_w = p;
-        if let Some(l) = log.lock().unwrap_or_else(std::sync::PoisonError::into_inner).back() {
+        if let Some(l) = log
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .back()
+        {
             s.last_line = l.clone();
         }
     };
 
     let outcome = lm_miner::pool_loop::run(&cfg, &backend, &policy, &stop, &mut sink);
     let (closing, failed) = match outcome {
-        Outcome::SessionComplete { accepted, submitted } => {
-            (format!("session complete: {accepted}/{submitted} shares accepted"), None)
-        }
-        Outcome::Stopped { accepted, submitted } => {
-            (format!("stopped ({accepted}/{submitted} accepted)"), None)
-        }
+        Outcome::SessionComplete {
+            accepted,
+            submitted,
+        } => (
+            format!("session complete: {accepted}/{submitted} shares accepted"),
+            None,
+        ),
+        Outcome::Stopped {
+            accepted,
+            submitted,
+        } => (format!("stopped ({accepted}/{submitted} accepted)"), None),
         Outcome::Failed { error } => (format!("stopped: {error}"), Some(error)),
     };
     log_line(&log, closing);
     if let Some(error) = failed {
         set_error(&status, &log, Some(error));
     }
-    status.lock().unwrap_or_else(std::sync::PoisonError::into_inner).running = false;
+    status
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .running = false;
 }
 
 #[derive(Default)]
@@ -414,8 +457,7 @@ fn template_beneficiary(
     change_next: u32,
 ) -> Result<String, String> {
     use lm_stratum::tx::output_scripts;
-    let scripts =
-        output_scripts(&txs[0]).map_err(|e| format!("coinbase parse: {e:?}"))?;
+    let scripts = output_scripts(&txs[0]).map_err(|e| format!("coinbase parse: {e:?}"))?;
     let normal = scripts.first().cloned().unwrap_or_default();
     let normal_hex: String = normal.iter().map(|b| format!("{b:02x}")).collect();
     let height = gbt.get("height").and_then(|v| v.as_u64()).unwrap_or(0);
@@ -447,7 +489,10 @@ fn sleep_stop(max: std::time::Duration, stop: &AtomicBool) -> bool {
         if stop.load(std::sync::atomic::Ordering::Relaxed) {
             return false;
         }
-        std::thread::sleep(std::time::Duration::from_millis(200).min(end.saturating_duration_since(Instant::now())));
+        std::thread::sleep(
+            std::time::Duration::from_millis(200)
+                .min(end.saturating_duration_since(Instant::now())),
+        );
     }
     !stop.load(std::sync::atomic::Ordering::Relaxed)
 }
@@ -475,7 +520,10 @@ fn run_solo(
         Ok(p) => p,
         Err(e) => {
             set_error(&status, &log, Some(e));
-            status.lock().unwrap_or_else(std::sync::PoisonError::into_inner).running = false;
+            status
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .running = false;
             return;
         }
     };
@@ -487,7 +535,10 @@ fn run_solo(
             Ok(g) => Some(g),
             Err(e) => {
                 set_error(&status, &log, Some(format!("opencl: {e}")));
-                status.lock().unwrap_or_else(std::sync::PoisonError::into_inner).running = false;
+                status
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .running = false;
                 return;
             }
         },
@@ -503,22 +554,35 @@ fn run_solo(
             if max_power > 0 {
                 match lm_miner::gpu::apply_power_limit(max_power) {
                     Ok(()) => log_line(&log, format!("gpu power limit set to {max_power} W")),
-                    Err(e) => log_line(&log, format!("gpu power limit {max_power} W not applied: {e}")),
+                    Err(e) => log_line(
+                        &log,
+                        format!("gpu power limit {max_power} W not applied: {e}"),
+                    ),
                 }
             }
             (Backend::Gpu(g), GPU_CHUNK)
         }
-        None => (Backend::Cpu { threads: threads.max(1) }, CPU_CHUNK),
+        None => (
+            Backend::Cpu {
+                threads: threads.max(1),
+            },
+            CPU_CHUNK,
+        ),
     };
     let device_label = match &backend {
         Backend::Gpu(g) => format!("gpu: {}", g.name()),
         Backend::Cpu { threads } => format!("cpu: {threads} threads"),
     };
     {
-        let mut s = status.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut s = status
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         s.device = device_label.clone();
     }
-    log_line(&log, format!("solo mining {device_label} (claim-aware templates, no pool)"));
+    log_line(
+        &log,
+        format!("solo mining {device_label} (claim-aware templates, no pool)"),
+    );
 
     let started = Instant::now();
     let mut hashes: u64 = 0;
@@ -533,7 +597,9 @@ fn run_solo(
 
     macro_rules! snapshot {
         ($last:expr) => {{
-            let mut s = status.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut s = status
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let (t, p) = match &backend {
                 Backend::Gpu(_) => lm_miner::gpu::gpu_status(),
                 Backend::Cpu { .. } => (lm_miner::thermal::read_temp_c(), None),
@@ -545,7 +611,12 @@ fn run_solo(
             s.uptime_secs = started.elapsed().as_secs();
             s.temp_c = t;
             s.power_w = p;
-            if let Some(l) = $last.or_else(|| log.lock().unwrap_or_else(std::sync::PoisonError::into_inner).back().cloned()) {
+            if let Some(l) = $last.or_else(|| {
+                log.lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .back()
+                    .cloned()
+            }) {
                 s.last_line = l;
             }
         }};
@@ -578,7 +649,9 @@ fn run_solo(
                             ),
                         );
                         {
-                            let mut s = status.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                            let mut s = status
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner);
                             s.worker = beneficiary;
                         }
                     }
@@ -614,7 +687,11 @@ fn run_solo(
         let dt = t0.elapsed().as_secs_f64().max(0.001);
         hashes = hashes.saturating_add(chunk);
         let inst = chunk as f64 / dt;
-        hashrate = if hashrate == 0.0 { inst } else { hashrate * 0.7 + inst * 0.3 };
+        hashrate = if hashrate == 0.0 {
+            inst
+        } else {
+            hashrate * 0.7 + inst * 0.3
+        };
         nonce = nonce.wrapping_add(chunk);
         if stop.load(std::sync::atomic::Ordering::Relaxed) {
             break;
@@ -639,7 +716,9 @@ fn run_solo(
         }
         snapshot!(None);
     }
-    let mut s = status.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut s = status
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     s.running = false;
     if s.error.is_none() {
         log_line(&log, format!("stopped ({accepted} blocks found)"));
@@ -683,18 +762,16 @@ fn fetch_template(
         .and_then(|v| v.as_u64())
         .unwrap_or(1000)
         .max(1);
-    let (tpl, txs, bonus, pot, _coinbase, _pity, _faucet, _dev, prize) =
-        build_template(
-            &gbt,
-            true,
-            true,
-            jackpot_divisor,
-            pot_divisor,
-            &SeedClaim::default(),
-            true,
-        )?;
-    let beneficiary =
-        template_beneficiary(&gbt, &txs, seed, net, recv_next, change_next)?;
+    let (tpl, txs, bonus, pot, _coinbase, _pity, _faucet, _dev, prize) = build_template(
+        &gbt,
+        true,
+        true,
+        jackpot_divisor,
+        pot_divisor,
+        &SeedClaim::default(),
+        true,
+    )?;
+    let beneficiary = template_beneficiary(&gbt, &txs, seed, net, recv_next, change_next)?;
     Ok((tpl, txs, beneficiary, bonus, pot, prize.amount))
 }
 
@@ -723,7 +800,6 @@ fn test_coinbase(script: &[u8]) -> Vec<u8> {
     tx
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -739,10 +815,17 @@ mod tests {
         // proceed, and the matched address is reported for the log.
         let seed = [7u8; 64];
         let net = lm_keys::chain::Network::Regtest;
-        let d0 = crate::wallet::derive_range(&seed, net, 0, 0, 1).expect("derive").remove(0);
-        let d1 = crate::wallet::derive_range(&seed, net, 1, 0, 1).expect("derive").remove(0);
+        let d0 = crate::wallet::derive_range(&seed, net, 0, 0, 1)
+            .expect("derive")
+            .remove(0);
+        let d1 = crate::wallet::derive_range(&seed, net, 1, 0, 1)
+            .expect("derive")
+            .remove(0);
         let hexd = |h: &str| {
-            (0..h.len()).step_by(2).map(|i| u8::from_str_radix(&h[i..i + 2], 16).unwrap()).collect::<Vec<u8>>()
+            (0..h.len())
+                .step_by(2)
+                .map(|i| u8::from_str_radix(&h[i..i + 2], 16).unwrap())
+                .collect::<Vec<u8>>()
         };
         let gbt = serde_json::json!({"height": 5u64});
         for d in [&d0, &d1] {
@@ -759,13 +842,22 @@ mod tests {
         let net = lm_keys::chain::Network::Regtest;
         let stranger = "76a914ba38cfe49e436bb2a43898083a98becc148c204488ac";
         let hexd = |h: &str| {
-            (0..h.len()).step_by(2).map(|i| u8::from_str_radix(&h[i..i + 2], 16).unwrap()).collect::<Vec<u8>>()
+            (0..h.len())
+                .step_by(2)
+                .map(|i| u8::from_str_radix(&h[i..i + 2], 16).unwrap())
+                .collect::<Vec<u8>>()
         };
         let gbt = serde_json::json!({"height": 5u64});
         let cb = test_coinbase(&hexd(stranger));
         let err = template_beneficiary(&gbt, &[cb], &seed, net, 0, 0).expect_err("must refuse");
-        assert!(err.contains("not one of this wallet"), "fail-closed reason, got: {err}");
-        assert!(err.contains("-mineraddress"), "must name the fix, got: {err}");
+        assert!(
+            err.contains("not one of this wallet"),
+            "fail-closed reason, got: {err}"
+        );
+        assert!(
+            err.contains("-mineraddress"),
+            "must name the fix, got: {err}"
+        );
     }
 
     /// End-to-end smoke: connect to a live local pool, mine a bit, stop.
@@ -773,7 +865,8 @@ mod tests {
     /// 127.0.0.1:3356 (open auth).
     #[test]
     #[ignore]
-    fn live_smoke_against_local_pool() {        let m = start(
+    fn live_smoke_against_local_pool() {
+        let m = start(
             "127.0.0.1:3356".into(),
             "wallet-smoke".into(),
             "cpu".into(),
@@ -787,15 +880,29 @@ mod tests {
         )
         .expect("start");
         std::thread::sleep(Duration::from_secs(20));
-        let lg: Vec<String> = m.log.lock().unwrap_or_else(std::sync::PoisonError::into_inner).iter().cloned().collect();
+        let lg: Vec<String> = m
+            .log
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .cloned()
+            .collect();
         println!("cpu smoke log: {lg:?}");
-        let s = m.status.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+        let s = m
+            .status
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
         assert!(s.running, "miner should be running: {s:?}");
         assert!(s.hashes > 0, "hashes should grow: {s:?}");
         assert!(s.error.is_none(), "no error expected: {s:?}");
         m.stop.store(true, Ordering::Relaxed);
         std::thread::sleep(Duration::from_secs(12));
-        let s = m.status.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+        let s = m
+            .status
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
         assert!(!s.running, "miner should stop: {s:?}");
         println!("smoke ok: {s:?}");
     }
@@ -827,11 +934,10 @@ mod tests {
             }
         }
 
-        let bin = std::env::var("LUCKYD_BIN").ok().or_else(|| {
-            crate::node_proc::find_luckyd()
-                .into_iter()
-                .next()
-        }).expect("luckyd binary needed (LUCKYD_BIN or PATH)");
+        let bin = std::env::var("LUCKYD_BIN")
+            .ok()
+            .or_else(|| crate::node_proc::find_luckyd().into_iter().next())
+            .expect("luckyd binary needed (LUCKYD_BIN or PATH)");
         let pid = std::process::id();
         let dir = std::env::temp_dir().join(format!("lucky-solo-test-{pid}"));
         let _ = std::fs::remove_dir_all(&dir);
@@ -861,10 +967,17 @@ lucky-coinbase-maturity=1\n";
             &format!("-regtest -mineraddress={addr} -minetolocalwallet=0"),
         );
         let child = crate::node_proc::spawn(&bin, &args).expect("spawn node");
-        let guard = Guard { child: Some(child), dir: dir.clone() };
+        let guard = Guard {
+            child: Some(child),
+            dir: dir.clone(),
+        };
         let rpc = RpcClient::new("127.0.0.1:60451", "solouser", "solopass0123456789abcdef");
-        let h0 = crate::node_proc::wait_for_rpc(&rpc, dir.to_str().expect("dir"), std::time::Duration::from_secs(120))
-            .expect("node rpc up");
+        let h0 = crate::node_proc::wait_for_rpc(
+            &rpc,
+            dir.to_str().expect("dir"),
+            std::time::Duration::from_secs(120),
+        )
+        .expect("node rpc up");
         assert_eq!(h0, 0, "fresh datadir must start at genesis (port clash?)");
 
         let m = start_solo(
@@ -900,7 +1013,11 @@ lucky-coinbase-maturity=1\n";
         m.stop.store(true, std::sync::atomic::Ordering::Relaxed);
         std::thread::sleep(std::time::Duration::from_secs(6));
         assert!(tip >= 2, "solo miner should have mined blocks, tip={tip}");
-        let s = m.status.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+        let s = m
+            .status
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
         assert!(s.hashes > 0, "hashes should grow: {s:?}");
         assert!(s.accepted >= 2, "blocks should land: {s:?}");
         assert!(s.error.is_none(), "no error expected: {s:?}");
@@ -908,14 +1025,17 @@ lucky-coinbase-maturity=1\n";
         // and the beneficiary gate end to end).
         for h in 1..=tip {
             let bh: String = serde_json::from_str::<serde_json::Value>(
-                &rpc.call("getblockhash", serde_json::json!([h])).expect("hash").to_string(),
+                &rpc.call("getblockhash", serde_json::json!([h]))
+                    .expect("hash")
+                    .to_string(),
             )
             .expect("hash str")
             .as_str()
             .expect("hash")
             .to_string();
-            let blk: serde_json::Value =
-                rpc.call("getblock", serde_json::json!([bh, 2])).expect("block");
+            let blk: serde_json::Value = rpc
+                .call("getblock", serde_json::json!([bh, 2]))
+                .expect("block");
             let addrs: Vec<String> = blk["tx"][0]["vout"][0]["scriptPubKey"]["addresses"]
                 .as_array()
                 .cloned()
@@ -952,14 +1072,22 @@ lucky-coinbase-maturity=1\n";
         )
         .expect("start");
         std::thread::sleep(Duration::from_secs(20));
-        let s = m.status.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+        let s = m
+            .status
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
         assert!(s.running, "gpu miner should be running: {s:?}");
         assert!(s.device.starts_with("gpu:"), "should be on the GPU: {s:?}");
         assert!(s.hashes > 0, "hashes should grow: {s:?}");
         assert!(s.temp_c > 0, "gpu sensor should report: {s:?}");
         m.stop.store(true, Ordering::Relaxed);
         std::thread::sleep(Duration::from_secs(12));
-        let s = m.status.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+        let s = m
+            .status
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
         assert!(!s.running, "gpu miner should stop: {s:?}");
         println!("gpu smoke ok: {s:?}");
     }

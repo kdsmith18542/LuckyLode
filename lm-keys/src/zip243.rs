@@ -19,8 +19,10 @@
 //! joinsplit digest, plus valueBalance=0 after expiry), pinned by
 //! `sapling_extends_overwinter_digest_by_constants`.
 
+use crate::tx::{
+    put_bytes, put_i64, put_u32, Transaction, OVERWINTER_TX_VERSION, SAPLING_TX_VERSION,
+};
 use blake2b_simd::Params as Blake2bParams;
-use crate::tx::{put_bytes, put_i64, put_u32, Transaction, OVERWINTER_TX_VERSION, SAPLING_TX_VERSION};
 
 /// Consensus branch ids (the node repository's src/consensus/upgrades.cpp; live-confirmed
 /// via getblockchaininfo on testnet).
@@ -60,7 +62,10 @@ impl Epoch {
 /// BLAKE2b-256 with a 16-byte personalization (the fork's
 /// CBLAKE2bWriter).
 fn blake2b_personal(personal: &[u8; 16], data: &[u8]) -> [u8; 32] {
-    let mut h = Blake2bParams::new().hash_length(32).personal(personal).to_state();
+    let mut h = Blake2bParams::new()
+        .hash_length(32)
+        .personal(personal)
+        .to_state();
     h.update(data);
     let mut out = [0u8; 32];
     out.copy_from_slice(h.finalize().as_bytes());
@@ -86,7 +91,10 @@ pub fn sighash(
     if tx.version == OVERWINTER_TX_VERSION || tx.version == SAPLING_TX_VERSION {
         // ok
     } else {
-        return Err(format!("unsupported overwintered tx version {}", tx.version));
+        return Err(format!(
+            "unsupported overwintered tx version {}",
+            tx.version
+        ));
     }
     if input >= tx.vin.len() {
         return Err("input out of range".to_string());
@@ -178,8 +186,7 @@ pub(crate) fn digest_input(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tx::{OutPoint, SIGHASH_ALL, SEQUENCE_FINAL, TxIn, TxOut};
-
+    use crate::tx::{OutPoint, TxIn, TxOut, SEQUENCE_FINAL, SIGHASH_ALL};
 
     fn sample_tx(version: i32) -> Transaction {
         let group = if version == SAPLING_TX_VERSION {
@@ -247,7 +254,11 @@ mod tests {
             b.extend_from_slice(&blake2b_personal(b"ZcashPrevoutHash", &prevouts));
             b.extend_from_slice(&blake2b_personal(
                 b"ZcashSequencHash",
-                &tx.vin.iter().map(|i| i.sequence.to_le_bytes()).collect::<Vec<_>>().concat(),
+                &tx.vin
+                    .iter()
+                    .map(|i| i.sequence.to_le_bytes())
+                    .collect::<Vec<_>>()
+                    .concat(),
             ));
             b.extend_from_slice(&blake2b_personal(b"ZcashOutputsHash", &outputs));
             b.extend_from_slice(&[0u8; 32]); // joinsplits (empty)
@@ -283,7 +294,15 @@ mod tests {
         let script = [0x51];
         // ANYONECANPAY: prevouts sub-hash zeroes.
         let all = sighash(&tx, 0, &script, 5, SIGHASH_ALL, SAPLING_BRANCH_ID).unwrap();
-        let acp = sighash(&tx, 0, &script, 5, SIGHASH_ALL | SIGHASH_ANYONECANPAY, SAPLING_BRANCH_ID).unwrap();
+        let acp = sighash(
+            &tx,
+            0,
+            &script,
+            5,
+            SIGHASH_ALL | SIGHASH_ANYONECANPAY,
+            SAPLING_BRANCH_ID,
+        )
+        .unwrap();
         assert_ne!(all, acp);
         // SINGLE with a valid index hashes only that output; NONE zeroes.
         let single = sighash(&tx, 0, &script, 5, SIGHASH_SINGLE, SAPLING_BRANCH_ID).unwrap();
@@ -303,4 +322,3 @@ mod tests {
         assert!(sighash(&tx, 0, &[0x51], 0, SIGHASH_ALL, SAPLING_BRANCH_ID).is_err());
     }
 }
-

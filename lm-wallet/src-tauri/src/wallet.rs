@@ -134,8 +134,8 @@ fn check_password(password: &str) -> Result<(), String> {
 }
 
 fn derive_key(password: &str, salt: &[u8; SALT_LEN]) -> Result<[u8; 32], String> {
-    let params = Params::new(ARGON_M_KIB, ARGON_T, ARGON_P, None)
-        .map_err(|e| format!("kdf params: {e}"))?;
+    let params =
+        Params::new(ARGON_M_KIB, ARGON_T, ARGON_P, None).map_err(|e| format!("kdf params: {e}"))?;
     let a2 = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
     let mut key = [0u8; 32];
     a2.hash_password_into(password.as_bytes(), salt, &mut key)
@@ -358,7 +358,9 @@ pub fn parse_amount_lkyl(s: &str) -> Result<u64, String> {
     let w: u64 = if whole.is_empty() {
         0
     } else {
-        whole.parse().map_err(|_| format!("'{s}' is not a number"))?
+        whole
+            .parse()
+            .map_err(|_| format!("'{s}' is not a number"))?
     };
     let mut fpad = frac.to_string();
     while fpad.len() < 8 {
@@ -471,7 +473,13 @@ pub fn scan(
         .as_u64()
         .ok_or("getblockcount: unexpected")?;
     let mut derived = derive_range(seed, net, 0, 0, recv_next.saturating_add(GAP))?;
-    derived.extend(derive_range(seed, net, 1, 0, change_next.saturating_add(GAP))?);
+    derived.extend(derive_range(
+        seed,
+        net,
+        1,
+        0,
+        change_next.saturating_add(GAP),
+    )?);
     let addrs: Vec<String> = derived.iter().map(|d| d.address.clone()).collect();
     let by_addr: HashMap<&str, &DerivedAddr> =
         derived.iter().map(|d| (d.address.as_str(), d)).collect();
@@ -511,10 +519,9 @@ pub fn scan(
                 // confirmations on EVERY refresh — with per-minute pool
                 // payouts that was ~a dozen RPCs per refresh (the
                 // "balances take a while" report).
-                Some(m) if m.height == idx_height && idx_height > 0 => (
-                    m.coinbase,
-                    tip.saturating_sub(idx_height).saturating_add(1),
-                ),
+                Some(m) if m.height == idx_height && idx_height > 0 => {
+                    (m.coinbase, tip.saturating_sub(idx_height).saturating_add(1))
+                }
                 _ => {
                     let raw = rpc.call("getrawtransaction", json!([txid, 1]))?;
                     let cb = is_coinbase_tx(&raw);
@@ -625,7 +632,9 @@ pub fn full_scan_used(
                 .ok()
                 .and_then(|v| {
                     v.as_array().map(|a| {
-                        a.iter().filter_map(|t| t.as_str().map(str::to_string)).collect()
+                        a.iter()
+                            .filter_map(|t| t.as_str().map(str::to_string))
+                            .collect()
                     })
                 })
                 .unwrap_or_default();
@@ -638,7 +647,9 @@ pub fn full_scan_used(
                     .ok()
                     .and_then(|v| {
                         v.as_array().map(|a| {
-                            a.iter().filter_map(|t| t.as_str().map(str::to_string)).collect()
+                            a.iter()
+                                .filter_map(|t| t.as_str().map(str::to_string))
+                                .collect()
                         })
                     })
                     .unwrap_or_default();
@@ -747,10 +758,13 @@ fn decode_tx(raw: &Value) -> DecodedTx {
     let mut vouts = Vec::new();
     if let Some(arr) = raw.get("vout").and_then(|v| v.as_array()) {
         for o in arr {
-            let value = o.get("valueSat").and_then(|v| v.as_u64()).unwrap_or_else(|| {
-                (o.get("value").and_then(|v| v.as_f64()).unwrap_or(0.0) * 100_000_000.0).round()
-                    as u64
-            });
+            let value = o
+                .get("valueSat")
+                .and_then(|v| v.as_u64())
+                .unwrap_or_else(|| {
+                    (o.get("value").and_then(|v| v.as_f64()).unwrap_or(0.0) * 100_000_000.0).round()
+                        as u64
+                });
             let sp = o.get("scriptPubKey");
             let script_hex = sp
                 .and_then(|s| s.get("hex"))
@@ -774,7 +788,10 @@ fn decode_tx(raw: &Value) -> DecodedTx {
             .or_else(|| raw.get("time"))
             .and_then(|v| v.as_u64())
             .unwrap_or(0),
-        confirmations: raw.get("confirmations").and_then(|v| v.as_u64()).unwrap_or(0),
+        confirmations: raw
+            .get("confirmations")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0),
         height: raw.get("height").and_then(|v| v.as_u64()),
     }
 }
@@ -832,7 +849,11 @@ pub fn row_for_tx(
     } else if in_own > 0 {
         ("self", 0, first_own.clone().unwrap_or_default())
     } else {
-        ("receive", out_own as i64, first_own.clone().unwrap_or_default())
+        (
+            "receive",
+            out_own as i64,
+            first_own.clone().unwrap_or_default(),
+        )
     };
     ActivityRow {
         txid: txid.to_string(),
@@ -981,12 +1002,7 @@ pub fn activity(
     }
     // Newest first (node order is oldest-first; UI slices the front).
     rows.sort_by(|a, b| b.time.cmp(&a.time).then(b.txid.cmp(&a.txid)));
-    let max_for = |ch: u32| {
-        used.iter()
-            .filter(|(c, _)| *c == ch)
-            .map(|(_, i)| *i)
-            .max()
-    };
+    let max_for = |ch: u32| used.iter().filter(|(c, _)| *c == ch).map(|(_, i)| *i).max();
     if dirty {
         save_txmeta(dir, &meta);
     }
@@ -1234,9 +1250,7 @@ pub fn tx_detail(
         }
     }
     for (value, script, addr) in &tx.vouts {
-        let entry_addr = addr
-            .clone()
-            .unwrap_or_else(|| format!("script:{script}"));
+        let entry_addr = addr.clone().unwrap_or_else(|| format!("script:{script}"));
         if own_scripts.contains_key(script.as_str()) {
             details.push(json!({
                 "category": "receive",
@@ -1336,7 +1350,8 @@ mod tests {
         // Dead endpoint: any RPC attempt fails, so this only passes on a
         // pure cache hit (the whole point of the fix).
         let dead = RpcClient::new("http://127.0.0.1:9", "", "");
-        let page = activity(&dead, std::slice::from_ref(&txid), &map, 25, 20, &dir).expect("cache hit");
+        let page =
+            activity(&dead, std::slice::from_ref(&txid), &map, 25, 20, &dir).expect("cache hit");
         assert_eq!(page.rows.len(), 1);
         assert_eq!(page.rows[0].txid, txid);
         assert_eq!(page.rows[0].category, "receive");
@@ -1349,9 +1364,13 @@ mod tests {
     #[test]
     fn dest_script_builds_p2pkh_and_p2sh() {
         // Testnet m/n = P2PKH (111), 2 = P2SH (196).
-        let p2pkh = dest_script("mvSvTtvD9H9fkgi8MGDyLALgRaR2LhnWFM", Network::Testnet).expect("p2pkh");
+        let p2pkh =
+            dest_script("mvSvTtvD9H9fkgi8MGDyLALgRaR2LhnWFM", Network::Testnet).expect("p2pkh");
         assert_eq!(p2pkh.len(), 25);
-        assert_eq!((p2pkh[0], p2pkh[1], p2pkh[2], p2pkh[23], p2pkh[24]), (0x76, 0xa9, 0x14, 0x88, 0xac));
+        assert_eq!(
+            (p2pkh[0], p2pkh[1], p2pkh[2], p2pkh[23], p2pkh[24]),
+            (0x76, 0xa9, 0x14, 0x88, 0xac)
+        );
         // Wrong network rejected.
         assert!(dest_script("mvSvTtvD9H9fkgi8MGDyLALgRaR2LhnWFM", Network::Mainnet).is_err());
         // Garbage rejected.
@@ -1362,8 +1381,7 @@ mod tests {
     fn balances_split_maturity() {
         // Real P2PKH template; the guarded entry mirrors a StakeGuard CC
         // reward output (decodes to our address, relay-unspendable).
-        const P2PKH: &str =
-            "76a914abababababababababababababababababababab88ac";
+        const P2PKH: &str = "76a914abababababababababababababababababababab88ac";
         const GUARDED: &str = "2ea22c80207a4029b3230f7943957f81f24a9f438e20a0ede2779bcb12be228be5ab07debd81031210008203000401cc4c90";
         assert!(is_relay_spendable(P2PKH));
         assert!(!is_relay_spendable(GUARDED));
@@ -1433,8 +1451,7 @@ mod tests {
     /// sets fail with the guarded message, not a bare maturity error.
     #[test]
     fn prepare_payment_skips_stake_guarded_utxos() {
-        const P2PKH: &str =
-            "76a914abababababababababababababababababababab88ac";
+        const P2PKH: &str = "76a914abababababababababababababababababababab88ac";
         const GUARDED: &str = "2ea22c80207a4029b3230f7943957f81f24a9f438e20a0ede2779bcb12be228be5ab07debd81031210008203000401cc4c90";
         let seed = [9u8; 64];
         let mk = |txid: &str, value: u64, script: &str| ScannedUtxo {
@@ -1452,7 +1469,10 @@ mod tests {
         let epoch = lm_keys::sign::Epoch::Sprout;
         // Mixed: 600k P2PKH + 100M guarded funds a 500k send with ~100k
         // change — the guarded giant is untouched.
-        let mixed = vec![mk(&"aa".repeat(32), 600_000, P2PKH), mk(&"bb".repeat(32), 100_000_000, GUARDED)];
+        let mixed = vec![
+            mk(&"aa".repeat(32), 600_000, P2PKH),
+            mk(&"bb".repeat(32), 100_000_000, GUARDED),
+        ];
         let d = prepare_payment(&seed, Network::Testnet, &mixed, dest, 500_000, 0, epoch)
             .unwrap_or_else(|e| panic!("mixed funds: {e}"));
         assert!(d.change < 200_000, "change {} uses guarded funds", d.change);
@@ -1483,11 +1503,17 @@ mod tests {
             height: Some(10),
         };
         let prev = |_: &str, _: u32| -> Option<(u64, String)> {
-            Some((80_000, "76a914dddddddddddddddddddddddddddddddddddddddd88ac".into()))
+            Some((
+                80_000,
+                "76a914dddddddddddddddddddddddddddddddddddddddd88ac".into(),
+            ))
         };
         let mut used = Vec::new();
         let row = row_for_tx("rxid", &rx, &prev, &own_scripts, &mut used);
-        assert_eq!((row.category.as_str(), row.amount, row.confirmations), ("receive", 0.0005, 3));
+        assert_eq!(
+            (row.category.as_str(), row.amount, row.confirmations),
+            ("receive", 0.0005, 3)
+        );
         assert_eq!(row.address, "mOwn");
         assert_eq!(used, vec![(0, 0)]);
 
@@ -1587,7 +1613,10 @@ mod tests {
             if rpc.call("getblockcount", json!([])).is_ok() {
                 break;
             }
-            assert!(t0.elapsed() < Duration::from_secs(120), "node never came up");
+            assert!(
+                t0.elapsed() < Duration::from_secs(120),
+                "node never came up"
+            );
             std::thread::sleep(Duration::from_secs(2));
         }
         let stop_node = || {
@@ -1765,7 +1794,10 @@ mod tests {
             if confs >= 1 {
                 break;
             }
-            assert!(t0.elapsed() < Duration::from_secs(900), "funding never confirmed");
+            assert!(
+                t0.elapsed() < Duration::from_secs(900),
+                "funding never confirmed"
+            );
             std::thread::sleep(Duration::from_secs(10));
         }
         // Balances/activity see it.
@@ -1774,7 +1806,10 @@ mod tests {
         assert!(b.available >= 1_000_000, "available {}", b.available);
         let map = own_script_map(&seed, net, 0, 0).expect("map");
         let page = activity(&rpc, &scan.txids, &map, 20, scan.tip, &dir).expect("activity");
-        assert!(page.rows.iter().any(|r| r.txid == fund && r.category == "receive"));
+        assert!(page
+            .rows
+            .iter()
+            .any(|r| r.txid == fund && r.category == "receive"));
         // Send part of it back to the pool node address.
         let dest = "n2dQr43hTDtDx5XwKnwozN7un4ZbpFzESc";
         let r = send_payment(&rpc, &seed, net, &scan.utxos, dest, 400_000, 0).expect("send");
@@ -1790,7 +1825,10 @@ mod tests {
             if confs >= 1 {
                 break;
             }
-            assert!(t0.elapsed() < Duration::from_secs(900), "spend never confirmed");
+            assert!(
+                t0.elapsed() < Duration::from_secs(900),
+                "spend never confirmed"
+            );
             std::thread::sleep(Duration::from_secs(10));
         }
         let _ = std::fs::remove_dir_all(&dir);
@@ -1803,7 +1841,10 @@ mod tests {
         let phrase = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
         let blob = encrypt_phrase(phrase, "correct horse 123").expect("seal");
         assert!(blob.starts_with(b"LKW1"));
-        assert_eq!(decrypt_phrase(&blob, "correct horse 123").expect("open"), phrase);
+        assert_eq!(
+            decrypt_phrase(&blob, "correct horse 123").expect("open"),
+            phrase
+        );
         // Wrong password fails closed (auth tag mismatch, no oracle).
         assert!(decrypt_phrase(&blob, "wrong password 123").is_err());
         // Flipped ciphertext byte fails closed.

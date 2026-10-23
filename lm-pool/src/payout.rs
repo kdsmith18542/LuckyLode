@@ -32,12 +32,7 @@ impl PayoutLedger {
     /// The pool fee is skimmed first (floored); dust goes
     /// largest-remainder. Empty weights or a zero distributable leave
     /// everything in the operator fee pot (documented, never silent).
-    pub fn credit_block(
-        &mut self,
-        total: u64,
-        weights: &[(String, u64)],
-        fee_permyriad: u16,
-    ) {
+    pub fn credit_block(&mut self, total: u64, weights: &[(String, u64)], fee_permyriad: u16) {
         let fee = total as u128 * u64::from(fee_permyriad) as u128 / FEE_DENOM_PERMYRIAD as u128;
         self.fees = self.fees.saturating_add(fee as u64);
         let distributable = total.saturating_sub(fee as u64);
@@ -262,7 +257,11 @@ mod tests {
         // Pool restart persistence (--state-file): the exact ledger must
         // come back byte-for-byte.
         let mut p = PayoutLedger::default();
-        p.credit_block(7_000_000, &[("m1".to_string(), 3), ("m2".to_string(), 1)], 500);
+        p.credit_block(
+            7_000_000,
+            &[("m1".to_string(), 3), ("m2".to_string(), 1)],
+            500,
+        );
         p.record_paid("m1", 1_000_000);
         let json = serde_json::to_string(&p).expect("serialize");
         let back: PayoutLedger = serde_json::from_str(&json).expect("deserialize");
@@ -276,13 +275,21 @@ mod tests {
     #[test]
     fn totals_reconcile_credits_owed_paid_and_fees() {
         let mut p = PayoutLedger::default();
-        p.credit_block(1_000_000, &[("m1".to_string(), 1), ("m2".to_string(), 1)], 0);
+        p.credit_block(
+            1_000_000,
+            &[("m1".to_string(), 1), ("m2".to_string(), 1)],
+            0,
+        );
         p.credit_block(500_000, &[("m1".to_string(), 1)], 1_000); // 10% fee
         p.record_paid("m1", 600_000);
         let (owed, paid, fees) = p.totals();
         assert_eq!(paid, 600_000);
         assert_eq!(fees, 50_000);
-        assert_eq!(owed + paid + fees, 1_500_000, "every credited unit is owed, paid, or fee");
+        assert_eq!(
+            owed + paid + fees,
+            1_500_000,
+            "every credited unit is owed, paid, or fee"
+        );
         // A fully paid-out miner still counts in the totals; overpay
         // attempts are capped at what is owed (2 only had 500k).
         p.record_paid("m2", 1_000_000);
@@ -309,9 +316,23 @@ mod tests {
 
     #[test]
     fn block_credits_conserve_exactly() {
-        for &(total, fee) in &[(1u64, 0u16), (7, 100), (999, 333), (80_000_000, 50), (u64::MAX / 2, 0)] {
+        for &(total, fee) in &[
+            (1u64, 0u16),
+            (7, 100),
+            (999, 333),
+            (80_000_000, 50),
+            (u64::MAX / 2, 0),
+        ] {
             let mut p = PayoutLedger::default();
-            p.credit_block(total, &[("m1".to_string(), 3), ("m2".to_string(), 2), ("m3".to_string(), 1)], fee);
+            p.credit_block(
+                total,
+                &[
+                    ("m1".to_string(), 3),
+                    ("m2".to_string(), 2),
+                    ("m3".to_string(), 1),
+                ],
+                fee,
+            );
             let owed: u64 = ["m1", "m2", "m3"].iter().map(|m| p.owed(m)).sum();
             assert_eq!(owed + p.fees(), total, "total={total} fee={fee}");
             assert_eq!(p.select_due(0).iter().map(|(_, v)| v).sum::<u64>(), owed);
@@ -337,8 +358,8 @@ mod tests {
         assert!(valid_payout_address("mx5tDPWsWxhC7EVkJXGCR14dUoMdps8fLy")); // live testnet
         assert!(valid_payout_address("mfWyW5fc9NUj75YAnFgoRLrjxgLDn2MMth")); // generated, v111
         assert!(valid_payout_address("2MstP8uJfYBsk1HfmCU9MW3qqKgvrw3ESd1")); // '2' P2SH, 35 chars
-        // The checksum is the gate: same shape, wrong checksum — this is
-        // the typo that used to hold a balance forever.
+                                                                              // The checksum is the gate: same shape, wrong checksum — this is
+                                                                              // the typo that used to hold a balance forever.
         assert!(!valid_payout_address("mfWyW5fc9NUj75YAnFgoRLrjxgLDmNrbUb"));
         assert!(!valid_payout_address("LYPJ8Vy8pEHMqMBksWzgxnZx6VsfuFXxtg")); // last char broken
         assert!(!valid_payout_address("t1short"));

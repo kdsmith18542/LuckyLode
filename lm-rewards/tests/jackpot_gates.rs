@@ -29,7 +29,11 @@ use lm_rewards::{split_jackpot, Share};
 fn decode(v: Vec<(String, u64)>) -> Vec<(u64, u64)> {
     v.into_iter()
         .map(|(id, pay)| {
-            let n: u64 = id.strip_prefix('m').expect("id shape").parse().expect("id num");
+            let n: u64 = id
+                .strip_prefix('m')
+                .expect("id shape")
+                .parse()
+                .expect("id num");
             (n, pay)
         })
         .collect()
@@ -188,7 +192,10 @@ fn reference_split(miners: &[(u64, u64)], bonus: u64) -> Vec<(u64, u64)> {
         return vec![(ids[0], bonus)];
     }
     let shares_of = |id: u64| miners.iter().find(|(m, _)| *m == id).unwrap().1;
-    let weights: Vec<f64> = ids.iter().map(|&id| (shares_of(id) as f64).sqrt()).collect();
+    let weights: Vec<f64> = ids
+        .iter()
+        .map(|&id| (shares_of(id) as f64).sqrt())
+        .collect();
     let cap = if ids.len() >= 5 {
         (bonus as f64 * 0.25).floor().max(1.0) as u64
     } else {
@@ -251,7 +258,10 @@ fn gate4_pool_split_matches_independent_reference() {
     let miners = vec![(1u64, 1_000_000u64), (2, 100), (3, 100), (4, 100), (5, 100)];
     let shares: Vec<Share> = miners
         .iter()
-        .map(|&(m, s)| Share { miner: format!("m{m}"), shares: s })
+        .map(|&(m, s)| Share {
+            miner: format!("m{m}"),
+            shares: s,
+        })
         .collect();
     for bonus in [1_000_000u64, 1_000_003, 7, 999, 160_000, 87_654_321] {
         assert_eq!(
@@ -264,7 +274,10 @@ fn gate4_pool_split_matches_independent_reference() {
     let small = vec![(1u64, 10_000u64), (2, 2_500), (3, 100)];
     let small_shares: Vec<Share> = small
         .iter()
-        .map(|&(m, s)| Share { miner: format!("m{m}"), shares: s })
+        .map(|&(m, s)| Share {
+            miner: format!("m{m}"),
+            shares: s,
+        })
         .collect();
     assert_eq!(
         decode(split_jackpot(&small_shares, 160_000)),
@@ -273,7 +286,10 @@ fn gate4_pool_split_matches_independent_reference() {
     let flat: Vec<(u64, u64)> = (1..=5).map(|m| (m, 400u64)).collect();
     let flat_shares: Vec<Share> = flat
         .iter()
-        .map(|&(m, s)| Share { miner: format!("m{m}"), shares: s })
+        .map(|&(m, s)| Share {
+            miner: format!("m{m}"),
+            shares: s,
+        })
         .collect();
     assert_eq!(
         decode(split_jackpot(&flat_shares, 1_000_000)),
