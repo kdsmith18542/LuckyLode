@@ -5,7 +5,8 @@
 //!   /block/<height|hash>   block page        /api/block/<height|hash>
 //!   /tx/<txid>             tx page           /api/tx/<txid>
 //!   /address/<addr>        address page      /api/address/<addr>
-//!   /rewards               jackpot/pot hits (chain/pool-reported)
+//!   /blocks                paginated block index   /api/blocks
+//!   /rewards               jackpot/pot/prize + current draw
 //!   /divisions             season division boards (unlisted)
 //!   /mempool               pending txs (node view)
 //!   /richlist              top funded addresses (unlisted)
@@ -32,7 +33,7 @@ fn node_banner(idx: &Indexer) -> String {
 /// Template wrapper for HTML pages.
 fn html_page(title: &str, body: String) -> String {
     format!(
-        "<!doctype html><html lang=en><head><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>{title} · Lucky Lode explorer</title><style>{CSS}</style></head><body><h1><a href=/ style=\"color:#ffd166;text-decoration:none\">Lucky Lode explorer</a></h1><div class=dim style=\"margin:-4px 0 12px;font-size:13px\"><a href=/>blocks</a> · <a href=/charts>charts</a> · <a href=/supply>supply</a> · <a href=/rewards>rewards</a> · <a href=/mempool>mempool</a></div>{body}</body></html>"
+        "<!doctype html><html lang=en><head><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>{title} · Lucky Lode explorer</title><link rel=icon type=image/svg+xml href=/favicon.svg><style>{CSS}</style></head><body><h1><a href=/ style=\"color:#ffd166;text-decoration:none\">Lucky Lode explorer</a></h1><div class=dim style=\"margin:-4px 0 12px;font-size:13px\"><a href=/>blocks</a> · <a href=/charts>charts</a> · <a href=/supply>supply</a> · <a href=/rewards>rewards</a> · <a href=/mempool>mempool</a></div>{body}</body></html>"
     )
 }
 
@@ -67,8 +68,18 @@ fn blocks_page(blocks: &[serde_json::Value], page_num: i64, tip: i64, per: i64, 
     )
 }
 
-/// Chain ticker (testnet now; P3 mainnet switch flips this one const).
-const TICK: &str = "tLKYL";
+/// Chain ticker. Set once at startup from the node's chain (a mainnet
+/// explorer must not label coins tLKYL); defaults to testnet safely.
+static TICKER: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// Publish the node's ticker to every formatter (call once at startup).
+pub fn set_ticker(t: &str) {
+    let _ = TICKER.set(t.to_string());
+}
+
+fn tick() -> &'static str {
+    TICKER.get().map(String::as_str).unwrap_or("tLKYL")
+}
 
 /// Epoch seconds → UTC date. No raw timestamps in the UI. Zero (unknown)
 /// renders as a dash, never 1970.
@@ -91,7 +102,7 @@ fn coins(v: i64) -> String {
     let s = format!("{sign}{}.{:08}", a / 100_000_000, a % 100_000_000);
     let t = s.trim_end_matches('0').trim_end_matches('.');
     let t = if t.is_empty() || t == "-" { "0" } else { t };
-    format!("{t} {TICK}")
+    format!("{t} {}", tick())
 }
 
 fn hs(v: f64) -> String {
@@ -538,7 +549,7 @@ impl Chart {
                 w - pad_r
             ));
             svg.push_str(&format!(
-                "<text x='{}' y='{:.1}' fill='#8b949e' font-size='10' text-anchor='end'>{}</text>",
+                "<text x='{}' y='{:.1}' fill='#8b949e' font-size='12' text-anchor='end'>{}</text>",
                 pad_l - 6.0,
                 y + 3.0,
                 esc(&compact(v))
@@ -602,14 +613,14 @@ impl Chart {
         };
         if let Some((first, _)) = self.points.first() {
             svg.push_str(&format!(
-                "<text x='{pad_l}' y='{}' fill='#8b949e' font-size='10'>{}</text>",
+                "<text x='{pad_l}' y='{}' fill='#8b949e' font-size='12'>{}</text>",
                 h - 8.0,
                 esc(&fmt_day(*first))
             ));
         }
         if let Some((last, _)) = self.points.last() {
             svg.push_str(&format!(
-                "<text x='{}' y='{}' fill='#8b949e' font-size='10' text-anchor='end'>{}</text>",
+                "<text x='{}' y='{}' fill='#8b949e' font-size='12' text-anchor='end'>{}</text>",
                 w - pad_r,
                 h - 8.0,
                 esc(&fmt_day(*last))
@@ -705,7 +716,7 @@ fn market_page(idx: &mut Indexer) -> String {
             "<div class=card>price <b>${p:.8}</b> · market cap <b>${c:.0}</b> <span class=dim>({})</span></div>",
             esc(m["price_source"].as_str().unwrap_or("configured feed"))
         ),
-        _ => "<div class=card>price <span class=dim>unavailable — no exchange listing for {ticker}, so there is no price source to read</span></div>".replace("{ticker}", TICK),
+        _ => "<div class=card>price <span class=dim>unavailable — no exchange listing for {ticker}, so there is no price source to read</span></div>".replace("{ticker}", tick()),
     };
     body.push_str(&price_row);
     body.push_str(&format!(
@@ -1239,6 +1250,14 @@ fn handle(idx: &mut Indexer, method: &str, path: &str) -> String {
         return json_resp(&idx.market().unwrap_or(serde_json::json!({})));
     }
     // HTML routes
+    if route == "/favicon.svg" || route == "/favicon.ico" {
+        let svg = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 64 64\"><rect width=\"64\" height=\"64\" rx=\"14\" fill=\"#0d1117\"/><circle cx=\"32\" cy=\"32\" r=\"22\" fill=\"none\" stroke=\"#ffd166\" stroke-width=\"5\"/><text x=\"32\" y=\"42\" font-family=\"monospace\" font-size=\"28\" fill=\"#ffd166\" text-anchor=\"middle\">L</text></svg>";
+        return format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: image/svg+xml\r\nContent-Length: {}\r\nCache-Control: public, max-age=86400\r\nConnection: close\r\n\r\n{}",
+            svg.len(),
+            svg
+        );
+    }
     if route == "/" {
         return html_resp(&home(idx));
     }
@@ -1484,6 +1503,15 @@ mod nav_tests {
             .expect("fixture");
         }
         (idx, dir)
+    }
+
+    #[test]
+    fn favicon_is_served() {
+        let (mut idx, dir) = idx_with_blocks("explorer-nav-favicon.db", 1);
+        let r = handle(&mut idx, "GET", "/favicon.ico");
+        assert!(r.starts_with("HTTP/1.1 200"));
+        assert!(r.contains("image/svg+xml") && r.contains("<svg"));
+        let _ = std::fs::remove_file(&dir);
     }
 
     #[test]

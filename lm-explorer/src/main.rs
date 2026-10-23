@@ -22,8 +22,8 @@ const USAGE: &str = "usage:
            [--price-url URL] [--price-source NAME]
 
   indexes the node's chain into SQLite (./explorer.db style path) and serves
-  a read-only UI + JSON API: /block/<height|hash> /tx/<txid> /address/<addr>
-  /game /divisions /mempool /richlist /charts /market /search?q= /api/tip /api/stats
+  a read-only UI + JSON API: /blocks /block/<height|hash> /tx/<txid> /address/<addr>
+  /rewards /divisions /mempool /richlist /charts /supply /search?q= /api/tip /api/stats
   /api/game /api/divisions /api/mempool /api/richlist /api/charts /api/market.
   Reorg-safe (rolls back to the fork point). Game events (jackpot/pot/prize
   per block, pool-observed consensus prize-draw claims) and the seasonal
@@ -96,6 +96,18 @@ fn main() -> std::process::ExitCode {
         let _ = std::fs::remove_file(&db);
     }
     let rpc = RpcClient::new(&node, &user, &pass);
+    // Label coins from the node's own chain (mainnet must not say tLKYL).
+    let ticker = rpc
+        .call("getblockchaininfo", serde_json::json!([]))
+        .ok()
+        .and_then(|v| v.get("chain").and_then(|c| c.as_str()).map(str::to_string))
+        .map(|c| match c.as_str() {
+            "main" => "LKYL",
+            "regtest" => "rLKYL",
+            _ => "tLKYL",
+        })
+        .unwrap_or("tLKYL");
+    http::set_ticker(ticker);
     let mut idx = match Indexer::open(&db, rpc) {
         Ok(x) => x,
         Err(e) => {
