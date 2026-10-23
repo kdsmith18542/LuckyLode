@@ -58,6 +58,52 @@ fn mock_pool_version_and_help() {
 }
 
 #[test]
+fn faucet_rejects_non_finite_amounts() {
+    for amount in ["nan", "inf", "-inf", "0"] {
+        let out = Command::new(env!("CARGO_BIN_EXE_faucet"))
+            .args([
+                "--node-rpc", "127.0.0.1:1", "--bind", "127.0.0.1:9",
+                "--amount", amount,
+            ])
+            .output()
+            .expect("run faucet");
+        assert_eq!(out.status.code(), Some(2), "amount={amount}");
+    }
+}
+
+#[test]
+fn faucet_refuses_corrupt_state_and_unknown_chains() {
+    // Corrupt rate-limit state fails closed before any network.
+    let dir = std::env::temp_dir().join("faucet-corrupt-state.json");
+    std::fs::write(&dir, "{not json").expect("write");
+    let out = Command::new(env!("CARGO_BIN_EXE_faucet"))
+        .args([
+            "--node-rpc", "127.0.0.1:1", "--bind", "127.0.0.1:9",
+            "--state-file", dir.to_str().expect("path"),
+        ])
+        .output()
+        .expect("run faucet");
+    assert_eq!(out.status.code(), Some(2));
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("corrupt state file"),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let _ = std::fs::remove_file(&dir);
+    // Dead node: the chain guard fails before binding or dripping.
+    let out = Command::new(env!("CARGO_BIN_EXE_faucet"))
+        .args(["--node-rpc", "127.0.0.1:1", "--bind", "127.0.0.1:9"])
+        .output()
+        .expect("run faucet");
+    assert_eq!(out.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("cannot read node chain"),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
 fn monitor_once_fails_when_the_node_is_down() {
     // --once reports the single poll honestly: unreachable node = exit 1
     // with the alert on stderr (stdout stays clean for plumbing).

@@ -24,10 +24,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 const USAGE: &str = "usage:
   faucet --node-rpc HOST:PORT --bind HOST:PORT [--rpc-user U] [--rpc-pass P]
-         [--amount COINS] [--per-address-secs N] [--state-file PATH]
+         [--amount COINS] [--per-address-secs N] [--state-file PATH] [--allow-mainnet]
 
 defaults: rpc-user=u, rpc-pass=p, amount=1.0, per-address-secs=86400.
-Testnet only. The wallet is funded from the consensus faucet reserve
+Testnet only (anything else needs --allow-mainnet). The wallet is funded from the consensus faucet reserve
 (internal/20): the pool's --claim-faucet tops it up from per-block
 coinbase claims, so no manual funding is needed while the reserve lasts.";
 
@@ -120,22 +120,40 @@ struct Limits {
 }
 
 impl Limits {
-    fn load(path: &Path) -> Self {
-        let mut l = Self::default();
-        if let Ok(text) = std::fs::read_to_string(path) {
-            if let Ok(m) = serde_json::from_str::<HashMap<String, u64>>(&text) {
-                l.last = m;
+    fn load(path: &Path) -> Result<Self, String> {
+        // A missing file is a fresh start; a corrupt/unreadable one fails
+        // closed — silently resetting rate limits would reopen every
+        // address to immediate re-drips.
+        let text = match std::fs::read_to_string(path) {
+            Ok(t) => t,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Self::default()),
+            Err(e) => {
+                return Err(format!(
+                    "cannot read state file {}: {e}",
+                    path.display()
+                ))
             }
-        }
-        l
+        };
+        serde_json::from_str::<HashMap<String, u64>>(&text)
+            .map(|m| Self { last: m })
+            .map_err(|e| {
+                format!(
+                    "corrupt state file {}: {e} (rate limits would silently reset — move it aside or delete it)",
+                    path.display()
+                )
+            })
     }
 
     fn save(&self, path: &Path) {
-        if let Ok(text) = serde_json::to_string(&self.last) {
-            let tmp = path.with_extension("tmp");
-            if std::fs::write(&tmp, text).is_ok() {
-                let _ = std::fs::rename(&tmp, path);
-            }
+        let tmp = path.with_extension("tmp");
+        let result = serde_json::to_string(&self.last).map_err(|e| e.to_string()).and_then(|text| {
+            std::fs::write(&tmp, text)
+                .and_then(|_| std::fs::rename(&tmp, path))
+                .map_err(|e| e.to_string())
+        });
+        if let Err(e) = result {
+            // Loud: a lost rate-limit file reopens every address.
+            eprintln!("warning: faucet state save failed for {}: {e}", path.display());
         }
     }
 
@@ -255,6 +273,11 @@ fn handle(mut stream: TcpStream, ctx: &Ctx) {
         return;
     }
 
+    // GET with side effects, deliberately: the public page, docs, and API
+    // consumers all use GET api/drip?address=. The prefetch risk is
+    // accepted because nothing links to the endpoint (the page submits a
+    // form/fetch with a user-typed address; crawlers don't follow those)
+    // and the per-address window bounds any accidental hit to one drip.
     if let Some(rest) = path.strip_prefix("/api/drip") {
         let raw = query_param(rest, "address").unwrap_or_default();
         let address = url_decode(&raw).trim().to_string();
@@ -326,6 +349,7 @@ fn main() -> ExitCode {
     let mut amount = 1.0f64;
     let mut period = 86_400u64;
     let mut state_file: Option<PathBuf> = None;
+    let mut allow_mainnet = false;
     let mut i = 0;
     while i < args.len() {
         let next = |flag: &str| -> Result<String, String> {
@@ -365,8 +389,10 @@ fn main() -> ExitCode {
                         eprintln!("error: {e}");
                         std::process::exit(2);
                     });
-                if amount <= 0.0 {
-                    eprintln!("error: --amount must be positive");
+                // NaN passes `<= 0.0` and fails later at sendtoaddress;
+                // infinity would drip the universe. Reject both up front.
+                if !amount.is_finite() || amount <= 0.0 {
+                    eprintln!("error: --amount must be a finite positive number");
                     return ExitCode::from(2);
                 }
             }
@@ -379,13 +405,21 @@ fn main() -> ExitCode {
                     .unwrap_or_else(|e| {
                         eprintln!("error: {e}");
                         std::process::exit(2);
-                    })
+                    });
+                if period == 0 {
+                    eprintln!("warning: --per-address-secs 0 disables rate limiting entirely");
+                }
             }
             "--state-file" => {
                 state_file = Some(PathBuf::from(next("state-file").unwrap_or_else(|e| {
                     eprintln!("error: {e}");
                     std::process::exit(2);
                 })))
+            }
+            "--allow-mainnet" => {
+                allow_mainnet = true;
+                i += 1; // valueless flag: do not skip the next argument
+                continue;
             }
             other => {
                 eprintln!("error: unknown flag '{other}'\n{USAGE}");
@@ -398,12 +432,42 @@ fn main() -> ExitCode {
         eprintln!("error: --node-rpc and --bind are required\n{USAGE}");
         return ExitCode::from(2);
     };
-    let limits = state_file
-        .as_deref()
-        .map(Limits::load)
-        .unwrap_or_default();
+    let limits = match state_file.as_deref().map(Limits::load) {
+        Some(Ok(l)) => l,
+        Some(Err(e)) => {
+            eprintln!("error: {e}");
+            return ExitCode::from(2);
+        }
+        None => Limits::default(),
+    };
+    let rpc = RpcClient::new(&node_rpc, &rpc_user, &rpc_pass);
+    // Chain guard: the faucet moves real value — refuse anything but
+    // testnet without an explicit opt-in. ("main" covers mainnet AND
+    // regtest, which reports "main".)
+    let chain = rpc
+        .call("getblockchaininfo", serde_json::json!([]))
+        .ok()
+        .and_then(|v| {
+            v.get("chain")
+                .and_then(|c| c.as_str())
+                .map(str::to_string)
+        });
+    match chain.as_deref() {
+        Some("test") => {}
+        Some(other) if allow_mainnet => {
+            println!("faucet: chain {other} (allowed via --allow-mainnet)");
+        }
+        Some(other) => {
+            eprintln!("faucet: refusing to run against chain {other:?} without --allow-mainnet (regtest also reports \"main\" — the flag covers both)");
+            return ExitCode::from(2);
+        }
+        None => {
+            eprintln!("faucet: cannot read node chain (getblockchaininfo failed)");
+            return ExitCode::from(1);
+        }
+    }
     let ctx = Arc::new(Ctx {
-        rpc: RpcClient::new(&node_rpc, &rpc_user, &rpc_pass),
+        rpc,
         amount,
         period,
         state_file,
