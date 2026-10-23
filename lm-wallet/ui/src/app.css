@@ -11,7 +11,7 @@
   --hover: #1f242c;
   --active: #21262d;
   --row: #21262d;
-  --off: #484f58;
+  --off: #7d8590;
   --input-bg: #0d1117;
   --banner-bg: #1c1a12;
   --pot-bg: #121c14;
@@ -29,7 +29,7 @@
   --hover: #eaeef2;
   --active: #e6eaef;
   --row: #d8dee4;
-  --off: #8c959f;
+  --off: #57606a;
   --input-bg: #ffffff;
   --banner-bg: #fff8c5;
   --pot-bg: #dafbe1;
@@ -111,3 +111,7 @@ label { display: block; color: var(--dim); font-size: 12px; margin: 10px 0 4px; 
 .banner.pot { border-color: var(--green); color: var(--green); background: var(--pot-bg); }
 .addr { color: var(--blue); }
 .copyable { cursor: pointer; }
+.copyable:focus-visible, tr[tabindex]:focus-visible, .btn:focus-visible, .nav:focus-visible {
+  outline: 2px solid var(--blue);
+  outline-offset: 2px;
+}

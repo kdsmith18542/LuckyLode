@@ -232,7 +232,7 @@
             <input id="npw" type="password" bind:value={cpw} spellcheck="false" />
             <label for="npw2">repeat password</label>
             <input id="npw2" type="password" bind:value={cpw2} spellcheck="false" />
-            {#if cpw && cpw2 && cpw !== cpw2}<div class="err">passwords do not match</div>{/if}
+            {#if cpw && cpw2 && cpw !== cpw2}<div class="err" role="alert">passwords do not match</div>{/if}
             <div class="row" style="margin-top:10px">
               <button class="btn primary" disabled={busy || cpw.length < 8 || cpw !== cpw2} onclick={createWallet}>{busy ? "creating…" : "Create new wallet"}</button>
             </div>
@@ -243,7 +243,7 @@
             <input id="rpw" type="password" bind:value={rpw} spellcheck="false" />
             <label for="rpw2">repeat password</label>
             <input id="rpw2" type="password" bind:value={rpw2} spellcheck="false" />
-            {#if rpw && rpw2 && rpw !== rpw2}<div class="err">passwords do not match</div>{/if}
+            {#if rpw && rpw2 && rpw !== rpw2}<div class="err" role="alert">passwords do not match</div>{/if}
             <div class="row" style="margin-top:10px">
               <button class="btn primary" disabled={busy || !rPhrase.trim() || rpw.length < 8 || rpw !== rpw2} onclick={restoreWallet}>{busy ? "restoring…" : "Restore"}</button>
             </div>
@@ -259,7 +259,7 @@
             <button class="btn primary" disabled={!confirmBackup} onclick={finishSetup}>Continue</button>
           </div>
         {/if}
-        {#if setupErr}<div class="err" style="margin-top:10px">{setupErr}</div>{/if}
+        {#if setupErr}<div class="err" role="alert" style="margin-top:10px">{setupErr}</div>{/if}
       </div>
     </main>
   </div>
@@ -279,7 +279,7 @@
         <div class="row" style="margin-top:10px">
           <button class="btn primary" disabled={busy || pw.length < 8 || pw !== pw2} onclick={migrateWallet}>Encrypt wallet</button>
         </div>
-        {#if setupErr}<div class="err" style="margin-top:10px">{setupErr}</div>{/if}
+        {#if setupErr}<div class="err" role="alert" style="margin-top:10px">{setupErr}</div>{/if}
       </div>
     </main>
   </div>
@@ -293,7 +293,7 @@
         <div class="row" style="margin-top:10px;justify-content:center">
           <button class="btn primary" disabled={busy || !pw} onclick={unlockWallet}>Unlock</button>
         </div>
-        {#if setupErr}<div class="err" style="margin-top:10px">{setupErr}</div>{/if}
+        {#if setupErr}<div class="err" role="alert" style="margin-top:10px">{setupErr}</div>{/if}
         <div style="margin-top:12px">
           <button class="btn" disabled={busy} onclick={() => { showRecover = !showRecover; setupErr = ""; }}>
             {showRecover ? "Back to unlock" : "Forgot password?"}
@@ -316,7 +316,7 @@
           <input id="recpw" type="password" bind:value={recPw} spellcheck="false" />
           <label for="recpw2">repeat new password</label>
           <input id="recpw2" type="password" bind:value={recPw2} spellcheck="false" />
-          {#if recPw && recPw2 && recPw !== recPw2}<div class="err">passwords do not match</div>{/if}
+          {#if recPw && recPw2 && recPw !== recPw2}<div class="err" role="alert">passwords do not match</div>{/if}
           <div class="row" style="margin-top:10px">
             <button class="btn primary" disabled={busy || !recPhrase.trim() || recPw.length < 8 || recPw !== recPw2} onclick={recoverFromLock}>
               Replace wallet from phrase
@@ -331,19 +331,19 @@
   <aside class="sidebar">
     <div class="brand">Lucky Lode<small>wallet · {chain === "test" ? "testnet" : chain === "main" ? "mainnet" : chain}</small></div>
     {#each nav as [id, label]}
-      <button class="nav" class:active={view === id} onclick={() => (view = id)}>{label}</button>
+      <button class="nav" class:active={view === id} aria-current={view === id ? "page" : undefined} onclick={() => (view = id)}>{label}</button>
     {/each}
   </aside>
   <main class="main">
     <div class="topbar">
-      <span class="pill"><span class="dot" class:off={!!err}></span>{chain}</span>
+      <span class="pill"><span class="dot" class:off={!!err} role="img" aria-label={err ? "node unreachable" : "node connected"}></span>{chain}</span>
       <span class="pill">height {height}</span>
       <span class="pill">chain sync {progress}</span>
       <span class="pill" class:ok={running.length > 0} class:warn={running.length === 0}>
         local luckynode service {running.length > 0 ? `running (${running.length})` : "off"}
       </span>
       {#if err}
-        <span class="pill bad" title={err}>
+        <span class="pill bad" role="alert" aria-live="polite" title={err}>
           {err.includes("401") || err.toLowerCase().includes("rpc login")
             ? "auth failed → Settings"
             : status?.shared_node

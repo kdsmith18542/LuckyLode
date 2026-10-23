@@ -4,6 +4,7 @@
   let pool = $state<any>(null);
   let draw = $state<any>(null);
   let err = $state("");
+  let loading = $state(true);
 
   async function load() {
     // Per-source: a dead pool must not blank node-sourced cards and
@@ -24,6 +25,7 @@
       draw = null;
     }
     err = "";
+    loading = false;
   }
   $effect(() => {
     load();
@@ -64,6 +66,7 @@
 </script>
 
 <h2>Rewards</h2>
+{#if loading}<div class="muted">loading reward data…</div>{/if}
 <div class="grid">
   <div class="card"><div class="k">jackpot reserve</div><div class="v gold">{api.coinU(jp.reserve)}</div></div>
   <div class="card"><div class="k">lucky pot</div><div class="v">{api.coinU(jp.pot)}</div></div>
@@ -106,7 +109,7 @@
       <span style="color:var(--green);opacity:.5">■</span> prize inflow
     </div>
   {:else}
-    <div class="muted">no blocks in the pool's window</div>
+    <div class="muted">{loading ? "loading…" : "no blocks in the pool's window"}</div>
   {/if}
 </div>
 
@@ -147,4 +150,4 @@
   </tbody>
 </table>
 
-{#if err}<div class="err">{err}</div>{/if}
+{#if err}<div class="err" role="alert">{err}</div>{/if}

@@ -176,7 +176,7 @@
     <div class="muted" style="margin-bottom:8px">Three steps. Your app coins never leave this wallet until <b>you</b> send them — staking runs in the node wallet.</div>
     <table><tbody>
       <tr>
-        <td>{step1 ? (step1local ? "✅" : "⚠️") : "⬜"}</td>
+        <td aria-label={step1 ? (step1local ? "done" : "warning: shared node") : "not done"}>{step1 ? (step1local ? "✅" : "⚠️") : "⬜"}</td>
         <td><b>1 · Your own node</b><br /><span class="muted">
           {#if !step1}node unreachable — is it running?
           {:else if step1local}connected to <b>{nodeHost}</b> (this machine) — good.
@@ -184,7 +184,7 @@
           {/if}</span></td>
       </tr>
       <tr>
-        <td>{nodeBal > 0 || importDone ? "✅" : "⬜"}</td>
+        <td aria-label={nodeBal > 0 || importDone ? "done" : "not done"}>{nodeBal > 0 || importDone ? "✅" : "⬜"}</td>
         <td><b>2 · Stake your coins</b><br /><span class="muted">
           {#if nodeBal > 0}node wallet holds {api.coinU(nodeBal)}.
           {:else if importDone}your app coins are imported — the node is staking them.
@@ -211,7 +211,7 @@
           {/if}</span></td>
       </tr>
       <tr>
-        <td>{elig > 0 ? "✅" : nodeBal > 0 ? "⏳" : "⬜"}</td>
+        <td aria-label={elig > 0 ? "ready" : nodeBal > 0 ? "waiting for maturity" : "not started"}>{elig > 0 ? "✅" : nodeBal > 0 ? "⏳" : "⬜"}</td>
         <td><b>3 · Mature &amp; start</b><br /><span class="muted">
           {#if elig > 0}{elig} outputs · {api.coinU(stake?.eligible_balance)} eligible — ready.
           {:else if nodeBal > 0}waiting for 150-confirm maturity (~2.5 h), then Start lights up. Nothing to press.
@@ -239,7 +239,7 @@
         <tr><th>change back</th><td>{api.coinU(fundPreview.change_sats)}</td></tr>
       </tbody></table>
       <div class="row" style="margin-top:8px;gap:8px;align-items:center">
-        <input bind:value={fundAmount} oninput={() => (fundPreview = null)} placeholder={"amount " + api.ticker()} inputmode="decimal" style="max-width:160px" />
+        <input bind:value={fundAmount} aria-label="amount to send to the node wallet" oninput={() => (fundPreview = null)} placeholder={"amount " + api.ticker()} inputmode="decimal" style="max-width:160px" />
         <button class="btn" disabled={fundBusy} onclick={rebuildFundPreview}>Recalc</button>
         <button class="btn primary" disabled={fundBusy} onclick={confirmFund}>Confirm &amp; send</button>
         <button class="btn" disabled={fundBusy} onclick={() => (fundPreview = null)}>Cancel</button>
@@ -252,7 +252,7 @@
   <thead><tr><th>time</th><th>direction</th><th>amount</th><th>address</th><th>status</th></tr></thead>
   <tbody>
       {#each shownTxs as tx}
-        <tr style="cursor:pointer" class:off={tx.category !== "receive"} onclick={() => openDetail(tx.txid)} title="click a row for details, txid and explorer link">
+        <tr style="cursor:pointer" class:off={tx.category !== "receive"} tabindex="0" role="button" onclick={() => openDetail(tx.txid)} onkeydown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openDetail(tx.txid); } }} title="click a row for details, txid and explorer link">
         <td>{new Date((tx.time ?? 0) * 1000).toLocaleString()}</td>
           <td>{api.dir(tx.category)}</td>
           <td>{api.coinDecU(tx.amount)}</td>
@@ -335,4 +335,4 @@
     <div class="muted">node offline</div>
   {/if}
 </div>
-{#if err}<div class="err">{err}</div>{/if}
+{#if err}<div class="err" role="alert">{err}</div>{/if}

@@ -9,6 +9,7 @@
   let saveName = $state("");
   let saved = $state("");
   let qrAmount = $state("");
+  let loading = $state(true);
 
   async function load() {
     try {
@@ -19,6 +20,8 @@
       err = "";
     } catch (e) {
       err = String(e);
+    } finally {
+      loading = false;
     }
   }
   $effect(() => {
@@ -80,11 +83,11 @@
       </div>
       <div class="addr" style="word-break:break-all;font-size:12px">{qrAddr}{qrAmount.trim() ? `?amount=${qrAmount.trim()}` : ""}</div>
       <div class="row" style="margin-top:8px;justify-content:center">
-        <input bind:value={qrAmount} placeholder="amount (optional)" inputmode="decimal" style="max-width:140px" title="embeds a requested amount in the QR (payment request)" />
+        <input bind:value={qrAmount} aria-label="requested amount in the QR" placeholder="amount (optional)" inputmode="decimal" style="max-width:140px" title="embeds a requested amount in the QR (payment request)" />
         <button class="btn" onclick={() => showQr(qrAddr)}>Re-make QR</button>
       </div>
       <div class="row" style="margin-top:8px;justify-content:center">
-        <input bind:value={saveName} placeholder="save as contact…" style="max-width:180px" />
+        <input bind:value={saveName} aria-label="contact name" placeholder="save as contact…" style="max-width:180px" />
         <button class="btn" disabled={!saveName} onclick={saveContact}>Save</button>
       </div>
       {#if saved}<div class="muted">{saved}</div>{/if}
@@ -94,20 +97,21 @@
     <tbody>
       {#if current}
         <tr>
-          <td class="addr copyable" onclick={() => copy(current)} title="click to copy">{current}</td>
+          <td class="addr copyable" role="button" tabindex="0" onclick={() => copy(current)} onkeydown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); copy(current); } }} title="click to copy">{current}</td>
           <td class="muted">{copied === current ? "copied ✓" : "current"}</td>
           <td><button class="btn" onclick={() => showQr(current)}>QR</button></td>
         </tr>
       {/if}
       {#each prev as a}
         <tr>
-          <td class="addr copyable" onclick={() => copy(a)} title="click to copy">{a}</td>
+          <td class="addr copyable" role="button" tabindex="0" onclick={() => copy(a)} onkeydown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); copy(a); } }} title="click to copy">{a}</td>
           <td class="muted">{copied === a ? "copied ✓" : ""}</td>
           <td><button class="btn" onclick={() => showQr(a)}>QR</button></td>
         </tr>
       {/each}
-      {#if !current && prev.length === 0}<tr><td class="muted">no wallet yet — create or restore one to begin</td></tr>{/if}
+      {#if loading && !current}<tr><td class="muted">loading addresses…</td></tr>{/if}
+      {#if !loading && !current && prev.length === 0}<tr><td class="muted">no wallet yet — create or restore one to begin</td></tr>{/if}
     </tbody>
   </table>
-  {#if err}<div class="err">{err}</div>{/if}
+  {#if err}<div class="err" role="alert">{err}</div>{/if}
 </div>

@@ -368,9 +368,9 @@
     {/if}
     <label for="opw" style="margin-top:12px">change spending password</label>
     <div class="row">
-      <input id="opw" type="password" bind:value={oldPw} placeholder="current password" style="max-width:180px" />
-      <input type="password" bind:value={newPw} placeholder="new (min 8)" style="max-width:160px" />
-      <input type="password" bind:value={newPw2} placeholder="repeat new" style="max-width:160px" />
+      <input id="opw" type="password" bind:value={oldPw} aria-label="current spending password" placeholder="current password" style="max-width:180px" />
+      <input type="password" bind:value={newPw} aria-label="new spending password" placeholder="new (min 8)" style="max-width:160px" />
+      <input type="password" bind:value={newPw2} aria-label="repeat new spending password" placeholder="repeat new" style="max-width:160px" />
       <button class="btn" disabled={!oldPw || newPw.length < 8 || newPw !== newPw2} onclick={changePw}>Change</button>
     </div>
     {#if protectedAddrs.length > 0}
@@ -461,7 +461,7 @@
     </div>
   {/if}
   {#if wmsg}<div class="muted" style="margin-top:8px">{wmsg}</div>{/if}
-  {#if err}<div class="err">{err}</div>{/if}
+  {#if err}<div class="err" role="alert">{err}</div>{/if}
 </div>
 
 <h2>Node</h2>
@@ -560,7 +560,7 @@
     {#if saved}<span class="muted">{saved} ✓</span>{/if}
     {#if test}<span class="muted">{test}</span>{/if}
   </div>
-  {#if err}<div class="err">{err}</div>{/if}
+  {#if err}<div class="err" role="alert">{err}</div>{/if}
 </div>
 
 <h2>About</h2>

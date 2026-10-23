@@ -240,7 +240,7 @@
     {/if}
     <span class="muted">{running ? "running" : "stopped"}</span>
   </div>
-  {#if err}<div class="err">{err}</div>{/if}
+  {#if err}<div class="err" role="alert">{err}</div>{/if}
 </div>
 
 {#if st && (running || st.hashes > 0)}
@@ -264,7 +264,7 @@
   <div class="row" style="margin-top:8px">
     <span class="muted">{st.device} · {st.pool} · worker {st.worker}</span>
   </div>
-  {#if st.error}<div class="err">{st.error}</div>{/if}
+  {#if st.error}<div class="err" role="alert">{st.error}</div>{/if}
 {/if}
 
 {#if log.length > 0}

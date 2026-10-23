@@ -107,7 +107,7 @@
   <input id="amt" bind:value={amount} oninput={() => (preview = null)} placeholder={"0.0 " + api.ticker()} inputmode="decimal" />
   {#if to.trim()}
     <div class="row" style="margin-top:10px">
-      <input bind:value={saveName} placeholder="save as contact…" style="max-width:220px" />
+      <input bind:value={saveName} aria-label="contact name" placeholder="save as contact…" style="max-width:220px" />
       <button class="btn" disabled={!saveName} onclick={saveContact}>Save contact</button>
       {#if saved}<span class="muted">{saved}</span>{/if}
     </div>
@@ -144,5 +144,5 @@
     </div>
   {/if}
   {#if result}<div class="muted" style="margin-top:10px">{result}</div>{/if}
-  {#if err}<div class="err">{err}</div>{/if}
+  {#if err}<div class="err" role="alert">{err}</div>{/if}
 </div>

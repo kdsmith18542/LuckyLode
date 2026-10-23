@@ -6,6 +6,7 @@
   let addr = $state("");
   let msg = $state("");
   let err = $state("");
+  let loading = $state(true);
 
   // Identities registered from this app (ln- names). Legacy pool-era
   // ed25519 node ids stored here no longer resolve — drop them with the
@@ -24,6 +25,8 @@
       err = "";
     } catch (e) {
       err = String(e);
+    } finally {
+      loading = false;
     }
     // Draw-win alerts are evaluated by the App-level poller so they
     // fire from any tab; this load is display data only.
@@ -127,7 +130,9 @@
         <td><button class="btn" onclick={() => forget(n.name)}>forget</button></td>
       </tr>
     {/each}
-    {#if identities.length === 0}
+    {#if loading && identities.length === 0}
+      <tr><td colspan="7" class="muted">loading identities…</td></tr>
+    {:else if identities.length === 0}
       <tr><td colspan="7" class="muted">no local identities — register one below</td></tr>
     {/if}
   </tbody>
@@ -165,4 +170,4 @@
   {/if}
   {#if msg}<div class="muted" style="margin-top:10px">{msg}</div>{/if}
 </div>
-{#if err}<div class="err">{err}</div>{/if}
+{#if err}<div class="err" role="alert">{err}</div>{/if}
