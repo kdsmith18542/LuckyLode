@@ -279,7 +279,7 @@
     {#if next?.jackpot}
       <div class="banner">⚡ NEXT BLOCK ({next.height}) IS A JACKPOT BLOCK — bonus up to 5× the block reward, capped by the reserve</div>
     {:else if next?.pot_event}
-      <div class="banner pot">💧 NEXT BLOCK ({next.height}) IS A POT EVENT — tier {next.tier} ({next.tier}% of the pot) splash</div>
+      <div class="banner pot">💧 NEXT BLOCK ({next.height}) IS A POT EVENT — tier {next.tier} ({next.pot_pct}% of the pot) splash</div>
     {/if}
 
     {#if view === "overview"}<Overview />{:else if view === "send"}<Send />{:else if view === "receive"}<Receive />{:else if view === "miner"}<Miner />{:else if view === "luckynodes"}<Luckynodes />{:else if view === "rewards"}<Rewards />{:else if view === "settings"}<Settings />{/if}

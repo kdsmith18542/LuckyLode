@@ -73,6 +73,9 @@ pub struct NextDraw {
     pub jackpot: bool,
     pub pot_event: bool,
     pub tier: u64,
+    /// Pot splash percent for this tier (10/25/50), computed from the
+    /// frozen consensus fractions — the tier roll itself is NOT a percent.
+    pub pot_pct: u64,
     pub digest: String,
 }
 
@@ -80,11 +83,14 @@ pub struct NextDraw {
 pub fn next_draw(tip_display_hex: &str, next_height: u64, jdiv: u64, pdiv: u64) -> Option<NextDraw> {
     let prev = display_hex_to_internal(tip_display_hex)?;
     let d = draw_digest(&prev, next_height);
+    let t = tier(&d);
+    let (num, den) = lm_rewards::pot::pot_fraction(t);
     Some(NextDraw {
         height: next_height,
         jackpot: below(&d, jdiv),
         pot_event: below(&d, pdiv),
-        tier: tier(&d),
+        tier: t,
+        pot_pct: num * 100 / den,
         digest: hex(&d),
     })
 }
@@ -160,5 +166,32 @@ mod tests {
         // internal[0] = last display byte
         assert_eq!(internal[0], 0xfa);
         assert_eq!(internal[31], 0x00);
+    }
+
+    #[test]
+    fn pot_pct_matches_the_frozen_tier_fractions() {
+        // The tier roll is 0-99, not a percent: 10/25/50% bands from the
+        // consensus fractions (a UI that prints the tier as a percent
+        // overstates tier 87 as 87% instead of 25%).
+        for t in 0..70u64 {
+            assert_eq!(lm_rewards::pot::pot_fraction(t), (1, 10), "tier {t}");
+        }
+        for t in 70..95u64 {
+            assert_eq!(lm_rewards::pot::pot_fraction(t), (1, 4), "tier {t}");
+        }
+        for t in 95..100u64 {
+            assert_eq!(lm_rewards::pot::pot_fraction(t), (1, 2), "tier {t}");
+        }
+        let pct = |t: u64| {
+            let (num, den) = lm_rewards::pot::pot_fraction(t);
+            num * 100 / den
+        };
+        assert_eq!(pct(0), 10);
+        assert_eq!(pct(69), 10);
+        assert_eq!(pct(70), 25);
+        assert_eq!(pct(87), 25);
+        assert_eq!(pct(94), 25);
+        assert_eq!(pct(95), 50);
+        assert_eq!(pct(99), 50);
     }
 }

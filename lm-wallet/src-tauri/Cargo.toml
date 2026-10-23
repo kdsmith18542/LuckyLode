@@ -24,6 +24,7 @@ lm-stratum = { path = "../../lm-stratum" }
 lm-keys = { path = "../../lm-keys" }
 lm-miner = { path = "../../lm-miner" }
 lm-pool = { path = "../../lm-pool" }
+lm-rewards = { path = "../../lm-rewards" }
 lm-luckynode = { path = "../../lm-luckynode" }
 argon2 = "0.6"
 keyring = { version = "3", features = ["sync-secret-service"] }

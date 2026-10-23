@@ -116,7 +116,7 @@
   {#if draw?.next}
     <div>height <strong>{draw.next.height}</strong> ·
       {#if draw.next.jackpot}<span class="pill warn">JACKPOT</span>{/if}
-      {#if draw.next.pot_event}<span class="pill ok">POT · tier {draw.next.tier} ({draw.next.tier}% of pot)</span>{/if}
+      {#if draw.next.pot_event}<span class="pill ok">POT · tier {draw.next.tier} ({draw.next.pot_pct}% of pot)</span>{/if}
       {#if !draw.next.jackpot && !draw.next.pot_event}<span class="pill">normal</span>{/if}
     </div>
     <div class="muted" style="margin-top:8px">draw ticket hash {draw.next.digest}</div>
