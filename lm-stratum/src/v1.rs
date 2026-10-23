@@ -143,8 +143,7 @@ impl JobRegistry {
         };
         let id = work_identity(&job.header, nonce);
         if dedupe
-            .lock()
-            .expect("dedupe")
+            .lock().unwrap_or_else(std::sync::PoisonError::into_inner)
             .contains(&id)
         {
             return (Verdict::Duplicate, None);
@@ -157,7 +156,7 @@ impl JobRegistry {
             return (Verdict::LowDifficulty, None);
         }
         let block = meets_target(&out, &job.net_target);
-        if !dedupe.lock().expect("dedupe").insert(&job.header, nonce) {
+        if !dedupe.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(&job.header, nonce) {
             return (Verdict::Duplicate, None);
         }
         (
@@ -476,7 +475,7 @@ mod tests {
         // cheap-free-safe — it just rejects again.
         let (v, _) = reg.evaluate("a", &render_nonce(0), &dedupe);
         assert_eq!(v, Verdict::LowDifficulty);
-        assert_eq!(dedupe.lock().expect("dedupe").len(), 0);
+        assert_eq!(dedupe.lock().unwrap_or_else(std::sync::PoisonError::into_inner).len(), 0);
     }
 
     #[test]

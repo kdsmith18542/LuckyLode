@@ -382,8 +382,8 @@ impl NodeProvider {
     /// (accepted, rejected) block submissions.
     pub fn counters(&self) -> (u64, u64) {
         (
-            *self.accepted.lock().expect("accepted"),
-            *self.rejected.lock().expect("rejected"),
+            *self.accepted.lock().unwrap_or_else(std::sync::PoisonError::into_inner),
+            *self.rejected.lock().unwrap_or_else(std::sync::PoisonError::into_inner),
         )
     }
 
@@ -393,7 +393,7 @@ impl NodeProvider {
         // (audit fix — the lock used to be held across the HTTP call).
         // Concurrent refreshes are benign: both fetch, last write wins.
         {
-            let st = self.state.lock().expect("state");
+            let st = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             if st.fetched_at.elapsed() < REFRESH_INTERVAL {
                 return;
             }
@@ -417,7 +417,7 @@ impl NodeProvider {
                 // helper so the constructor's first template and every
                 // refresh apply identical policy.
                 let height = gbt.get("height").and_then(|v| v.as_u64()).unwrap_or(0);
-                let mut unm = self.faucet_unmatured.lock().expect("unmatured");
+                let mut unm = self.faucet_unmatured.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                 let seed = decide_seed_claim(
                     &|addr| faucet_wallet_balance(&self.rpc, addr),
                     &gbt,
@@ -431,7 +431,7 @@ impl NodeProvider {
                     .map(|bt| (bt, prize))
             }) {
             Ok(((tpl, txs, bonus, pot, coinbase, pity, faucet, dev, prize_splice), prize)) => {
-                let mut st = self.state.lock().expect("state");
+                let mut st = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                 if let Some(m) = header_merkle(&tpl.header) {
                     st.recent.push_front(RecentTemplate {
                         merkle: m,
@@ -469,7 +469,7 @@ impl NodeProvider {
             Err(_) => {
                 // Keep serving the last known template; the chain may just
                 // be busy. Polling resumes on the next tick.
-                let mut st = self.state.lock().expect("state");
+                let mut st = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                 st.fetched_at = Instant::now() - REFRESH_INTERVAL + Duration::from_millis(200);
             }
         }
@@ -479,20 +479,19 @@ impl NodeProvider {
 impl TemplateProvider for NodeProvider {
     fn current(&self) -> JobTemplate {
         self.refresh();
-        self.state.lock().expect("state").template.clone()
+        self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).template.clone()
     }
 
     fn faucet_unmatured_snapshot(&self) -> Vec<(u64, u64)> {
         self.faucet_unmatured
-            .lock()
-            .expect("unmatured")
+            .lock().unwrap_or_else(std::sync::PoisonError::into_inner)
             .iter()
             .map(|(h, a)| (*h, *a))
             .collect()
     }
 
     fn restore_faucet_unmatured(&self, claimed: Vec<(u64, u64)>) {
-        let mut unm = self.faucet_unmatured.lock().expect("unmatured");
+        let mut unm = self.faucet_unmatured.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         unm.clear();
         for (h, a) in claimed {
             unm.insert(h, a);
@@ -504,7 +503,7 @@ impl TemplateProvider for NodeProvider {
         let merkle = match header_merkle(header) {
             Some(m) => m,
             None => {
-                *self.rejected.lock().expect("rejected") += 1;
+                *self.rejected.lock().unwrap_or_else(std::sync::PoisonError::into_inner) += 1;
                 return BlockOutcome {
                     accepted: false,
                     out,
@@ -526,7 +525,7 @@ impl TemplateProvider for NodeProvider {
         // template's. Its normal coinbase value rides along for payout
         // accounting.
         let (txs, bonus, pot, faucet, dev, coinbase, _pity, prize, prize_claim, prize_winner) = {
-            let st = self.state.lock().expect("state");
+            let st = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             if header_merkle(&st.template.header) == Some(merkle) {
                 (
                     st.txs.clone(),
@@ -559,7 +558,7 @@ impl TemplateProvider for NodeProvider {
                         // rather than assemble a block whose merkle cannot
                         // match its header.
                         drop(st);
-                        *self.rejected.lock().expect("rejected") += 1;
+                        *self.rejected.lock().unwrap_or_else(std::sync::PoisonError::into_inner) += 1;
                         return BlockOutcome {
                             accepted: false,
                             out,
@@ -587,22 +586,22 @@ impl TemplateProvider for NodeProvider {
             .call("submitblock", serde_json::json!([hex_of(&block_hex)]));
         let accepted = matches!(&result, Ok(v) if v.is_null());
         if accepted {
-            *self.accepted.lock().expect("accepted") += 1;
+            *self.accepted.lock().unwrap_or_else(std::sync::PoisonError::into_inner) += 1;
             // Record LANDED faucet claims for the top-up policy (never
             // intentions: an unlanded template must not suppress future
             // top-ups). Insert-or-max per height: reorgs can only lower
             // the true pending total, never raise it past a landed claim.
             if faucet > 0 {
-                let mut unm = self.faucet_unmatured.lock().expect("unmatured");
+                let mut unm = self.faucet_unmatured.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                 unm.entry(height)
                     .and_modify(|v| *v = (*v).max(faucet))
                     .or_insert(faucet);
             }
             // Force a fresh template on the next poll (new tip).
-            self.state.lock().expect("state").fetched_at =
+            self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).fetched_at =
                 Instant::now() - REFRESH_INTERVAL - Duration::from_secs(1);
         } else {
-            *self.rejected.lock().expect("rejected") += 1;
+            *self.rejected.lock().unwrap_or_else(std::sync::PoisonError::into_inner) += 1;
         }
         BlockOutcome {
             accepted,

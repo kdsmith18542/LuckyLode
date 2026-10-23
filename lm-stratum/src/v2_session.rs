@@ -515,7 +515,7 @@ mod tests {
             let deadline = Instant::now() + Duration::from_secs(5);
             loop {
                 {
-                    let mut q = self.rx.lock().expect("rx");
+                    let mut q = self.rx.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                     if !q.is_empty() {
                         let n = buf.len().min(q.len());
                         for (i, byte) in q.drain(..n).enumerate() {
@@ -541,7 +541,7 @@ mod tests {
             if !out.is_empty() && self.flip.swap(false, Ordering::SeqCst) {
                 out[0] ^= 0x01;
             }
-            self.tx.lock().expect("tx").extend(out);
+            self.tx.lock().unwrap_or_else(std::sync::PoisonError::into_inner).extend(out);
             Ok(buf.len())
         }
         fn flush(&mut self) -> std::io::Result<()> {

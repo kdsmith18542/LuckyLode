@@ -54,7 +54,7 @@ pub struct Status {
 }
 
 fn log_line(log: &Mutex<VecDeque<String>>, line: String) {
-    let mut l = log.lock().expect("miner log");
+    let mut l = log.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     if l.len() >= LOG_CAP {
         l.pop_front();
     }
@@ -65,7 +65,7 @@ fn set_error(status: &Mutex<Status>, log: &Mutex<VecDeque<String>>, err: Option<
     if let Some(e) = &err {
         log_line(log, format!("error: {e}"));
     }
-    status.lock().expect("miner status").error = err;
+    status.lock().unwrap_or_else(std::sync::PoisonError::into_inner).error = err;
 }
 
 /// Start mining. `device` = `cpu` | `opencl` | `auto`; `duty` = percent of
@@ -158,7 +158,7 @@ fn run(
         Ok(p) => p,
         Err(e) => {
             set_error(&status, &log, Some(e));
-            status.lock().expect("s").running = false;
+            status.lock().unwrap_or_else(std::sync::PoisonError::into_inner).running = false;
             return;
         }
     };
@@ -171,7 +171,7 @@ fn run(
             Ok(g) => Some(g),
             Err(e) => {
                 set_error(&status, &log, Some(format!("opencl: {e}")));
-                status.lock().expect("s").running = false;
+                status.lock().unwrap_or_else(std::sync::PoisonError::into_inner).running = false;
                 return;
             }
         },
@@ -206,7 +206,7 @@ fn run(
     }
     .to_string();
     {
-        let mut s = status.lock().expect("s");
+        let mut s = status.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         s.device = device_label.clone();
     }
     log_line(&log, format!("mining {device_label} → {pool} as {worker}"));
@@ -238,7 +238,7 @@ fn run(
     // The sink owns its own Arc clones; the outer scope keeps the originals.
     let (st_sink, log_sink) = (Arc::clone(&status), Arc::clone(&log));
     let mut sink = move |ev: Event| {
-        let mut c = c2.lock().expect("counters");
+        let mut c = c2.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let (status, log) = (&st_sink, &log_sink);
         match &ev {
             Event::Connected { worker, detail, .. } => {
@@ -282,7 +282,7 @@ fn run(
         }
         // Status snapshot on every event (the loop reports at least every
         // few seconds; gpu_status is cached 2 s so this stays cheap).
-        let mut s = status.lock().expect("s");
+        let mut s = status.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let (t, p) = if is_gpu {
             lm_miner::gpu::gpu_status()
         } else {
@@ -296,7 +296,7 @@ fn run(
         s.uptime_secs = started.elapsed().as_secs();
         s.temp_c = t;
         s.power_w = p;
-        if let Some(l) = log.lock().expect("log").back() {
+        if let Some(l) = log.lock().unwrap_or_else(std::sync::PoisonError::into_inner).back() {
             s.last_line = l.clone();
         }
     };
@@ -315,7 +315,7 @@ fn run(
     if let Some(error) = failed {
         set_error(&status, &log, Some(error));
     }
-    status.lock().expect("s").running = false;
+    status.lock().unwrap_or_else(std::sync::PoisonError::into_inner).running = false;
 }
 
 #[derive(Default)]
@@ -475,7 +475,7 @@ fn run_solo(
         Ok(p) => p,
         Err(e) => {
             set_error(&status, &log, Some(e));
-            status.lock().expect("s").running = false;
+            status.lock().unwrap_or_else(std::sync::PoisonError::into_inner).running = false;
             return;
         }
     };
@@ -487,7 +487,7 @@ fn run_solo(
             Ok(g) => Some(g),
             Err(e) => {
                 set_error(&status, &log, Some(format!("opencl: {e}")));
-                status.lock().expect("s").running = false;
+                status.lock().unwrap_or_else(std::sync::PoisonError::into_inner).running = false;
                 return;
             }
         },
@@ -515,7 +515,7 @@ fn run_solo(
         Backend::Cpu { threads } => format!("cpu: {threads} threads"),
     };
     {
-        let mut s = status.lock().expect("s");
+        let mut s = status.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         s.device = device_label.clone();
     }
     log_line(&log, format!("solo mining {device_label} (claim-aware templates, no pool)"));
@@ -533,7 +533,7 @@ fn run_solo(
 
     macro_rules! snapshot {
         ($last:expr) => {{
-            let mut s = status.lock().expect("s");
+            let mut s = status.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             let (t, p) = match &backend {
                 Backend::Gpu(_) => lm_miner::gpu::gpu_status(),
                 Backend::Cpu { .. } => (lm_miner::thermal::read_temp_c(), None),
@@ -545,7 +545,7 @@ fn run_solo(
             s.uptime_secs = started.elapsed().as_secs();
             s.temp_c = t;
             s.power_w = p;
-            if let Some(l) = $last.or_else(|| log.lock().expect("log").back().cloned()) {
+            if let Some(l) = $last.or_else(|| log.lock().unwrap_or_else(std::sync::PoisonError::into_inner).back().cloned()) {
                 s.last_line = l;
             }
         }};
@@ -578,7 +578,7 @@ fn run_solo(
                             ),
                         );
                         {
-                            let mut s = status.lock().expect("s");
+                            let mut s = status.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                             s.worker = beneficiary;
                         }
                     }
@@ -639,7 +639,7 @@ fn run_solo(
         }
         snapshot!(None);
     }
-    let mut s = status.lock().expect("s");
+    let mut s = status.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     s.running = false;
     if s.error.is_none() {
         log_line(&log, format!("stopped ({accepted} blocks found)"));
@@ -787,15 +787,15 @@ mod tests {
         )
         .expect("start");
         std::thread::sleep(Duration::from_secs(20));
-        let lg: Vec<String> = m.log.lock().expect("log").iter().cloned().collect();
+        let lg: Vec<String> = m.log.lock().unwrap_or_else(std::sync::PoisonError::into_inner).iter().cloned().collect();
         println!("cpu smoke log: {lg:?}");
-        let s = m.status.lock().expect("s").clone();
+        let s = m.status.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
         assert!(s.running, "miner should be running: {s:?}");
         assert!(s.hashes > 0, "hashes should grow: {s:?}");
         assert!(s.error.is_none(), "no error expected: {s:?}");
         m.stop.store(true, Ordering::Relaxed);
         std::thread::sleep(Duration::from_secs(12));
-        let s = m.status.lock().expect("s").clone();
+        let s = m.status.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
         assert!(!s.running, "miner should stop: {s:?}");
         println!("smoke ok: {s:?}");
     }
@@ -900,7 +900,7 @@ lucky-coinbase-maturity=1\n";
         m.stop.store(true, std::sync::atomic::Ordering::Relaxed);
         std::thread::sleep(std::time::Duration::from_secs(6));
         assert!(tip >= 2, "solo miner should have mined blocks, tip={tip}");
-        let s = m.status.lock().expect("s").clone();
+        let s = m.status.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
         assert!(s.hashes > 0, "hashes should grow: {s:?}");
         assert!(s.accepted >= 2, "blocks should land: {s:?}");
         assert!(s.error.is_none(), "no error expected: {s:?}");
@@ -952,14 +952,14 @@ lucky-coinbase-maturity=1\n";
         )
         .expect("start");
         std::thread::sleep(Duration::from_secs(20));
-        let s = m.status.lock().expect("s").clone();
+        let s = m.status.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
         assert!(s.running, "gpu miner should be running: {s:?}");
         assert!(s.device.starts_with("gpu:"), "should be on the GPU: {s:?}");
         assert!(s.hashes > 0, "hashes should grow: {s:?}");
         assert!(s.temp_c > 0, "gpu sensor should report: {s:?}");
         m.stop.store(true, Ordering::Relaxed);
         std::thread::sleep(Duration::from_secs(12));
-        let s = m.status.lock().expect("s").clone();
+        let s = m.status.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
         assert!(!s.running, "gpu miner should stop: {s:?}");
         println!("gpu smoke ok: {s:?}");
     }

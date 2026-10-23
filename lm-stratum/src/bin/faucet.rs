@@ -294,7 +294,7 @@ fn handle(mut stream: TcpStream, ctx: &Ctx) {
             }
         }
         let t = now();
-        let mut limits = ctx.limits.lock().expect("limits");
+        let mut limits = ctx.limits.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let wait = limits.wait(&address, ctx.period, t);
         if wait > 0 {
             let body = format!(r#"{{"ok":false,"error":"rate-limited","retry_in_secs":{wait}}}"#);

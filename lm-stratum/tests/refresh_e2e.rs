@@ -44,7 +44,7 @@ impl TemplateProvider for GatedProvider {
         let n = self.calls.fetch_add(1, Ordering::SeqCst);
         if n >= self.park_from {
             let (lock, cvar) = &*self.gate;
-            let mut open = lock.lock().expect("gate lock");
+            let mut open = lock.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             while !*open {
                 open = cvar.wait(open).expect("gate wait");
             }
@@ -131,7 +131,7 @@ fn connection_threads_never_poll_the_provider() {
 
     // Release the parked refresh so the thread can exit on shutdown.
     let (lock, cvar) = &*gate;
-    *lock.lock().expect("gate lock") = true;
+    *lock.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = true;
     cvar.notify_all();
     server.stop();
 }
@@ -225,7 +225,7 @@ fn external_finds_credit_prize_without_pool_submit() {
     }
     impl TemplateProvider for ExternalChain {
         fn current(&self) -> JobTemplate {
-            let tip = *self.tip.lock().expect("tip");
+            let tip = *self.tip.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             JobTemplate {
                 // Distinct bytes per tip so each advance publishes.
                 header: vec![tip as u8; 80],
@@ -270,7 +270,7 @@ fn external_finds_credit_prize_without_pool_submit() {
             .sum::<u64>()
     };
     for step in 1..=3u64 {
-        *tip.lock().expect("tip") += 1;
+        *tip.lock().unwrap_or_else(std::sync::PoisonError::into_inner) += 1;
         let want = PER_HEIGHT * step;
         let deadline = std::time::Instant::now() + Duration::from_secs(15);
         loop {

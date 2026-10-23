@@ -84,7 +84,7 @@ fn nvidia_status() -> Option<(i32, Option<u32>)> {
 pub fn gpu_status() -> (i32, Option<u32>) {
     let now = Instant::now();
     {
-        let c = GPU_STATUS.lock().expect("gpu status");
+        let c = GPU_STATUS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some((t, temp, power)) = *c {
             if now.duration_since(t) < Duration::from_secs(2) {
                 return (temp, power);
@@ -92,7 +92,7 @@ pub fn gpu_status() -> (i32, Option<u32>) {
         }
     }
     let fresh = amdgpu_hwmon().or_else(nvidia_status).unwrap_or((-1, None));
-    *GPU_STATUS.lock().expect("gpu status") = Some((now, fresh.0, fresh.1));
+    *GPU_STATUS.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some((now, fresh.0, fresh.1));
     fresh
 }
 
@@ -250,7 +250,7 @@ impl GpuSearcher {
                 let (seeds, inits) = self.prep_batch(header, height, n, take);
                 let t0 = Instant::now();
                 let pending = {
-                    let mut guard = self.bufs.lock().expect("gpu buffers");
+                    let mut guard = self.bufs.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                     if guard.is_none() {
                         *guard = Some(self.dev.create_batch_buffers(self.batch)?);
                     }

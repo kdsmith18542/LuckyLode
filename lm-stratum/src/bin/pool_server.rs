@@ -498,8 +498,7 @@ fn stats_json<P: TemplateProvider + 'static>(
     let payout_totals = server.payout_totals();
     let payouts_json: Vec<serde_json::Value> = ctx
         .history
-        .lock()
-        .expect("payout history")
+        .lock().unwrap_or_else(std::sync::PoisonError::into_inner)
         .iter()
         .rev()
         .take(25)
@@ -1580,7 +1579,7 @@ fn save_state<P: TemplateProvider + 'static>(
     server: &RunningServer<P>,
     path: &Path,
 ) {
-    let _guard = SAVE_LOCK.lock().expect("state save");
+    let _guard = SAVE_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let st = PoolState {
         version: STATE_VERSION,
         ledger: server.ledger_snapshot(),
@@ -1765,7 +1764,7 @@ fn payout_loop<P: TemplateProvider + 'static>(
                         save_state(&server, path);
                     }
                     budget = budget.saturating_sub(pay);
-                    let mut h = history.lock().expect("payout history");
+                    let mut h = history.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                     h.push_back(PayoutRecord {
                         time: now_secs(),
                         miner: miner.clone(),

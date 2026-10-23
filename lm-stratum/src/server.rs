@@ -111,9 +111,12 @@ struct ConnGuard<P: TemplateProvider + 'static> {
 
 impl<P: TemplateProvider + 'static> Drop for ConnGuard<P> {
     fn drop(&mut self) {
+        // Poison-tolerant by policy: connection accounting is plain data,
+        // and a panic while holding this lock must not cascade (a panicking
+        // Drop during unwinding aborts the process).
         use std::sync::atomic::Ordering as AtomicOrdering;
         self.shared.conn_total.fetch_sub(1, AtomicOrdering::SeqCst);
-        let mut m = self.shared.conn_per_ip.lock().expect("per-ip");
+        let mut m = self.shared.conn_per_ip.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(n) = m.get_mut(&self.ip) {
             *n = n.saturating_sub(1);
             if *n == 0 {
@@ -354,7 +357,7 @@ fn auth_ok(
 /// threads: never touches the provider (finding D — they used to poll it
 /// inline on every tick, serializing all miners behind one node RPC).
 fn broadcast_job<P>(shared: &Shared<P>) -> (Job, u64) {
-    let bc = shared.broadcast.lock().expect("broadcast");
+    let bc = shared.broadcast.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     (bc.job.clone(), bc.version)
 }
 
@@ -375,17 +378,17 @@ fn draw_status_of(tpl: &JobTemplate) -> DrawStatus {
 /// double-submit a block), but nothing waits on a refresh anymore.
 fn refresh_loop<P: TemplateProvider + 'static>(shared: Arc<Shared<P>>) {
     while !shared.shutdown.load(Ordering::Relaxed) {
-        let tpl = shared.provider.lock().expect("provider").current();
+        let tpl = shared.provider.lock().unwrap_or_else(std::sync::PoisonError::into_inner).current();
         // Current-epoch draw card: refresh every tick (not just on new
         // jobs) so budget/remaining track the live template.
-        *shared.latest_draw.lock().expect("latest draw") = draw_status_of(&tpl);
+        *shared.latest_draw.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = draw_status_of(&tpl);
         {
             // The broadcast guard must drop BEFORE the tick sleep: holding
             // it across the sleep starves every connection thread (release
             // caught it — a fast provider re-locks within nanoseconds, so
             // a waiting handler can lose the race for minutes; the e2e
             // suite timed out at 10 s per RPC).
-            let mut bc = shared.broadcast.lock().expect("broadcast");
+            let mut bc = shared.broadcast.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             // A new job exists only when the TEMPLATE BYTES change (height
             // or header). Timer-based rotation duplicated jobs whenever the
             // node's template cadence was slower than the timer: two
@@ -408,7 +411,7 @@ fn refresh_loop<P: TemplateProvider + 'static>(shared: Arc<Shared<P>>) {
                 // safe even when our own find lands first.
                 {
                     let mut pend =
-                        shared.tip_overflow.lock().expect("tip overflow");
+                        shared.tip_overflow.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                     pend.insert(tpl.height, tpl.prize);
                     while pend.len() > 64 {
                         pend.pop_first();
@@ -423,13 +426,13 @@ fn refresh_loop<P: TemplateProvider + 'static>(shared: Arc<Shared<P>>) {
         // — never guessed.
         {
             let tip = tpl.height.saturating_sub(1);
-            let mut synced = shared.prize_tip.lock().expect("prize tip");
+            let mut synced = shared.prize_tip.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             if *synced == 0 {
                 *synced = tip;
             } else if tip > *synced {
                 let old = *synced;
-                let pend = shared.tip_overflow.lock().expect("tip overflow");
-                let done = shared.prize_credited.lock().expect("prize credited");
+                let pend = shared.tip_overflow.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                let done = shared.prize_credited.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                 let missing = missing_prize_credits(old, tip, &pend, &done);
                 // Heights neither credited nor known-prospective: the pool
                 // was down/behind for them — logged, never guessed. (Heights
@@ -445,8 +448,7 @@ fn refresh_loop<P: TemplateProvider + 'static>(shared: Arc<Shared<P>>) {
                     } else {
                         shared
                             .prize_credited
-                            .lock()
-                            .expect("prize credited")
+                            .lock().unwrap_or_else(std::sync::PoisonError::into_inner)
                             .insert(*h);
                     }
                 }
@@ -455,7 +457,7 @@ fn refresh_loop<P: TemplateProvider + 'static>(shared: Arc<Shared<P>>) {
                         "pool: tip {old}->{tip}: {unknown} heights had no prospective prize record (skipped)"
                     );
                 }
-                let mut done = shared.prize_credited.lock().expect("prize credited");
+                let mut done = shared.prize_credited.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                 done.retain(|&h| h + 128 > tip);
                 *synced = tip;
             } else if tip < *synced {
@@ -465,8 +467,7 @@ fn refresh_loop<P: TemplateProvider + 'static>(shared: Arc<Shared<P>>) {
                 let old = *synced;
                 shared
                     .tip_overflow
-                    .lock()
-                    .expect("tip overflow")
+                    .lock().unwrap_or_else(std::sync::PoisonError::into_inner)
                     .retain(|&h, _| h <= tip + 1);
                 *synced = tip;
                 eprintln!("pool: reorg? tip {tip} below synced {old} — prospective prize map reset");
@@ -506,13 +507,13 @@ fn missing_prize_credits(
 /// when this call performed the record.
 fn credit_prize_once<P>(shared: &Shared<P>, height: u64, amount: u64, source: &str) -> bool {
     {
-        let mut done = shared.prize_credited.lock().expect("prize credited");
+        let mut done = shared.prize_credited.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         if !done.insert(height) {
             return false;
         }
     }
     if amount > 0 {
-        let mut log = shared.prize_credit_log.lock().expect("prize credit log");
+        let mut log = shared.prize_credit_log.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         log.insert(height, amount);
         // Keep the persisted log bounded (the explorer only needs the
         // recent window).
@@ -538,15 +539,14 @@ fn apply_block_found<P: TemplateProvider + 'static>(
 ) {
     let outcome = shared
         .provider
-        .lock()
-        .expect("provider")
+        .lock().unwrap_or_else(std::sync::PoisonError::into_inner)
         .submit_block(&job.header, job.height, nonce);
     if !outcome.accepted {
         // Lost finds must be loud: a rejected submitblock is money on
         // the floor and a template/consensus bug until proven
         // otherwise. Log with full context, count it, and surface it on
         // /api/stats (the dashboard and the monitor both read that).
-        shared.stats.lock().expect("stats").block_rejects += 1;
+        shared.stats.lock().unwrap_or_else(std::sync::PoisonError::into_inner).block_rejects += 1;
         eprintln!(
             "BLOCK SUBMIT REJECTED: height {} nonce {} digest {} — the share met the network target; check the node log",
             job.height,
@@ -561,7 +561,7 @@ fn apply_block_found<P: TemplateProvider + 'static>(
         // thread may reconcile this same height if it sees the new tip
         // before this thread runs.
         credit_prize_once(shared, job.height, outcome.prize_inflow, "accept");
-        let ledger = shared.ledger.lock().expect("ledger");
+        let ledger = shared.ledger.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         // Both claimed amounts split over the PPLNS window (each with the
         // reference sqrt/cap rules); the combined list is what pays out.
         let mut payouts = ledger.jackpot_payout_shares(outcome.bonus, LEDGER_PPLNS, now);
@@ -573,11 +573,11 @@ fn apply_block_found<P: TemplateProvider + 'static>(
             .iter()
             .map(|a| (a.miner.clone(), a.eff_work))
             .collect();
-        let mut balances = shared.balances.lock().expect("balances");
-        let fee = *shared.pool_fee.lock().expect("pool fee");
+        let mut balances = shared.balances.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let fee = *shared.pool_fee.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         balances.credit_block(outcome.coinbase, &weights, fee);
         balances.credit_split(&payouts);
-        if let Some((dev_id, pp)) = shared.dev_fee.lock().expect("dev fee").clone() {
+        if let Some((dev_id, pp)) = shared.dev_fee.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone() {
             let dev = outcome.coinbase as u128 * u64::from(pp) as u128
                 / lm_pool::payout::FEE_DENOM_PERMYRIAD as u128;
             let moved = balances.allocate_dev(&dev_id, dev as u64);
@@ -586,12 +586,12 @@ fn apply_block_found<P: TemplateProvider + 'static>(
                     "dev fee: {} -> miner {} ({} blocks paid)",
                     moved,
                     dev_id,
-                    shared.blocks.lock().expect("blocks").len()
+                    shared.blocks.lock().unwrap_or_else(std::sync::PoisonError::into_inner).len()
                 );
             }
         }
         drop(balances);
-        let mut blocks = shared.blocks.lock().expect("blocks");
+        let mut blocks = shared.blocks.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         blocks.push_back(BlockRecord {
             height: job.height,
             finder: miner_id,
@@ -610,7 +610,7 @@ fn apply_block_found<P: TemplateProvider + 'static>(
         // claim, and faucet/dev never touch the miner ledger), so their
         // running sum must always equal owed + paid + fees.
         {
-            let mut credited = shared.credited_total.lock().expect("credited total");
+            let mut credited = shared.credited_total.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             *credited = credited
                 .saturating_add(outcome.coinbase)
                 .saturating_add(outcome.bonus)
@@ -620,7 +620,7 @@ fn apply_block_found<P: TemplateProvider + 'static>(
             blocks.pop_front();
         }
         drop(blocks);
-        shared.stats.lock().expect("stats").blocks += 1;
+        shared.stats.lock().unwrap_or_else(std::sync::PoisonError::into_inner).blocks += 1;
         // Seed-fund claims ride along for the record (third-party outputs —
         // never miner-owed, so no ledger impact; the node already validated
         // and debited the reserves).
@@ -809,7 +809,7 @@ fn handle_conn<P: TemplateProvider + 'static>(stream: TcpStream, shared: Arc<Sha
                 }
                 // Money identity = the worker name itself: FNV-1a worker ids were forgeable and the
                 // payout ledger keyed by them could be redirected.
-                shared.workers.lock().expect("workers").authorized(
+                shared.workers.lock().unwrap_or_else(std::sync::PoisonError::into_inner).authorized(
                     &worker,
                     &agent,
                     now_secs(),
@@ -855,17 +855,16 @@ fn handle_conn<P: TemplateProvider + 'static>(stream: TcpStream, shared: Arc<Sha
                     (true, Some(s)) => {
                         let now = now_secs();
                         let work = work_for_share(&s.job.pool_target);
-                        shared.ledger.lock().expect("ledger").submit(ShareRec {
+                        shared.ledger.lock().unwrap_or_else(std::sync::PoisonError::into_inner).submit(ShareRec {
                             miner: miner_id.clone(),
                             ts: now,
                             work,
                             overnight: false,
                         });
-                        shared.stats.lock().expect("stats").shares += 1;
+                        shared.stats.lock().unwrap_or_else(std::sync::PoisonError::into_inner).shares += 1;
                         shared
                             .workers
-                            .lock()
-                            .expect("workers")
+                            .lock().unwrap_or_else(std::sync::PoisonError::into_inner)
                             .accepted(&miner_id, work, now);
                         // Vardiff: adapt this connection's pool target, same template.
                         if let Some(new_work) = vardiff.record(now, work) {
@@ -895,11 +894,10 @@ fn handle_conn<P: TemplateProvider + 'static>(stream: TcpStream, shared: Arc<Sha
                         }
                     }
                     _ => {
-                        shared.stats.lock().expect("stats").rejects += 1;
+                        shared.stats.lock().unwrap_or_else(std::sync::PoisonError::into_inner).rejects += 1;
                         shared
                             .workers
-                            .lock()
-                            .expect("workers")
+                            .lock().unwrap_or_else(std::sync::PoisonError::into_inner)
                             .rejected(&miner_id, now_secs());
                         let (code, text) = err.unwrap_or((-32600, "invalid submit".to_string()));
                         let _ = writeln!(stream.get_mut(), "{}", error_response(&id, code, &text));
@@ -1137,7 +1135,7 @@ fn handle_v2_conn<P: TemplateProvider + 'static>(
                 let miner_id = open.user_identity.clone();
                 let mut agent = format!("v2 {} {}", setup.vendor, setup.hardware_version);
                 agent.truncate(MAX_WORKER_NAME_LEN);
-                shared.workers.lock().expect("workers").authorized(
+                shared.workers.lock().unwrap_or_else(std::sync::PoisonError::into_inner).authorized(
                     &miner_id,
                     &agent,
                     now_secs(),
@@ -1205,17 +1203,16 @@ fn handle_v2_conn<P: TemplateProvider + 'static>(
                     (true, Some(s)) => {
                         let now = now_secs();
                         let work = work_for_share(&s.job.pool_target);
-                        shared.ledger.lock().expect("ledger").submit(ShareRec {
+                        shared.ledger.lock().unwrap_or_else(std::sync::PoisonError::into_inner).submit(ShareRec {
                             miner: miner_id.clone(),
                             ts: now,
                             work,
                             overnight: false,
                         });
-                        shared.stats.lock().expect("stats").shares += 1;
+                        shared.stats.lock().unwrap_or_else(std::sync::PoisonError::into_inner).shares += 1;
                         shared
                             .workers
-                            .lock()
-                            .expect("workers")
+                            .lock().unwrap_or_else(std::sync::PoisonError::into_inner)
                             .accepted(&miner_id, work, now);
                         let ack = SubmitSharesSuccess {
                             channel_id,
@@ -1258,11 +1255,10 @@ fn handle_v2_conn<P: TemplateProvider + 'static>(
                         }
                     }
                     _ => {
-                        shared.stats.lock().expect("stats").rejects += 1;
+                        shared.stats.lock().unwrap_or_else(std::sync::PoisonError::into_inner).rejects += 1;
                         shared
                             .workers
-                            .lock()
-                            .expect("workers")
+                            .lock().unwrap_or_else(std::sync::PoisonError::into_inner)
                             .rejected(&miner_id, now_secs());
                         let (_, code) = err.unwrap_or((-32600, "invalid submit".to_string()));
                         let nack = SubmitSharesError {
@@ -1311,14 +1307,13 @@ impl<P: TemplateProvider + 'static> RunningServer<P> {
     }
 
     fn stats_clone(&self) -> Stats {
-        self.shared.stats.lock().expect("stats").clone()
+        self.shared.stats.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
     }
 
     pub fn blocks(&self) -> Vec<BlockRecord> {
         self.shared
             .blocks
-            .lock()
-            .expect("blocks")
+            .lock().unwrap_or_else(std::sync::PoisonError::into_inner)
             .iter()
             .cloned()
             .collect()
@@ -1326,28 +1321,28 @@ impl<P: TemplateProvider + 'static> RunningServer<P> {
 
     /// Ledger snapshot for `--state-file` persistence.
     pub fn ledger_snapshot(&self) -> PayoutLedger {
-        self.shared.balances.lock().expect("balances").clone()
+        self.shared.balances.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
     }
 
     /// Restore a persisted ledger (replaces the fresh one).
     pub fn restore_ledger(&self, ledger: PayoutLedger) {
-        *self.shared.balances.lock().expect("balances") = ledger;
+        *self.shared.balances.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = ledger;
     }
 
     /// Share-ledger snapshot for `--state-file` persistence (streaks,
     /// division boards and PPLNS windows survive pool restarts).
     pub fn shares_snapshot(&self) -> Ledger {
-        self.shared.ledger.lock().expect("ledger").clone()
+        self.shared.ledger.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
     }
 
     /// Restore persisted shares (replaces the fresh share ledger).
     pub fn restore_shares(&self, ledger: Ledger) {
-        *self.shared.ledger.lock().expect("ledger") = ledger;
+        *self.shared.ledger.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = ledger;
     }
 
     /// Persisted worker-name map (miner id → payout address).
     pub fn names(&self) -> Vec<(String, String)> {
-        self.shared.workers.lock().expect("workers").names()
+        self.shared.workers.lock().unwrap_or_else(std::sync::PoisonError::into_inner).names()
     }
 
     /// Restore persisted worker names (payout destinations survive a
@@ -1355,22 +1350,20 @@ impl<P: TemplateProvider + 'static> RunningServer<P> {
     pub fn restore_names(&self, names: &[(String, String)]) {
         self.shared
             .workers
-            .lock()
-            .expect("workers")
+            .lock().unwrap_or_else(std::sync::PoisonError::into_inner)
             .restore_names(names);
     }
 
     /// Last-known agent per miner (live + restored) for division resolution.
     pub fn agents(&self) -> Vec<(String, String)> {
-        self.shared.workers.lock().expect("workers").agents()
+        self.shared.workers.lock().unwrap_or_else(std::sync::PoisonError::into_inner).agents()
     }
 
     /// Restore persisted agents (idle miners keep their declared family).
     pub fn restore_agents(&self, agents: &[(String, String)]) {
         self.shared
             .workers
-            .lock()
-            .expect("workers")
+            .lock().unwrap_or_else(std::sync::PoisonError::into_inner)
             .restore_agents(agents);
     }
 
@@ -1378,26 +1371,25 @@ impl<P: TemplateProvider + 'static> RunningServer<P> {
     /// the dashboard reads continuously across restarts.
     pub fn restore_blocks(&self, blocks: Vec<BlockRecord>) {
         let n = blocks.len() as u64;
-        let mut b = self.shared.blocks.lock().expect("blocks");
+        let mut b = self.shared.blocks.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         b.clear();
         b.extend(blocks);
         drop(b);
-        let mut st = self.shared.stats.lock().expect("stats");
+        let mut st = self.shared.stats.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         st.blocks = st.blocks.max(n);
     }
 
     pub fn aggregate(&self, window_secs: u64, now: u64) -> Vec<MinerAgg> {
         self.shared
             .ledger
-            .lock()
-            .expect("ledger")
+            .lock().unwrap_or_else(std::sync::PoisonError::into_inner)
             .aggregate(window_secs, now)
     }
 
     /// Full-history streak state per miner (doc 07 §7.4 dashboard tile):
     /// the compacted day rollup only — O(miners), safe on every stats poll.
     pub fn streaks(&self, now: u64) -> Vec<lm_pool::ledger::StreakState> {
-        self.shared.ledger.lock().expect("ledger").streaks(now)
+        self.shared.ledger.lock().unwrap_or_else(std::sync::PoisonError::into_inner).streaks(now)
     }
 
     /// Seasonal division board over `window_secs` (doc 03 §3.3), effective
@@ -1406,8 +1398,7 @@ impl<P: TemplateProvider + 'static> RunningServer<P> {
     pub fn leaderboard(&self, window_secs: u64, now: u64) -> Vec<lm_pool::ledger::BoardEntry> {
         self.shared
             .ledger
-            .lock()
-            .expect("ledger")
+            .lock().unwrap_or_else(std::sync::PoisonError::into_inner)
             .leaderboard(window_secs, now)
     }
 
@@ -1417,8 +1408,7 @@ impl<P: TemplateProvider + 'static> RunningServer<P> {
     pub fn faucet_unmatured(&self) -> Vec<(u64, u64)> {
         self.shared
             .provider
-            .lock()
-            .expect("provider")
+            .lock().unwrap_or_else(std::sync::PoisonError::into_inner)
             .faucet_unmatured_snapshot()
     }
 
@@ -1427,8 +1417,7 @@ impl<P: TemplateProvider + 'static> RunningServer<P> {
     pub fn restore_faucet_unmatured(&self, claimed: Vec<(u64, u64)>) {
         self.shared
             .provider
-            .lock()
-            .expect("provider")
+            .lock().unwrap_or_else(std::sync::PoisonError::into_inner)
             .restore_faucet_unmatured(claimed);
     }
 
@@ -1438,8 +1427,7 @@ impl<P: TemplateProvider + 'static> RunningServer<P> {
     pub fn workers(&self, now: u64) -> Vec<WorkerSnapshot> {
         self.shared
             .workers
-            .lock()
-            .expect("workers")
+            .lock().unwrap_or_else(std::sync::PoisonError::into_inner)
             .snapshot_visible(now)
     }
 
@@ -1448,8 +1436,7 @@ impl<P: TemplateProvider + 'static> RunningServer<P> {
     pub fn balances(&self) -> Vec<(String, u64)> {
         self.shared
             .balances
-            .lock()
-            .expect("balances")
+            .lock().unwrap_or_else(std::sync::PoisonError::into_inner)
             .select_due(1)
             .into_iter()
             .collect()
@@ -1459,14 +1446,13 @@ impl<P: TemplateProvider + 'static> RunningServer<P> {
     pub fn record_paid(&self, miner: &str, amount: u64) {
         self.shared
             .balances
-            .lock()
-            .expect("balances")
+            .lock().unwrap_or_else(std::sync::PoisonError::into_inner)
             .record_paid(miner, amount);
     }
 
     /// Lifetime paid to one miner (stats reconciliation).
     pub fn paid(&self, miner: &str) -> u64 {
-        self.shared.balances.lock().expect("balances").paid(miner)
+        self.shared.balances.lock().unwrap_or_else(std::sync::PoisonError::into_inner).paid(miner)
     }
 
     /// One miner's row (worker stats + owed/paid). `None` when unknown.
@@ -1475,12 +1461,11 @@ impl<P: TemplateProvider + 'static> RunningServer<P> {
         let snap = self
             .shared
             .workers
-            .lock()
-            .expect("workers")
+            .lock().unwrap_or_else(std::sync::PoisonError::into_inner)
             .snapshot(now)
             .into_iter()
             .find(|w| w.miner == miner)?;
-        let bal = self.shared.balances.lock().expect("balances");
+        let bal = self.shared.balances.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         Some(MinerRow {
             miner: miner.to_string(),
             name: snap.name,
@@ -1498,20 +1483,19 @@ impl<P: TemplateProvider + 'static> RunningServer<P> {
     /// Per-miner payout settings snapshot (persisted with the state file).
     #[must_use]
     pub fn payout_settings(&self) -> PayoutSettings {
-        self.shared.payout_settings.lock().expect("settings").clone()
+        self.shared.payout_settings.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
     }
 
     /// Replace the payout settings (state restore).
     pub fn restore_payout_settings(&self, settings: PayoutSettings) {
-        *self.shared.payout_settings.lock().expect("settings") = settings;
+        *self.shared.payout_settings.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = settings;
     }
 
     /// Set one miner's payout settings (replaces the whole entry).
     pub fn set_payout_settings(&self, miner: String, settings: MinerSettings) {
         self.shared
             .payout_settings
-            .lock()
-            .expect("settings")
+            .lock().unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(miner, settings);
     }
 
@@ -1519,8 +1503,7 @@ impl<P: TemplateProvider + 'static> RunningServer<P> {
     pub fn clear_payout_settings(&self, miner: &str) -> bool {
         self.shared
             .payout_settings
-            .lock()
-            .expect("settings")
+            .lock().unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(miner)
             .is_some()
     }
@@ -1528,27 +1511,26 @@ impl<P: TemplateProvider + 'static> RunningServer<P> {
     /// Attestation snapshot (persisted with the state file).
     #[must_use]
     pub fn attestations(&self) -> Attestations {
-        self.shared.attestations.lock().expect("attestations").clone()
+        self.shared.attestations.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
     }
 
     /// Replace the attestation store (state restore).
     pub fn restore_attestations(&self, attestations: Attestations) {
-        *self.shared.attestations.lock().expect("attestations") = attestations;
+        *self.shared.attestations.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = attestations;
     }
 
     /// Record one worker's attestation verdict (latest wins).
     pub fn set_attestation(&self, miner: String, attestation: Attestation) {
         self.shared
             .attestations
-            .lock()
-            .expect("attestations")
+            .lock().unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(miner, attestation);
     }
 
     /// The current (non-expired) attestation for one miner.
     #[must_use]
     pub fn attestation_for(&self, miner: &str, now: u64) -> Option<Attestation> {
-        let all = self.shared.attestations.lock().expect("attestations");
+        let all = self.shared.attestations.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         all.get(miner)
             .filter(|a| now.saturating_sub(a.time) <= ATTESTATION_TTL_SECS)
             .cloned()
@@ -1569,8 +1551,7 @@ impl<P: TemplateProvider + 'static> RunningServer<P> {
             .map(|(w, _)| w.as_str())?;
         self.shared
             .workers
-            .lock()
-            .expect("workers")
+            .lock().unwrap_or_else(std::sync::PoisonError::into_inner)
             .miner_for_name(worker)
     }
 
@@ -1582,24 +1563,24 @@ impl<P: TemplateProvider + 'static> RunningServer<P> {
 
     /// `(owed_total, paid_total, fees)` — the payout reconciliation triple.
     pub fn payout_totals(&self) -> (u64, u64, u64) {
-        self.shared.balances.lock().expect("balances").totals()
+        self.shared.balances.lock().unwrap_or_else(std::sync::PoisonError::into_inner).totals()
     }
 
     /// Lifetime miner-owed coinbase accepted (normal value + jackpot
     /// bonuses + pot splashes). Must equal owed + paid + fees at all
     /// times — the /api/stats identity.
     pub fn credited_total(&self) -> u64 {
-        *self.shared.credited_total.lock().expect("credited total")
+        *self.shared.credited_total.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     /// Restore the persisted lifetime coinbase total (state-file load).
     pub fn restore_credited(&self, total: u64) {
-        *self.shared.credited_total.lock().expect("credited total") = total;
+        *self.shared.credited_total.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = total;
     }
 
     /// Pool fee in per-myriad for block credits (0 = none).
     pub fn set_pool_fee(&self, fee_permyriad: u16) {
-        *self.shared.pool_fee.lock().expect("pool fee") = fee_permyriad;
+        *self.shared.pool_fee.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = fee_permyriad;
     }
 
     /// Dev-fee slice (docs/04 §4.2): `pp` per-myriad of each block's
@@ -1612,7 +1593,7 @@ impl<P: TemplateProvider + 'static> RunningServer<P> {
         }
         // The dev worker is a name like any other (money identity).
         let id = addr.to_string();
-        *self.shared.dev_fee.lock().expect("dev fee") = Some((id.clone(), pp));
+        *self.shared.dev_fee.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some((id.clone(), pp));
         self.restore_names(&[(id, addr.to_string())]);
     }
 
@@ -1623,8 +1604,7 @@ impl<P: TemplateProvider + 'static> RunningServer<P> {
     pub fn prize_credits(&self) -> Vec<(u64, u64)> {
         self.shared
             .prize_credit_log
-            .lock()
-            .expect("prize credit log")
+            .lock().unwrap_or_else(std::sync::PoisonError::into_inner)
             .iter()
             .map(|(h, a)| (*h, *a))
             .collect()
@@ -1632,14 +1612,14 @@ impl<P: TemplateProvider + 'static> RunningServer<P> {
 
     /// Restore the persisted per-height prize credits (state-file load).
     pub fn restore_prize_credits(&self, credits: &[(u64, u64)]) {
-        let mut log = self.shared.prize_credit_log.lock().expect("prize credit log");
+        let mut log = self.shared.prize_credit_log.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         log.clear();
         log.extend(credits.iter().copied());
     }
 
     /// Current-epoch Luckynode Draw advisory for the dashboard card.
     pub fn latest_draw(&self) -> DrawStatus {
-        self.shared.latest_draw.lock().expect("latest draw").clone()
+        self.shared.latest_draw.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
     }
 
     /// Signal shutdown and wait for the accept loop (connection threads exit
@@ -1690,8 +1670,7 @@ impl<P: TemplateProvider + 'static> RunningServer<P> {
                         let total = shared.conn_total.load(AtomicOrdering::SeqCst);
                         let per_ip = shared
                             .conn_per_ip
-                            .lock()
-                            .expect("per-ip")
+                            .lock().unwrap_or_else(std::sync::PoisonError::into_inner)
                             .get(&ip)
                             .copied()
                             .unwrap_or(0);
@@ -1701,7 +1680,7 @@ impl<P: TemplateProvider + 'static> RunningServer<P> {
                         }
                         shared.conn_total.fetch_add(1, AtomicOrdering::SeqCst);
                         {
-                            let mut m = shared.conn_per_ip.lock().expect("per-ip");
+                            let mut m = shared.conn_per_ip.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                             *m.entry(ip).or_insert(0) += 1;
                         }
                         let s = shared.clone();
@@ -1728,15 +1707,15 @@ impl<P: TemplateProvider + 'static> RunningServer<P> {
 
 impl RunningServer<crate::provider::MockProvider> {
     pub fn chain_height(&self) -> u64 {
-        self.shared.provider.lock().expect("provider").height()
+        self.shared.provider.lock().unwrap_or_else(std::sync::PoisonError::into_inner).height()
     }
 
     pub fn reserve(&self) -> u64 {
-        self.shared.provider.lock().expect("provider").reserve()
+        self.shared.provider.lock().unwrap_or_else(std::sync::PoisonError::into_inner).reserve()
     }
 
     pub fn chain_blocks(&self) -> u64 {
-        self.shared.provider.lock().expect("provider").blocks()
+        self.shared.provider.lock().unwrap_or_else(std::sync::PoisonError::into_inner).blocks()
     }
 }
 
@@ -1793,9 +1772,9 @@ pub fn spawn_server<P: TemplateProvider + 'static>(
     // first block after a (re)start would otherwise have no record and
     // an external find's overflow would leak through the reconcile.
     {
-        let mut pend = shared.tip_overflow.lock().expect("tip overflow");
+        let mut pend = shared.tip_overflow.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         pend.insert(tpl.height, tpl.prize);
-        *shared.prize_tip.lock().expect("prize tip") = tpl.height.saturating_sub(1);
+        *shared.prize_tip.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = tpl.height.saturating_sub(1);
     }
     let accept_shared = shared.clone();
     let accept = std::thread::spawn(move || {
@@ -1810,8 +1789,7 @@ pub fn spawn_server<P: TemplateProvider + 'static>(
                     let total = accept_shared.conn_total.load(AtomicOrdering::SeqCst);
                     let per_ip = accept_shared
                         .conn_per_ip
-                        .lock()
-                        .expect("per-ip")
+                        .lock().unwrap_or_else(std::sync::PoisonError::into_inner)
                         .get(&ip)
                         .copied()
                         .unwrap_or(0);
@@ -1821,7 +1799,7 @@ pub fn spawn_server<P: TemplateProvider + 'static>(
                     }
                     accept_shared.conn_total.fetch_add(1, AtomicOrdering::SeqCst);
                     {
-                        let mut m = accept_shared.conn_per_ip.lock().expect("per-ip");
+                        let mut m = accept_shared.conn_per_ip.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                         *m.entry(ip).or_insert(0) += 1;
                     }
                     let s = accept_shared.clone();

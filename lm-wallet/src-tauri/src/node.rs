@@ -7,7 +7,7 @@ use lm_stratum::rpc::RpcClient;
 /// path prefixes are honoured so a reverse-proxied public node works —
 /// e.g. `https://luckylode.cc/node/`).
 pub fn client(state: &AppState) -> Result<RpcClient, String> {
-    let cfg = state.cfg.lock().expect("cfg");
+    let cfg = state.cfg.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let url = cfg.rpc_url.trim();
     if url.is_empty() {
         return Err("node RPC URL is empty (Settings)".to_string());
