@@ -16,6 +16,12 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Bench smoke (compile only, timing is device-matrix work)
         run: cargo bench -p lm-pow -- --test
+      # The CPU-only path is a real, advertised build (boxes without
+      # libOpenCL; lm-mobile) — keep it compiling.
+      - name: CPU-only miner build (no OpenCL)
+        run: cargo check -p lm-miner --no-default-features
+      - name: Mobile facade host tests
+        run: cargo test -p lm-mobile --locked
 
   # Doc 05 §5.7 determinism gate: LuckyHash vectors must agree
   # byte-for-byte across architectures (endianness discipline §5.1). The
@@ -41,3 +47,31 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Bench smoke (compile only)
         run: cargo bench -p lm-pow -- --test
+
+  # The desktop wallet is a separate Cargo workspace (GUI deps are heavy
+  # and platform-specific), so the workspace job above never touched it.
+  wallet:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: lm-wallet/ui/package-lock.json
+      - name: Install Tauri build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
+            librsvg2-dev patchelf
+      - name: Build frontend
+        working-directory: lm-wallet/ui
+        run: npm ci && npm run build
+      - name: Wallet backend tests
+        working-directory: lm-wallet/src-tauri
+        run: cargo test --locked
+      - name: Wallet backend clippy
+        working-directory: lm-wallet/src-tauri
+        run: cargo clippy --all-targets -- -D warnings
