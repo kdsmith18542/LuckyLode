@@ -323,6 +323,21 @@ fn game_page(idx: &Indexer) -> String {
     let dl = state.get("potdrought").and_then(|v| v.as_i64()).unwrap_or(4320);
     let faucet = state.get("faucet").and_then(|v| v.as_i64()).unwrap_or(0);
     let dev = state.get("dev").and_then(|v| v.as_i64()).unwrap_or(0);
+    let prize = state.get("prize").and_then(|v| v.as_i64()).unwrap_or(0);
+    let epoch_len = state.get("prizeepochlen").and_then(|v| v.as_i64()).unwrap_or(0);
+    let draw = idx.draw_state();
+    let draw_epoch = draw.get("epoch").and_then(|v| v.as_i64()).unwrap_or(0);
+    let draw_line = if draw_epoch > 0 {
+        format!(
+            " · draw epoch <b>{}</b> · budget <b>{}</b> · remaining <b>{}</b> · winner <b>{}</b>",
+            draw_epoch,
+            coins(draw.get("budget").and_then(|v| v.as_i64()).unwrap_or(0)),
+            coins(draw.get("remaining").and_then(|v| v.as_i64()).unwrap_or(0)),
+            addr_or_text(draw.get("winner").and_then(|v| v.as_str()).unwrap_or("")),
+        )
+    } else {
+        String::new()
+    };
     let blocks = idx.game_blocks_recent(100).unwrap_or_default();
 
     let mut hits = String::new();
@@ -371,9 +386,10 @@ fn game_page(idx: &Indexer) -> String {
     html_page(
         "rewards",
         format!(
-            "{}<div class=card>jackpot reserve <b>{}</b> · pot <b>{}</b> · pot drought <b>{}/{}</b> · faucet reserve <b>{}</b> · dev reserve <b>{}</b> · odds (PoW finds, pre-committed per height): jackpot 1-in-{} blocks,             pot 1-in-{} &mdash; forced splash after {} dry blocks max</div><h2>Jackpot hits</h2><table><tr><th>height</th><th>finder</th><th>bonus</th><th>prize inflow</th></tr>{hits}</table><h2>Pot splashes</h2><table><tr><th>height</th><th>finder</th><th>splash</th></tr>{splashes}</table><h2>Prize draw claims</h2><div class=dim>epoch-boundary blocks whose coinbase paid the Luckynode Draw winner straight from the prize fund — pool-observed claims only (pool-mined boundaries); the wallet Luckynodes tab shows the current epoch.</div><table><tr><th>height</th><th>finder</th><th>claim</th><th>winner</th></tr>{claims}</table>",
+            "{}<div class=card>jackpot reserve <b>{}</b> · prize fund <b>{}</b> · pot <b>{}</b> · pot drought <b>{}/{}</b> · faucet reserve <b>{}</b> · dev reserve <b>{}</b> · odds (PoW finds, pre-committed per height): jackpot 1-in-{} blocks,             pot 1-in-{} &mdash; forced splash after {} dry blocks max{draw_line}</div><h2>Jackpot hits</h2><table><tr><th>height</th><th>finder</th><th>bonus</th><th>prize inflow</th></tr>{hits}</table><h2>Pot splashes</h2><table><tr><th>height</th><th>finder</th><th>splash</th></tr>{splashes}</table><h2>Prize draw claims</h2><div class=dim>epoch-boundary blocks whose coinbase paid the Luckynode Draw winner straight from the prize fund — pool-observed claims only (pool-mined boundaries); the wallet Luckynodes tab shows the current epoch{epoch_note}.</div><table><tr><th>height</th><th>finder</th><th>claim</th><th>winner</th></tr>{claims}</table>",
             search_box(),
             coins(reserve),
+            coins(prize),
             coins(pot),
             drought,
             dl,
@@ -382,6 +398,8 @@ fn game_page(idx: &Indexer) -> String {
             jd,
             pd,
             dl,
+            draw_line = draw_line,
+            epoch_note = if epoch_len > 0 { format!(" ({} blocks per epoch)", epoch_len) } else { String::new() },
         ),
     )
 }
@@ -706,6 +724,31 @@ fn market_page(idx: &mut Indexer) -> String {
 /// the pool is the board authority; the explorer mirrors it.
 fn divisions_page(idx: &Indexer) -> String {
     let boards = idx.division_boards().unwrap_or_default();
+    let synced = boards
+        .iter()
+        .filter_map(|b| b["synced_at"].as_i64())
+        .max()
+        .unwrap_or(0);
+    let age = if synced > 0 {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(synced);
+        let secs = (now - synced).max(0);
+        format!(
+            "last synced {} ago ({})",
+            if secs < 90 {
+                format!("{secs}s")
+            } else if secs < 5400 {
+                format!("{}m", secs / 60)
+            } else {
+                format!("{}h", secs / 3600)
+            },
+            fmt_time(synced)
+        )
+    } else {
+        "never synced".to_string()
+    };
     let mut sections = String::new();
     for b in &boards {
         let class = esc(b["class"].as_str().unwrap_or(""));
@@ -720,7 +763,7 @@ fn divisions_page(idx: &Indexer) -> String {
                         "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}d</td><td>{}</td></tr>",
                         e["rank"].as_i64().unwrap_or(0),
                         addr_or_text(e["name"].as_str().unwrap_or("")),
-                        e["eff_work"].as_i64().unwrap_or(0),
+                        compact(e["eff_work"].as_i64().unwrap_or(0) as f64),
                         e["days"].as_i64().unwrap_or(0),
                         if e["streak"].as_i64().unwrap_or(0) > 0 {
                             format!("{}d", e["streak"].as_i64().unwrap_or(0))
@@ -743,8 +786,9 @@ fn divisions_page(idx: &Indexer) -> String {
     html_page(
         "divisions",
         format!(
-            "{}<div class=card>Seasonal boards by device family (30-day effective work). Phones race phones; farms are paid, not feted. Archive snapshot mirrored from the official pool — the pool dashboard shows the live season; this page shows the last synced copy.</div>{sections}",
+            "{}<div class=card>Seasonal boards by device family (30-day effective work). Phones race phones; farms are paid, not feted. Archive snapshot mirrored from the official pool — {synced}. The pool dashboard shows the live season.</div>{sections}",
             search_box(),
+            synced = age,
         ),
     )
 }
@@ -1453,6 +1497,32 @@ mod nav_tests {
         assert!(p1.contains("page 2 of 2") && p1.contains("page=0"), "prev link");
         let api0 = handle(&mut idx, "GET", &format!("/api/address/{addr}?page=1"));
         assert!(api0.contains("\"page\":1"));
+        let _ = std::fs::remove_file(&dir);
+    }
+}
+
+#[cfg(test)]
+mod rewards_tests {
+    use super::*;
+    use crate::index::Indexer;
+    use lm_stratum::rpc::RpcClient;
+
+    #[test]
+    fn rewards_page_shows_prize_fund_and_current_draw() {
+        let dir = std::env::temp_dir().join("explorer-rewards-test.db");
+        let _ = std::fs::remove_file(&dir);
+        let rpc = RpcClient::new("127.0.0.1:1", "u", "p");
+        let mut idx = Indexer::open(dir.to_str().expect("path"), rpc).expect("open");
+        idx.fixture_exec(
+            "INSERT INTO draw_state(id, epoch, budget, remaining, winner, synced_at)
+             VALUES (1, 41, 200000000, 150000000, 'mxWinner111', 1700000000);",
+        )
+        .expect("fixture");
+        let r = handle(&mut idx, "GET", "/rewards");
+        assert!(r.starts_with("HTTP/1.1 200"));
+        assert!(r.contains("prize fund"), "prize fund card");
+        assert!(r.contains("draw epoch <b>41</b>"), "current draw: {r:.400}");
+        assert!(r.contains("1.5 tLKYL"), "remaining budget");
         let _ = std::fs::remove_file(&dir);
     }
 }

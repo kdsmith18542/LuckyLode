@@ -151,6 +151,13 @@ fn schema(db: &Connection) -> rusqlite::Result<()> {
             PRIMARY KEY(class, rank));
           CREATE TABLE IF NOT EXISTS mempool_seen(
             txid TEXT PRIMARY KEY, first_seen INTEGER NOT NULL);
+          -- Current consensus Luckynode Draw, mirrored from the pool's
+          -- /api/stats `draw` object (single row; display only).
+          CREATE TABLE IF NOT EXISTS draw_state(
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            epoch INTEGER NOT NULL DEFAULT 0, budget INTEGER NOT NULL DEFAULT 0,
+            remaining INTEGER NOT NULL DEFAULT 0, winner TEXT NOT NULL DEFAULT '',
+            synced_at INTEGER NOT NULL DEFAULT 0);
           -- Per-tx fee/weight facts, resolved from the node's raw hex (the
           -- fork's verbose tx format carries no vsize for confirmed txs).
           CREATE TABLE IF NOT EXISTS tx_facts(
@@ -731,6 +738,32 @@ impl Indexer {
                 .filter(|(h, a)| *h >= 0 && *a > 0)
                 .collect();
             n += self.apply_prize_credits(&rows)?;
+        }
+        // Current-epoch draw advisory. The pool reads it from the node's
+        // GBT every tick; mirror it so the rewards page can show the
+        // live draw without hitting node RPC per request.
+        if let Some(d) = v.get("draw") {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|x| x.as_secs() as i64)
+                .unwrap_or(0);
+            let epoch = d.get("epoch").and_then(|x| x.as_i64()).unwrap_or(0);
+            if epoch > 0 {
+                self.db
+                    .execute(
+                        "INSERT INTO draw_state(id, epoch, budget, remaining, winner, synced_at)
+                         VALUES (1, ?1, ?2, ?3, ?4, ?5)
+                         ON CONFLICT(id) DO UPDATE SET epoch=?1, budget=?2, remaining=?3, winner=?4, synced_at=?5",
+                        params![
+                            epoch,
+                            d.get("budget").and_then(|x| x.as_i64()).unwrap_or(0),
+                            d.get("remaining").and_then(|x| x.as_i64()).unwrap_or(0),
+                            d.get("winner").and_then(|x| x.as_str()).unwrap_or(""),
+                            now
+                        ],
+                    )
+                    .map_err(|e| format!("draw state: {e}"))?;
+            }
         }
         // Seasonal division boards (doc 03 §3.3: phones race phones). The
         // pool's `divisions.boards` is a point-in-time snapshot, so the table
@@ -1743,6 +1776,26 @@ impl Indexer {
     }
 
     /// Live game state from the node (reserve/pot/drought/divisors).
+    /// Current consensus Luckynode Draw as last mirrored from the pool
+    /// (epoch 0 = no pool sync yet / pre-draw node).
+    pub fn draw_state(&self) -> serde_json::Value {
+        self.db
+            .query_row(
+                "SELECT epoch, budget, remaining, winner, synced_at FROM draw_state WHERE id = 1",
+                [],
+                |r| {
+                    Ok(serde_json::json!({
+                        "epoch": r.get::<_, i64>(0)?,
+                        "budget": r.get::<_, i64>(1)?,
+                        "remaining": r.get::<_, i64>(2)?,
+                        "winner": r.get::<_, String>(3)?,
+                        "synced_at": r.get::<_, i64>(4)?,
+                    }))
+                },
+            )
+            .unwrap_or_else(|_| serde_json::json!({"epoch": 0}))
+    }
+
     pub fn game_state(&self) -> Result<serde_json::Value, String> {
         let ji = self.rpc.call("getjackpotinfo", serde_json::json!([]))?;
         Ok(serde_json::json!({
@@ -1755,6 +1808,8 @@ impl Indexer {
             "potdrought": ji.get("potdrought").and_then(|v| v.as_i64()).unwrap_or(4320),
             "faucet": ji.get("faucet").and_then(|v| v.as_i64()).unwrap_or(0),
             "dev": ji.get("dev").and_then(|v| v.as_i64()).unwrap_or(0),
+            "prize": ji.get("prize").and_then(|v| v.as_i64()).unwrap_or(0),
+            "prizeepochlen": ji.get("prizeepochlen").and_then(|v| v.as_i64()).unwrap_or(0),
         }))
     }
 
