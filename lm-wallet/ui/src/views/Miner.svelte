@@ -16,6 +16,42 @@
   let msgSolo = $state("");
   let busy = $state(false);
 
+  // Mining knobs persist across tab switches and restarts (localStorage,
+  // same as the theme and luckynode names — no secrets here). Without
+  // this a carefully set conservative profile is lost by visiting
+  // another tab. pool/worker persist separately via setMiningConfig.
+  const KNOB_KEY = "ll-miner-knobs";
+  let gpuSelSaved = false;
+  function loadKnobs() {
+    try {
+      const k = JSON.parse(localStorage.getItem(KNOB_KEY) ?? "{}");
+      if (k.mode === "pool" || k.mode === "solo") mode = k.mode;
+      if (typeof k.device === "string" && k.device) device = k.device;
+      if (Number.isFinite(+k.threads) && +k.threads > 0) threads = +k.threads;
+      if (Number.isFinite(+k.duty) && +k.duty > 0 && +k.duty <= 100) duty = +k.duty;
+      if (Number.isFinite(+k.maxTemp) && +k.maxTemp >= 0) maxTemp = +k.maxTemp;
+      if (typeof k.gpuSel === "string" && /^\d+:\d+$/.test(k.gpuSel)) {
+        gpuSel = k.gpuSel;
+        gpuSelSaved = true;
+      }
+      if (Number.isFinite(+k.gpuBatch) && +k.gpuBatch > 0) gpuBatch = +k.gpuBatch;
+      if (Number.isFinite(+k.maxPower) && +k.maxPower >= 0) maxPower = +k.maxPower;
+    } catch {
+      /* corrupt entry: defaults stand */
+    }
+  }
+  loadKnobs();
+  $effect(() => {
+    try {
+      localStorage.setItem(
+        KNOB_KEY,
+        JSON.stringify({ mode, device, threads, duty, maxTemp, gpuSel, gpuBatch, maxPower }),
+      );
+    } catch {
+      /* storage unavailable: knobs just don't persist */
+    }
+  });
+
   $effect(() => {
     api
       .getConfig()
@@ -25,7 +61,8 @@
       .minerGpus()
       .then((g: any) => {
         gpus = g as any[];
-        if (gpus.length > 0) gpuSel = `${gpus[0].platform}:${gpus[0].device}`;
+        // Don't clobber a persisted selection with the probe default.
+        if (gpus.length > 0 && !gpuSelSaved) gpuSel = `${gpus[0].platform}:${gpus[0].device}`;
       })
       .catch(() => (gpus = []));
     const t = setInterval(async () => {
