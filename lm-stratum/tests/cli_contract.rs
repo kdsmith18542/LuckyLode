@@ -56,3 +56,39 @@ fn mock_pool_version_and_help() {
     check_version("mock_pool");
     check_help("mock_pool");
 }
+
+#[test]
+fn pool_server_needs_node_or_mock() {
+    // Bare flags used to boot the worthless mock chain silently.
+    let out = Command::new(env!("CARGO_BIN_EXE_pool_server"))
+        .output()
+        .expect("run pool_server");
+    assert_eq!(out.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("no --node-rpc"), "{stderr}");
+}
+
+#[test]
+fn pool_server_rejects_over_100_percent_fees() {
+    // Past 10000 the fee pot exceeds the block: distributable hits 0
+    // and the dev slice overpays from the node wallet. Reject loudly.
+    for flag in ["--pool-fee-pp", "--dev-fee-pp"] {
+        let out = Command::new(env!("CARGO_BIN_EXE_pool_server"))
+            .args([flag, "20000", "--mock"])
+            .output()
+            .expect("run pool_server");
+        assert_eq!(out.status.code(), Some(2), "{flag}");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(stderr.contains("expects 0-10000"), "{flag}: {stderr}");
+    }
+}
+
+#[test]
+fn pool_server_rejects_bad_bind_fast() {
+    // Parse errors exit before any listen: quick, no ports needed.
+    let out = Command::new(env!("CARGO_BIN_EXE_pool_server"))
+        .args(["--mock", "--bind", "notahostport"])
+        .output()
+        .expect("run pool_server");
+    assert_eq!(out.status.code(), Some(2));
+}

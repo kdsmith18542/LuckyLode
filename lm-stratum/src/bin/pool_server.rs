@@ -1,7 +1,7 @@
 //! `pool-server` — run the reference pool on a mock chain or a real node.
 //!
 //! ```text
-//! pool-server [--bind HOST:PORT] [--reward R] [--fees F]
+//! pool-server --mock [--bind HOST:PORT] [--reward R] [--fees F]
 //!             [--pool-target (HEX64|max)] [--net-target (HEX64|max)]
 //! pool-server --node-rpc HOST:PORT [--rpc-user U] [--rpc-pass P] [--bind HOST:PORT]
 //!             [--no-claim-jackpots] [--no-claim-pot] [--no-claim-faucet] [--no-claim-dev] [--no-claim-prize]
@@ -14,8 +14,8 @@
 //! are read from the node (`getjackpotinfo`); `--pot-divisor` /
 //! `--jackpot-divisor` are regtest-only overrides.
 //!
-//! Mock mode (default) serves an instant-block mock chain (`max`/`max`,
-//! reward 1M) on 127.0.0.1:3333. Node mode talks to a running forked node
+//! Mock mode (explicit `--mock`) serves an instant-block mock chain
+//! (`max`/`max`, reward 1M) on 127.0.0.1:3333. Node mode talks to a running forked node
 //! via `getblocktemplate`/`submitblock` — jobs come from the real chain
 //! and accepted shares advance it. Ctrl-C stops (connections drain on
 //! their next tick).
@@ -1620,9 +1620,9 @@ fn term_watcher<P: TemplateProvider + 'static>(
         if TERM.load(std::sync::atomic::Ordering::SeqCst) {
             if let Some(path) = &path {
                 save_state(&server, path);
-                println!("SIGTERM: state saved to {} — exiting", path.display());
+                println!("shutdown: state saved to {} — exiting", path.display());
             } else {
-                println!("SIGTERM: no state file configured — exiting");
+                println!("shutdown: no state file configured — exiting");
             }
             std::process::exit(0);
         }
@@ -1777,8 +1777,9 @@ fn pct_decode(seg: &str) -> String {
 }
 
 const USAGE: &str = "usage:
-  pool-server [--bind HOST:PORT] [--reward R] [--fees F] [--pool-password PASS] [--pool-target (HEX64|max)] [--net-target (HEX64|max)]
-  pool-server --node-rpc HOST:PORT [--rpc-user U] [--rpc-pass P] [--pool-password PASS] [--bind HOST:PORT]
+  pool-server --mock [--bind HOST:PORT] [--reward R] [--fees F] [--pool-password PASS] [--pool-target (HEX64|max)] [--net-target (HEX64|max)]
+    (mock chain: instant blocks for dev/tests — never expose publicly; node mode needs --node-rpc, never bare flags)
+  pool-server --node-rpc HOST:PORT [--rpc-user U] [--rpc-pass P | --rpc-pass-file PATH | LUCKY_POOL_RPC_PASS=...] [--pool-password PASS | --pool-password-file PATH] [--bind HOST:PORT]
   [--no-claim-jackpots] [--no-claim-pot] [--no-claim-faucet] [--no-claim-dev] [--no-claim-prize]   (all claims ON by default; these opt out)
   both forms accept [--http HOST:PORT] to serve the live dashboard (/ and /api/stats)
   node mode accepts [--payout-threshold V] [--payout-interval SECS] [--payout-exec]
@@ -1820,10 +1821,11 @@ node's prize-draw advisories (exact remaining budget to the winner's
 registered script; old nodes have no fields and stay claim-free). The
 claim pays a third party, never the miner. Pass --no-claim-prize to opt
 out.
-payouts (node mode,: balances at/above --payout-threshold
+payouts (node mode): balances at/above --payout-threshold
 (base units) are sent from the node wallet every --payout-interval seconds
 (default 60); WITHOUT --payout-exec the loop only logs what it would send.
-Worker names double as payout addresses (valid R-addresses only).";
+Worker names double as payout addresses (chain prefixes: testnet m/n/2,
+mainnet L — the old R-only wording was wrong).";
 
 fn parse_u64(s: &str, flag: &str) -> Result<u64, String> {
     s.parse::<u64>()
@@ -1894,10 +1896,13 @@ fn maybe_spawn_v2<P: TemplateProvider + 'static>(
 }
 
 fn main() -> std::process::ExitCode {
-    // SIGTERM = clean stop: the handler only flips the atomic; the
+    // SIGTERM/SIGINT = clean stop: the handlers only flip the atomic; the
     // term_watcher thread (spawned per server) does the final state save.
+    // (SIGINT used to take the default terminate path and lose up to 10 s
+    // of ledger/block changes despite the "Ctrl-C to stop" banner.)
     unsafe {
         libc::signal(libc::SIGTERM, on_sigterm as extern "C" fn(libc::c_int) as libc::sighandler_t);
+        libc::signal(libc::SIGINT, on_sigterm as extern "C" fn(libc::c_int) as libc::sighandler_t);
     }
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.iter().any(|a| a == "-h" || a == "--help") {
@@ -1926,6 +1931,10 @@ fn main() -> std::process::ExitCode {
     let mut claim_faucet = true;
     let mut claim_dev = true;
     let mut claim_prize = true;
+    // Instant-block mock chain for dev/tests. Explicit opt-in: bare flags
+    // used to boot the mock silently, which is how a pool ends up mining
+    // worthless blocks while the operator thinks it is on a node.
+    let mut mock = false;
     let mut http: Option<String> = None;
     let mut claim_pot_tier = 10u64; // obsolete no-op (kept for old scripts)
     let mut pot_divisor: Option<u64> = None; // None = read from the node
@@ -2068,6 +2077,11 @@ fn main() -> std::process::ExitCode {
             "--claim-prize" => {
                 // Deprecated alias, see --claim-jackpots.
                 claim_prize = true;
+                i += 1; // valueless flag: do not skip the next argument
+                continue;
+            }
+            "--mock" => {
+                mock = true;
                 i += 1; // valueless flag: do not skip the next argument
                 continue;
             }
@@ -2238,7 +2252,7 @@ fn main() -> std::process::ExitCode {
                 }));
             }
             "--pool-fee-pp" => {
-                pool_fee_pp = next("pool-fee-pp")
+                let v = next("pool-fee-pp")
                     .and_then(|v| {
                         v.parse::<u16>()
                             .map_err(|_| "--pool-fee-pp expects 0-10000".to_string())
@@ -2247,6 +2261,14 @@ fn main() -> std::process::ExitCode {
                         eprintln!("error: {e}");
                         std::process::exit(2);
                     });
+                if v > 10_000 {
+                    // Past 100% the fee pot exceeds the block: distributable
+                    // saturates to 0 and the dev slice overpays from the
+                    // node wallet. Reject, don't clamp.
+                    eprintln!("error: --pool-fee-pp expects 0-10000, got {v}");
+                    std::process::exit(2);
+                }
+                pool_fee_pp = v;
             }
             "--dev-fee-addr" => {
                 dev_fee_addr = Some(next("dev-fee-addr").unwrap_or_else(|e| {
@@ -2255,7 +2277,7 @@ fn main() -> std::process::ExitCode {
                 }));
             }
             "--dev-fee-pp" => {
-                dev_fee_pp = next("dev-fee-pp")
+                let v = next("dev-fee-pp")
                     .and_then(|v| {
                         v.parse::<u16>()
                             .map_err(|_| "--dev-fee-pp expects 0-10000".to_string())
@@ -2264,6 +2286,11 @@ fn main() -> std::process::ExitCode {
                         eprintln!("error: {e}");
                         std::process::exit(2);
                     });
+                if v > 10_000 {
+                    eprintln!("error: --dev-fee-pp expects 0-10000, got {v}");
+                    std::process::exit(2);
+                }
+                dev_fee_pp = v;
             }
             "--tls-cert" => {
                 tls_cert = Some(next("tls-cert").unwrap_or_else(|e| {
@@ -2398,10 +2425,17 @@ fn main() -> std::process::ExitCode {
                 .unwrap_or(100),
         };
         if pot_divisor.is_none() || jackpot_divisor.is_none() {
-            println!(
-                "draw divisors from node: jackpot {} / pot {}",
-                resolved_jackpot_divisor, resolved_pot_divisor
-            );
+            if jackpot_info.is_some() {
+                println!(
+                    "draw divisors from node: jackpot {} / pot {}",
+                    resolved_jackpot_divisor, resolved_pot_divisor
+                );
+            } else {
+                println!(
+                    "node did not answer getjackpotinfo; using default divisors jackpot {} / pot {}",
+                    resolved_jackpot_divisor, resolved_pot_divisor
+                );
+            }
         }
         let node_chain = probe
             .call("getblockchaininfo", serde_json::json!([]))
@@ -2415,12 +2449,13 @@ fn main() -> std::process::ExitCode {
             }
         };
         // Display label only: flag wins when given, else the node chain.
+        let chain_label = match game_chain {
+            GameChain::Mainnet => "mainnet",
+            GameChain::Testnet => "testnet",
+        };
         let display_network = match network {
             Some(v) => v,
-            None => match game_chain {
-                GameChain::Mainnet => "mainnet".to_string(),
-                GameChain::Testnet => "testnet".to_string(),
-            },
+            None => chain_label.to_string(),
         };
         let cfg = lm_stratum::node_provider::ProviderConfig::new(
             claim_jackpots,
@@ -2451,10 +2486,7 @@ fn main() -> std::process::ExitCode {
         let worker_tokens = match &workers_file {
             Some(path) => match std::fs::read_to_string(path) {
                 Ok(content) => match lm_stratum::server::parse_workers_file(&content) {
-                    Ok(m) => {
-                        println!("auth: {} worker token(s) from {path}", m.len());
-                        Some(m)
-                    }
+                    Ok(m) => Some(m),
                     Err(e) => {
                         eprintln!("error: {path}: {e}");
                         return std::process::ExitCode::from(1);
@@ -2467,6 +2499,7 @@ fn main() -> std::process::ExitCode {
             },
             None => None,
         };
+        let token_count = worker_tokens.as_ref().map(|m| m.len());
         let tls = match (&tls_cert, &tls_key) {
             (Some(cert), Some(key)) => match lm_stratum::tls::server_config(
                 std::path::Path::new(cert),
@@ -2534,6 +2567,24 @@ fn main() -> std::process::ExitCode {
             "pool on {} (node provider {}{claims}); Ctrl-C to stop",
             server.addr(),
             node
+        );
+        // Operator status: the three things a restart must never leave
+        // ambiguous (chain, auth mode, state durability).
+        println!("chain: {chain_label} (node {node})");
+        println!(
+            "auth: {}",
+            match (&token_count, &pool_password) {
+                (Some(n), _) => format!("{n} worker token(s)"),
+                (None, Some(_)) => "pool password".to_string(),
+                (None, None) => "open".to_string(),
+            }
+        );
+        println!(
+            "state: {}",
+            match &state_file {
+                Some(p) => format!("file {}", p.display()),
+                None => "memory (a restart loses balances)".to_string(),
+            }
         );
         if let Some(path) = &state_file {
             if let Err(e) = load_state(&server, path) {
@@ -2613,6 +2664,11 @@ fn main() -> std::process::ExitCode {
             let payout_state = state_file.clone();
             std::thread::spawn(move || payout_loop(srv, node_cfg, cfg, hist, payout_state));
         }
+    } else if !mock {
+        eprintln!(
+            "error: no --node-rpc: pass --mock for the instant-block mock chain (dev/tests only)\n{USAGE}"
+        );
+        return std::process::ExitCode::from(2);
     } else {
         let tls = match (&tls_cert, &tls_key) {
             (Some(cert), Some(key)) => match lm_stratum::tls::server_config(
@@ -2647,6 +2703,7 @@ fn main() -> std::process::ExitCode {
             },
             None => None,
         };
+        let token_count = worker_tokens.as_ref().map(|m| m.len());
         let mut server = match spawn_server(
             MockProvider::new(pool_target, net_target, reward, fees),
             &addr.to_string(),
@@ -2663,6 +2720,24 @@ fn main() -> std::process::ExitCode {
         println!(
             "pool on {} (reward={reward} fees={fees}); Ctrl-C to stop",
             server.addr()
+        );
+        // Loud on purpose: the mock mines worthless blocks by design.
+        eprintln!("MOCK CHAIN — not connected to a node; blocks are worthless");
+        println!("chain: mock (instant blocks, no node)");
+        println!(
+            "auth: {}",
+            match (&token_count, &pool_password) {
+                (Some(n), _) => format!("{n} worker token(s)"),
+                (None, Some(_)) => "pool password".to_string(),
+                (None, None) => "open".to_string(),
+            }
+        );
+        println!(
+            "state: {}",
+            match &state_file {
+                Some(p) => format!("file {}", p.display()),
+                None => "memory (a restart loses balances)".to_string(),
+            }
         );
         if payout_threshold > 0 || payout_exec {
             eprintln!("note: payouts need node mode (--node-rpc); flags ignored on the mock chain");
