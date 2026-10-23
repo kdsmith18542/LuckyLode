@@ -77,6 +77,7 @@ to mine or run a pool, see the guides:
 
 ## Contributing and security
 
+- Changes: [CHANGELOG.md](CHANGELOG.md)
 - Contributions: [CONTRIBUTING.md](CONTRIBUTING.md)
 - Vulnerabilities: [SECURITY.md](SECURITY.md) — please report privately
 

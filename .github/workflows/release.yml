@@ -1,0 +1,50 @@
+name: release
+
+# Operator/CLI binaries only. The desktop wallet and Android APK need
+# extra toolchains (Tauri bundling, Android SDK/NDK) and are built from
+# their own README recipes until those jobs are added deliberately.
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  binaries:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install OpenCL headers (lm-miner links libOpenCL)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ocl-icd-opencl-dev
+      - name: Build release binaries
+        run: |
+          cargo build --release --locked \
+            -p lm-miner --bin lm-miner \
+            -p lm-stratum --bins \
+            -p lm-explorer --bin explorer \
+            -p lm-luckynode --bin luckynode \
+            -p lm-sync --bin lm-sync
+      - name: Package
+        run: |
+          mkdir -p dist
+          for b in lm-miner pool_server faucet monitor mock_pool explorer luckynode lm-sync; do
+            cp "target/release/$b" "dist/$b"
+          done
+          (cd dist && sha256sum * > SHA256SUMS)
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: lucky-lode-linux-x86_64
+          path: dist/*
+      - name: Attach to the GitHub release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
