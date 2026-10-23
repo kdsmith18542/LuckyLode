@@ -151,3 +151,46 @@ fn help_names_the_same_default_agent() {
         "default agent disagrees with --version"
     );
 }
+
+#[test]
+fn mine_requires_the_full_header() {
+    let out = bin()
+        .args(["mine", "--header", "00", "--height", "1", "--target", "max"])
+        .output()
+        .expect("run mine");
+    assert_eq!(out.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("80-byte"));
+}
+
+#[test]
+fn bench_json_stdout_is_pure_json_even_with_a_gpu() {
+    let out = bin()
+        .args(["bench", "--threads", "1", "--hashes", "1", "--json", "--device", "auto"])
+        .output()
+        .expect("run bench");
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let stdout = String::from_utf8(out.stdout).expect("utf8");
+    let t = stdout.trim();
+    assert!(t.starts_with('{') && t.ends_with('}'), "stdout must be one JSON object: {t:.200}");
+    assert_eq!(t.lines().count(), 1, "no extra stdout lines: {t:.200}");
+    assert!(t.contains("\"total_hashes\""));
+}
+
+#[test]
+fn pool_rejects_silently_ignored_flag_combinations() {
+    let base = [
+        "pool", "--pool", "127.0.0.1:1", "--worker",
+        "m1111111111111111111111111111111111", "--threads", "1",
+    ];
+    let cases: &[&[&str]] = &[
+        &["--v2-authority", "00"],
+        &["--tls-ca", "/nope.pem"],
+        &["--tls", "--v2"],
+    ];
+    for extra in cases {
+        let mut args: Vec<&str> = base.to_vec();
+        args.extend_from_slice(extra);
+        let out = bin().args(&args).output().expect("run pool");
+        assert_eq!(out.status.code(), Some(2), "args={args:?}");
+    }
+}

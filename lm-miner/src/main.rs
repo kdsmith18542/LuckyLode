@@ -33,10 +33,13 @@ const USAGE: &str = concat!(
   lm-miner bench [--threads N] [--hashes N] [--height H] [--header HEX] [--json] [--device auto|cpu|opencl] [--gpu-platform N] [--gpu-device N] [--gpu-batch N]
   lm-miner mine --header HEX --height H --target (HEX64 | nbits:XXXXXXXX | max) [--threads N] [--start N] [--count N] [--max-temp C] [--duty N] [--device auto|cpu|opencl] [--gpu-platform N] [--gpu-device N] [--gpu-batch N]
   lm-miner pool --pool HOST:PORT --worker NAME [--agent STR] [--threads N] [--start N] [--count N] [--max-shares N] [--job-timeout SECS] [--max-temp C] [--duty N] [--device auto|cpu|opencl] [--gpu-platform N] [--gpu-device N] [--gpu-batch N] [--password PASS] [--dev-fee-pct N] [--dev-address ADDR] [--tls [--tls-ca PEM] [--tls-server-name NAME] | --tls-insecure] [--v2 [--v2-authority URLKEY|HEX]]
-  lm-miner gpu-test [--platform N] [--device N]
+  lm-miner gpu-test [--gpu-platform N] [--gpu-device N]   (legacy --platform/--device accepted)
 
 bench defaults: threads=auto, hashes=3/thread, height=1, 80-byte 0x00..0x4F header.
+bench --json: stdout is exactly one JSON object (GPU chatter goes to stderr).
 mine defaults: threads=auto, start=0, count=1000000.
+pool --worker is your payout address (pools pay the worker name; a
+non-address name accrues a balance the pool holds).
 pool defaults: agent=",
     concat!("lm-miner/", env!("CARGO_PKG_VERSION")),
     ", threads=auto, start=0, count=1000000/job, max-shares=unlimited, job-timeout=30s.
@@ -45,7 +48,9 @@ device: cpu (default), auto (OpenCL when present, else CPU), opencl (hard error 
 gpu knobs: --gpu-platform 0, --gpu-device 0, --gpu-batch 512 (Argon2 instances per launch, 1 MiB VRAM each), --max-power W (board power limit via nvidia-smi -pl; needs driver permission).
 safety defaults: --max-temp 75 (pause above; 0 disables), --duty 100 (hash percent).
 --max-temp reads the CPU package sensor on CPU runs and the CARD sensor (AMD hwmon / nvidia-smi) on GPU runs; a proportional band below the cap avoids pause/resume sawtooth. The rate line reports gpu temp/power.
-exit: 0 found/done/session-complete, 1 exhausted/idle, 2 usage."
+exit: 0 found/done/session-complete, 1 --fail-fast session failure or
+exhausted nonce range, 2 usage. Without --fail-fast, pool mode keeps
+reconnecting on its own; it does not exit on an idle job stream."
 );
 
 fn default_threads() -> usize {
@@ -193,7 +198,7 @@ fn try_parse_gpu_flag(args: &[String], i: &mut usize, cfg: &mut GpuCfg) -> Resul
 
 /// Open the GPU when the selection asks for (or allows) it. `auto` falls
 /// back to CPU with a note; `opencl` is a hard error when unavailable.
-fn open_gpu(cfg: &GpuCfg) -> Result<Option<GpuSearcher>, String> {
+fn open_gpu(cfg: &GpuCfg, quiet: bool) -> Result<Option<GpuSearcher>, String> {
     if cfg.batch == 0 {
         return Err("--gpu-batch must be >= 1".to_string());
     }
@@ -215,10 +220,12 @@ fn open_gpu(cfg: &GpuCfg) -> Result<Option<GpuSearcher>, String> {
         if cfg.max_power_w > 0 {
             apply_power_limit(cfg.max_power_w);
         }
-        let (t, p) = gpu::gpu_status();
-        match p {
-            Some(w) => println!("gpu {}: {t}C, {w}W", g.name()),
-            None => println!("gpu {}: {t}C", g.name()),
+        if !quiet {
+            let (t, p) = gpu::gpu_status();
+            match p {
+                Some(w) => println!("gpu {}: {t}C, {w}W", g.name()),
+                None => println!("gpu {}: {t}C", g.name()),
+            }
         }
     }
     Ok(opened)
@@ -240,7 +247,7 @@ fn apply_power_limit(watts: u32) {
 
 /// Resolve the backend from options, announcing the GPU when one is used.
 fn make_backend(cfg: &GpuCfg, threads: usize) -> Result<Backend, String> {
-    match open_gpu(cfg)? {
+    match open_gpu(cfg, false)? {
         Some(g) => {
             println!("gpu: {} (batch {})", g.name(), g.batch());
             Ok(Backend::Gpu(g))
@@ -387,8 +394,11 @@ fn parse_mine(args: &[String]) -> Result<MineOpts, String> {
         i += 1;
     }
     let header = header.ok_or("--header is required")?;
-    if header.is_empty() {
-        return Err("--header must not be empty".to_string());
+    if header.len() != 80 {
+        return Err(format!(
+            "--header must be the full 80-byte block header (160 hex chars), got {} bytes",
+            header.len()
+        ));
     }
     Ok(MineOpts {
         header,
@@ -404,7 +414,7 @@ fn parse_mine(args: &[String]) -> Result<MineOpts, String> {
 }
 
 fn run_bench(o: &BenchOpts) {
-    let gpu = match open_gpu(&o.gpu) {
+    let gpu = match open_gpu(&o.gpu, o.json) {
         Ok(g) => g,
         Err(e) => {
             eprintln!("error: {e}");
@@ -413,7 +423,12 @@ fn run_bench(o: &BenchOpts) {
     };
     let report = match gpu {
         Some(g) => {
-            println!("gpu: {} (batch {})", g.name(), g.batch());
+            // --json keeps stdout to exactly one JSON object.
+            if o.json {
+                eprintln!("gpu: {} (batch {})", g.name(), g.batch());
+            } else {
+                println!("gpu: {} (batch {})", g.name(), g.batch());
+            }
             match g.bench(&o.header, o.height, o.hashes) {
                 Ok(r) => r,
                 Err(e) => {
@@ -668,6 +683,19 @@ fn parse_pool(args: &[String]) -> Result<PoolOpts, String> {
     if worker.is_empty() {
         return Err("--worker must not be empty".to_string());
     }
+    // Worker names double as the payout address on most pools. Warn (not
+    // fail): custom names are legal, but their balance is held until a
+    // real address is set.
+    let shaped = (33..=35).contains(&worker.len())
+        && worker.starts_with(['R', 'L', 'm', 'n', '2'])
+        && worker.bytes().all(|b| {
+            matches!(b, b'1'..=b'9' | b'A'..=b'H' | b'J'..=b'N' | b'P'..=b'Z' | b'a'..=b'k' | b'm'..=b'z')
+        });
+    if !shaped {
+        eprintln!(
+            "warning: --worker {worker:?} does not look like a chain address; many pools pay the worker name and will hold this balance"
+        );
+    }
     if threads == 0 {
         return Err("--threads must be >= 1".to_string());
     }
@@ -712,6 +740,20 @@ fn run_pool(o: &PoolOpts) -> ExitCode {
         eprintln!("error: {e}");
         return ExitCode::from(2);
     }
+    // Reject combinations that used to be parsed and silently dropped.
+    let tls_any = o.tls || o.tls_ca.is_some() || o.tls_insecure || o.tls_server_name.is_some();
+    if o.v2_authority.is_some() && !o.v2 {
+        eprintln!("error: --v2-authority only applies with --v2");
+        return ExitCode::from(2);
+    }
+    if tls_any && !o.tls {
+        eprintln!("error: --tls-ca/--tls-server-name/--tls-insecure require --tls");
+        return ExitCode::from(2);
+    }
+    if o.tls && o.v2 {
+        eprintln!("error: --tls applies to the V1 wire; V2 is already Noise-encrypted (drop --tls)");
+        return ExitCode::from(2);
+    }
     if o.dev_fee_pct <= 0.0 {
         eprintln!("note: dev fee disabled (--dev-fee-pct 0); consider supporting Lucky Lode development");
     } else if o.dev_address.as_deref().unwrap_or("").is_empty() {
@@ -727,7 +769,7 @@ fn run_pool(o: &PoolOpts) -> ExitCode {
     }
     // Backend first: the default agent advertises the device to the pool
     // (dashboard labels), so connect only once it is known.
-    let backend = match open_gpu(&o.gpu) {
+    let backend = match open_gpu(&o.gpu, false) {
         Ok(Some(g)) => {
             println!("gpu: {} (batch {})", g.name(), g.batch());
             Backend::Gpu(g)
@@ -868,22 +910,25 @@ fn run_gpu_test(args: &[String]) -> ExitCode {
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
-            "--platform" => {
+            "--gpu-platform" | "--platform" => {
                 i += 1;
                 platform = match args.get(i).and_then(|s| s.parse().ok()) {
                     Some(n) => n,
                     None => {
-                        eprintln!("error: --platform needs a value");
+                        eprintln!("error: --gpu-platform needs an OpenCL platform index");
                         return ExitCode::from(2);
                     }
                 };
             }
-            "--device" => {
+            "--gpu-device" | "--device" => {
                 i += 1;
                 device = match args.get(i).and_then(|s| s.parse().ok()) {
                     Some(n) => n,
                     None => {
-                        eprintln!("error: --device needs a value");
+                        let v = args.get(i).map(String::as_str).unwrap_or("");
+                        eprintln!(
+                            "error: gpu-test takes a device INDEX here (got {v:?}); use `lm-miner bench --device opencl` for backend selection"
+                        );
                         return ExitCode::from(2);
                     }
                 };
