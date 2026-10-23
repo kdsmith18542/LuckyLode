@@ -105,7 +105,29 @@ fn emission_card(tip: i64) -> String {
 }
 
 fn esc(s: &str) -> String {
-    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#39;")
+}
+
+/// An address object counts as seen on this chain when it received
+/// anything or has history rows (the fabricated unknown-address object
+/// has neither).
+fn address_seen(a: &serde_json::Value) -> bool {
+    a["received"].as_i64().unwrap_or(0) > 0
+        || !a["txs"].as_array().map(|t| t.is_empty()).unwrap_or(true)
+}
+/// checksum): the explorer shows any indexed address regardless, but an
+/// unknown string must at least look like an address to earn a page
+/// instead of a 404.
+fn address_shaped(s: &str) -> bool {
+    (33..=35).contains(&s.len())
+        && s.starts_with(['R', 'L', 'm', 'n', '2'])
+        && s.bytes().all(|b| {
+            matches!(b, b'1'..=b'9' | b'A'..=b'H' | b'J'..=b'N' | b'P'..=b'Z' | b'a'..=b'k' | b'm'..=b'z')
+        })
 }
 
 fn link_block(h: i64) -> String {
@@ -928,21 +950,45 @@ fn address_page(a: &serde_json::Value) -> String {
 }
 
 fn not_found(what: &str) -> String {
-    page("not found", format!("<p>Unknown {what}. {}</p>", search_box()))
+    html_resp_status(
+        &page("not found", format!("<p>Unknown {what}. {}</p>", search_box())),
+        "404 Not Found",
+    )
 }
 
 fn json_resp(v: &serde_json::Value) -> String {
+    json_resp_status(v, "200 OK")
+}
+
+fn json_resp_status(v: &serde_json::Value, status: &str) -> String {
     let body = serde_json::to_string(v).unwrap_or_default();
     format!(
-        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
         body.len(),
         body
     )
 }
 
+/// API misses are JSON errors (same status semantics as the pages,
+/// machine-readable).
+fn json_404() -> String {
+    json_resp_status(&serde_json::json!({"error": "not found"}), "404 Not Found")
+}
+
+/// Search answers real redirects (not meta-refresh): every target is
+/// built from validated input only (block digits, hex ids, or
+/// shape-checked addresses), so no user bytes can break the header.
+fn redirect(to: &str) -> String {
+    format!("HTTP/1.1 302 Found\r\nLocation: {to}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+}
+
 fn html_resp(body: &str) -> String {
+    html_resp_status(body, "200 OK")
+}
+
+fn html_resp_status(body: &str, status: &str) -> String {
     format!(
-        "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        "HTTP/1.1 {status}\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
         body.len(),
         body
     )
@@ -951,6 +997,11 @@ fn html_resp(body: &str) -> String {
 fn err404() -> String {
     let body = "not found";
     format!("HTTP/1.1 404 Not Found\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body)
+}
+
+fn err500() -> String {
+    let body = "index unavailable";
+    format!("HTTP/1.1 500 Internal Server Error\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body)
 }
 
 fn resolve_block(idx: &Indexer, key: &str) -> Option<serde_json::Value> {
@@ -979,17 +1030,21 @@ fn handle(idx: &mut Indexer, method: &str, path: &str) -> String {
     if let Some(key) = route.strip_prefix("/api/block/") {
         return match resolve_block(idx, key) {
             Some(b) => json_resp(&b),
-            None => err404(),
+            None => json_404(),
         };
     }
     if let Some(key) = route.strip_prefix("/api/tx/") {
         return match idx.tx(key).unwrap_or(None) {
             Some(t) => json_resp(&t),
-            None => err404(),
+            None => json_404(),
         };
     }
     if let Some(key) = route.strip_prefix("/api/address/") {
-        return json_resp(&idx.address(key).unwrap_or(serde_json::json!({"address": key, "balance": 0, "received": 0, "txs": []})));
+        let a = idx.address(key).unwrap_or(serde_json::json!({"address": key, "balance": 0, "received": 0, "txs": []}));
+        if address_seen(&a) || address_shaped(key) {
+            return json_resp(&a);
+        }
+        return json_404();
     }
     if route == "/api/tip" || route == "/api/stats" {
         return json_resp(&idx.stats().unwrap_or(serde_json::json!({"height": -1})));
@@ -1059,20 +1114,26 @@ fn handle(idx: &mut Indexer, method: &str, path: &str) -> String {
         return match resolve_block(idx, key) {
             Some(b) if json => json_resp(&b),
             Some(b) => html_resp(&block_page(idx, &b)),
-            None => html_resp(&not_found("block")),
+            None => not_found("block"),
         };
     }
     if let Some(key) = route.strip_prefix("/tx/") {
         return match idx.tx(key).unwrap_or(None) {
             Some(t) if json => json_resp(&t),
             Some(t) => html_resp(&tx_page(idx, &t)),
-            None => html_resp(&not_found("transaction")),
+            None => not_found("transaction"),
         };
     }
     if let Some(key) = route.strip_prefix("/address/") {
         let a = idx.address(key).unwrap_or(serde_json::json!({"address": key, "balance": 0, "received": 0, "txs": []}));
         if json {
             return json_resp(&a);
+        }
+        // Indexed addresses always render; an unknown string must at
+        // least look like an address or it is a typo (404, not a
+        // zero-balance page that reads as valid-but-empty).
+        if !address_seen(&a) && !address_shaped(key) {
+            return not_found("address");
         }
         return html_resp(&address_page(&a));
     }
@@ -1086,22 +1147,24 @@ fn handle(idx: &mut Indexer, method: &str, path: &str) -> String {
             return html_resp(&page("search", search_box()));
         }
         if q.parse::<u64>().is_ok() {
-            return html_resp(&format!("<head><meta http-equiv=refresh content=\"0;url=/block/{q}\"></head>"));
+            return redirect(&format!("/block/{q}"));
         }
         if q.len() == 64 && q.chars().all(|c| c.is_ascii_hexdigit()) {
             if resolve_block(idx, q).is_some() {
-                return html_resp(&format!("<head><meta http-equiv=refresh content=\"0;url=/block/{q}\"></head>"));
+                return redirect(&format!("/block/{q}"));
             }
             if idx.tx(q).unwrap_or(None).is_some() {
-                return html_resp(&format!("<head><meta http-equiv=refresh content=\"0;url=/tx/{q}\"></head>"));
+                return redirect(&format!("/tx/{q}"));
             }
+            return not_found("block or transaction");
         }
-        // Reflected input goes through esc(): the URL-encode sets make a
-        // browser-delivered exploit awkward, but the meta-refresh content
-        // attribute is double-quoted user input in an HTML document —
-        // escape it like every other interpolation.
-        let q = esc(q);
-        return html_resp(&format!("<head><meta http-equiv=refresh content=\"0;url=/address/{q}\"></head>"));
+        if address_shaped(q) {
+            return redirect(&format!("/address/{q}"));
+        }
+        return not_found("address");
+    }
+    if route.starts_with("/api/") {
+        return json_404();
     }
     err404()
 }
@@ -1148,7 +1211,67 @@ fn serve_one(stream: TcpStream, idx: Arc<Mutex<Indexer>>) {
     }
     let resp = match idx.lock() {
         Ok(mut i) => handle(&mut i, method, path),
-        Err(_) => err404(),
+        Err(_) => err500(),
     };
     let _ = (&stream).write_all(resp.as_bytes());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use lm_stratum::rpc::RpcClient;
+
+    fn test_indexer(name: &str) -> (Indexer, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(name);
+        let _ = std::fs::remove_file(&dir);
+        let rpc = RpcClient::new("127.0.0.1:1", "u", "p");
+        let idx = Indexer::open(dir.to_str().expect("path"), rpc).expect("open");
+        (idx, dir)
+    }
+
+    #[test]
+    fn esc_covers_quoted_attributes() {
+        assert_eq!(esc("\"onmouseover=x"), "&quot;onmouseover=x");
+        assert_eq!(esc("a'b"), "a&#39;b");
+        assert_eq!(esc("<img>"), "&lt;img&gt;");
+    }
+
+    #[test]
+    fn missing_blocks_txs_and_garbage_addresses_are_404() {
+        let (mut idx, dir) = test_indexer("explorer-http-test.db");
+        let r = handle(&mut idx, "GET", "/block/999999");
+        assert!(r.starts_with("HTTP/1.1 404"), "missing block: {r:.40}");
+        let r = handle(&mut idx, "GET", &format!("/tx/{}", "0".repeat(64)));
+        assert!(r.starts_with("HTTP/1.1 404"), "missing tx: {r:.40}");
+        let r = handle(&mut idx, "GET", "/address/not-an-address!!!");
+        assert!(r.starts_with("HTTP/1.1 404"), "garbage: {r:.40}");
+        let r = handle(&mut idx, "GET", "/nope");
+        assert!(r.starts_with("HTTP/1.1 404"));
+        // Unknown API routes are JSON 404s, not plain text.
+        let r = handle(&mut idx, "GET", "/api/bogus");
+        assert!(r.starts_with("HTTP/1.1 404"));
+        assert!(r.contains("application/json") && r.contains("\"error\""));
+        let r = handle(&mut idx, "GET", "/api/block/999999");
+        assert!(r.starts_with("HTTP/1.1 404") && r.contains("application/json"));
+        let _ = std::fs::remove_file(&dir);
+    }
+
+    #[test]
+    fn search_redirects_valid_input_and_rejects_garbage() {
+        let (mut idx, dir) = test_indexer("explorer-http-search-test.db");
+        let r = handle(&mut idx, "GET", "/search?q=12");
+        assert!(r.starts_with("HTTP/1.1 302") && r.contains("Location: /block/12"), "height: {r:.60}");
+        let r = handle(&mut idx, "GET", "/search?q=hello");
+        assert!(r.starts_with("HTTP/1.1 404"), "garbage: {r:.40}");
+        // Valid-shaped but unknown address: redirect to its (empty, with
+        // typo hint) page.
+        let shaped = format!("m{}", "1".repeat(33));
+        assert_eq!(shaped.len(), 34);
+        let r = handle(&mut idx, "GET", &format!("/search?q={shaped}"));
+        assert!(r.starts_with("HTTP/1.1 302") && r.contains(&format!("Location: /address/{shaped}")));
+        // Unknown 64-hex is neither block nor tx: 404, not an address page.
+        let r = handle(&mut idx, "GET", &format!("/search?q={}", "a".repeat(64)));
+        assert!(r.starts_with("HTTP/1.1 404"), "hex: {r:.40}");
+        let _ = std::fs::remove_file(&dir);
+    }
 }
