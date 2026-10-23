@@ -13,10 +13,13 @@
 //! `--job-timeout`, 2 = usage error. No third-party argument parser by design
 //! (portable, offline-buildable, auditable) — flags are `--name value`.
 
+#[cfg(feature = "opencl")]
 use lm_miner::gpu::GpuSearcher;
 use lm_miner::pool_loop::{Backend, Event, Outcome, PoolConfig, TlsCfg};
 use lm_miner::thermal::MiningPolicy;
-use lm_miner::{bench, gpu, opencl};
+#[cfg(feature = "opencl")]
+use lm_miner::opencl;
+use lm_miner::bench;
 use lm_pow::difficulty::compact_to_target;
 use std::process::ExitCode;
 use std::sync::atomic::AtomicBool;
@@ -140,7 +143,7 @@ impl Default for GpuCfg {
             sel: DeviceSel::Cpu,
             platform: 0,
             device: 0,
-            batch: gpu::DEFAULT_BATCH,
+            batch: 512, // gpu::DEFAULT_BATCH
             max_power_w: 0,
         }
     }
@@ -196,8 +199,21 @@ fn try_parse_gpu_flag(args: &[String], i: &mut usize, cfg: &mut GpuCfg) -> Resul
     Ok(true)
 }
 
+/// GPU sensor snapshot (temp °C, power W when available); CPU-only builds
+/// report "not applicable".
+#[cfg(feature = "opencl")]
+fn gpu_status() -> (i32, Option<u32>) {
+    lm_miner::gpu::gpu_status()
+}
+#[cfg(not(feature = "opencl"))]
+fn gpu_status() -> (i32, Option<u32>) {
+    (-1, None)
+}
+
 /// Open the GPU when the selection asks for (or allows) it. `auto` falls
 /// back to CPU with a note; `opencl` is a hard error when unavailable.
+/// Without the `opencl` feature, CPU works and anything else errors.
+#[cfg(feature = "opencl")]
 fn open_gpu(cfg: &GpuCfg, quiet: bool) -> Result<Option<GpuSearcher>, String> {
     if cfg.batch == 0 {
         return Err("--gpu-batch must be >= 1".to_string());
@@ -221,7 +237,7 @@ fn open_gpu(cfg: &GpuCfg, quiet: bool) -> Result<Option<GpuSearcher>, String> {
             apply_power_limit(cfg.max_power_w);
         }
         if !quiet {
-            let (t, p) = gpu::gpu_status();
+            let (t, p) = gpu_status();
             match p {
                 Some(w) => println!("gpu {}: {t}C, {w}W", g.name()),
                 None => println!("gpu {}: {t}C", g.name()),
@@ -234,6 +250,7 @@ fn open_gpu(cfg: &GpuCfg, quiet: bool) -> Result<Option<GpuSearcher>, String> {
 /// Apply a board power limit (doc 15 §15.5). nvidia-smi needs driver
 /// permission (often root); failure is a warning, never fatal — the
 /// thermal guard still bounds the card.
+#[cfg(feature = "opencl")]
 fn apply_power_limit(watts: u32) {
     match lm_miner::gpu::apply_power_limit(watts) {
         Ok(()) => println!("gpu power limit set to {watts} W"),
@@ -241,11 +258,18 @@ fn apply_power_limit(watts: u32) {
     }
 }
 
+/// CPU-only build: GPU selections are a clear usage error, CPU proceeds.
+#[cfg(not(feature = "opencl"))]
+fn open_gpu(_cfg: &GpuCfg, _quiet: bool) -> Result<(), String> {
+    Err("this build has no OpenCL support (built with --no-default-features): use --device cpu".to_string())
+}
+
 // The grind engine comes from the shared pool runtime now
 // (`lm_miner::pool_loop::Backend`): CPU threads or one GPU, the same
 // search every embedded miner uses.
 
 /// Resolve the backend from options, announcing the GPU when one is used.
+#[cfg(feature = "opencl")]
 fn make_backend(cfg: &GpuCfg, threads: usize) -> Result<Backend, String> {
     match open_gpu(cfg, false)? {
         Some(g) => {
@@ -254,6 +278,14 @@ fn make_backend(cfg: &GpuCfg, threads: usize) -> Result<Backend, String> {
         }
         None => Ok(Backend::Cpu { threads }),
     }
+}
+
+#[cfg(not(feature = "opencl"))]
+fn make_backend(cfg: &GpuCfg, threads: usize) -> Result<Backend, String> {
+    if cfg.sel != DeviceSel::Cpu {
+        open_gpu(cfg, false)?;
+    }
+    Ok(Backend::Cpu { threads })
 }
 
 struct BenchOpts {
@@ -414,6 +446,12 @@ fn parse_mine(args: &[String]) -> Result<MineOpts, String> {
 }
 
 fn run_bench(o: &BenchOpts) {
+    #[cfg(not(feature = "opencl"))]
+    if o.gpu.sel != DeviceSel::Cpu {
+        eprintln!("error: this build has no OpenCL support (built with --no-default-features)");
+        std::process::exit(2);
+    }
+    #[cfg(feature = "opencl")]
     let gpu = match open_gpu(&o.gpu, o.json) {
         Ok(g) => g,
         Err(e) => {
@@ -421,7 +459,10 @@ fn run_bench(o: &BenchOpts) {
             std::process::exit(2);
         }
     };
+    #[cfg(not(feature = "opencl"))]
+    let gpu: Option<()> = None;
     let report = match gpu {
+        #[cfg(feature = "opencl")]
         Some(g) => {
             // --json keeps stdout to exactly one JSON object.
             if o.json {
@@ -437,6 +478,8 @@ fn run_bench(o: &BenchOpts) {
                 }
             }
         }
+        #[cfg(not(feature = "opencl"))]
+        Some(()) => unreachable!(),
         None => match bench(&o.header, o.height, o.hashes, o.threads) {
             Some(r) => r,
             None => {
@@ -769,12 +812,8 @@ fn run_pool(o: &PoolOpts) -> ExitCode {
     }
     // Backend first: the default agent advertises the device to the pool
     // (dashboard labels), so connect only once it is known.
-    let backend = match open_gpu(&o.gpu, false) {
-        Ok(Some(g)) => {
-            println!("gpu: {} (batch {})", g.name(), g.batch());
-            Backend::Gpu(g)
-        }
-        Ok(None) => Backend::Cpu { threads: o.threads },
+    let backend = match make_backend(&o.gpu, o.threads) {
+        Ok(b) => b,
         Err(e) => {
             eprintln!("error: {e}");
             return ExitCode::from(2);
@@ -827,7 +866,10 @@ fn run_pool(o: &PoolOpts) -> ExitCode {
     // The CLI is a foreground service: no stop flag, console as the sink.
     let stop = AtomicBool::new(false);
     let pool = o.pool.clone();
+    #[cfg(feature = "opencl")]
     let gpu_backend = matches!(backend, Backend::Gpu(_));
+    #[cfg(not(feature = "opencl"))]
+    let gpu_backend = false;
     let mut sink = |ev: Event| match ev {
         Event::Connected { v2, worker, detail } => {
             let wire = if v2 { "pool(v2)" } else { "pool" };
@@ -844,7 +886,7 @@ fn run_pool(o: &PoolOpts) -> ExitCode {
         }
         Event::Rate { hps, hashes, window_secs } => {
             let gpu_note = if gpu_backend {
-                match gpu::gpu_status() {
+                match gpu_status() {
                     (t, Some(w)) => format!(" (gpu {t}C {w}W)"),
                     (t, None) if t >= 0 => format!(" (gpu {t}C)"),
                     _ => String::new(),
@@ -904,6 +946,13 @@ fn parse_v2_authority(s: &str) -> Result<[u8; 32], String> {
     Ok(k)
 }
 
+#[cfg(not(feature = "opencl"))]
+fn run_gpu_test(_args: &[String]) -> ExitCode {
+    eprintln!("error: gpu-test needs a build with the OpenCL feature (default on for desktop)");
+    ExitCode::from(2)
+}
+
+#[cfg(feature = "opencl")]
 fn run_gpu_test(args: &[String]) -> ExitCode {
     let mut platform = 0usize;
     let mut device = 0usize;
