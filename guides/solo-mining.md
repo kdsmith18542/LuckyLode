@@ -17,8 +17,8 @@ Three solo paths exist:
    node's coinbase pays, so the wallet refuses to start unless that is
    one of your addresses — point the node at your wallet first (Miner
    tab → *point node payouts at my wallet*, then restart the node), or
-   start the managed node with `-mineraddress=<YOUR-L-ADDRESS>
-   -minetolocalwallet=0`.
+   start the managed node with `-mineraddress=<YOUR-m-ADDRESS>
+   -minetolocalwallet=0` (testnet `m`/`n` prefixes — see below).
 1. **The node's own miner** (`luckyd -gen=1`, or `generate` on a local
    node) — claim-aware since 2026-10-21: on jackpot/pot draw heights the
    coinbase claims the exact bonus/splash for the miner. Point
@@ -42,8 +42,8 @@ is paid in the coinbase to the block finder — you.
 
 ## Requirements
 
-- `luckyd` + `pool_server` + `lm-miner` binaries (releases, or build from
-  source; see the repo README).
+- `luckyd` + `pool_server` + `lm-miner` binaries (build from source;
+  see the repo README).
 - A Lucky Lode receiving address (create one in the node wallet with
   `getnewaddress`; it starts with `L` on mainnet, `m`/`n` on testnet).
 - Any hardware that runs the miner: miniPC, laptop, desktop, low-end GPU.
@@ -52,12 +52,26 @@ is paid in the coinbase to the block finder — you.
 
 ## The three commands
 
-**1. Node** — the coinbase pays `-mineraddress` (your address):
+First create the node's config (the pool logs in with these — pick
+your own values):
 
 ```sh
-./luckyd -ac_algo=luckyhash -datadir=$HOME/.luckylode \
-  -mineraddress=<YOUR-L-ADDRESS> -daemon -listen=1
+# ~/.luckylodetest/LUCKYLODETEST.conf
+rpcuser=<pick-a-username>
+rpcpassword=<pick-a-long-password>
 ```
+
+**1. Node** — the coinbase pays `-mineraddress` (your testnet address):
+
+```sh
+./luckyd -ac_algo=luckyhash -testnet -datadir=$HOME/.luckylodetest \
+  -mineraddress=<YOUR-m-ADDRESS> -daemon -listen=1
+```
+
+Without `-testnet` (and the testnet datadir) you would start a
+mainnet-params node that cannot talk to the pool below — and `-testnet`
+binds RPC to `127.0.0.1:42253` by default, which is what step 2
+assumes.
 
 **2. Local pool** — node mode against your node; claims are automatic
 (jackpot/pot/prize from the node's exact advertisements — every find
@@ -71,6 +85,9 @@ would refuse is a loud rejected block, never silent bad money:
   --payout-threshold 0 --payout-interval 60 --payout-exec
 ```
 
+`<U>`/`<P>` are the `rpcuser`/`rpcpassword` from the node config
+above; `42253` is the flagless `-testnet` RPC port.
+
 Claims are automatic (jackpot/pot/prize/faucet/dev from the node's
 exact advertisements — no `--claim-*` flags needed; `--no-claim-*`
 opts out). Faucet/dev legs are pool-claimed seed drips, not miner
@@ -82,7 +99,7 @@ you — jackpot + pot are yours in full.
 **3. Miner** — pointed at your pool, worker name = your payout address:
 
 ```sh
-./lm-miner pool --pool 127.0.0.1:3344 --worker <YOUR-L-ADDRESS> \
+./lm-miner pool --pool 127.0.0.1:3344 --worker <YOUR-m-ADDRESS> \
   --threads <N> --max-temp 80 --duty 50
 ```
 
