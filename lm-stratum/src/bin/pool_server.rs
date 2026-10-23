@@ -103,7 +103,7 @@ footer{margin-top:26px;color:var(--dim);font-size:12px;line-height:1.5}
 <h2>Blocks</h2>
 <div class="twrap"><table><thead><tr><th>height</th><th>finder</th><th>block reward</th><th>jackpot bonus</th><th>pot splash</th><th>prize inflow</th><th>draw claim</th><th>pplns payouts</th></tr></thead><tbody id="blocks"></tbody></table></div>
 <h2>Payouts</h2>
-<p class="muted">Sent payouts with txids. Your own due/paid balances live on the <b>My miner</b> tab (worker-token auth).</p>
+<p class="muted">Sent payouts with txids. Your own due/paid balances live on the <b>My miner</b> tab — worker token on token pools, worker-name lookup on open pools.</p>
 <div class="twrap"><table><thead><tr><th>time</th><th>worker</th><th>amount</th><th>txid</th></tr></thead><tbody id="payouts"></tbody></table></div><div class="muted" id="pool-totals"></div>
 </section>
 <section id="tab-start">
@@ -153,9 +153,9 @@ footer{margin-top:26px;color:var(--dim);font-size:12px;line-height:1.5}
 
 <section id="tab-miner">
 <h2>My miner</h2>
-<p>Paste your worker token (the token from your pool password / the operator's <code>--workers-file</code>) to see your own stats and set where and when you get paid. The token never leaves this page except to this pool's own API.</p>
+<p>Paste your <b>worker token</b> (token pools: the operator's <code>--workers-file</code> entry for your worker) or your <b>worker name / address</b> (open pools, where every row is public). Tokens unlock payout settings; a worker name is read-only — on an open pool payouts go straight to the worker name, so make it your payout address. Secrets typed here never leave this page except to this pool's own API.</p>
 <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:10px 0">
-  <input id="mtoken" type="password" placeholder="worker token" style="max-width:280px">
+  <input id="mtoken" type="password" placeholder="worker token or worker name" style="max-width:280px">
   <button class="tabbtn" id="mload">Load my miner</button>
   <span id="mmsg" style="color:var(--dim)"></span>
 </div>
@@ -167,7 +167,10 @@ footer{margin-top:26px;color:var(--dim);font-size:12px;line-height:1.5}
     <label>threshold (<span class="mtick">tLKYL</span>) <input id="mthr" placeholder="pool default" style="max-width:130px"></label>
     <button class="tabbtn" id="msave">Save</button>
   </div>
-  <p style="color:var(--dim);font-size:12px">Payouts send automatically once your balance reaches the threshold. Leave the address empty (or the threshold at 0) to use the defaults.</p>
+  <p style="color:var(--dim);font-size:12px">Payouts send automatically once your balance reaches the threshold. Leave the address empty (or the threshold at 0) to use the defaults. The threshold is a decimal coin amount (empty clears the override); anything else is rejected, not silently cleared.</p>
+</div>
+<div id="mopen" style="display:none;margin-top:12px">
+  <p style="color:var(--dim);font-size:12px">Open pool, no worker tokens: your worker name <b>is</b> the payout destination (point it at your address), the pool default threshold applies, and these numbers are public to anyone who asks for this worker. Custom payout settings need a token pool.</p>
 </div>
 </section>
 <footer id="note"></footer>
@@ -276,41 +279,87 @@ async function tick(){
   document.getElementById('err').textContent='';
  }catch(e){document.getElementById('err').textContent='stats fetch failed: '+e;}
 }
-// My miner: token-authenticated stats + payout settings.
+// My miner: token-authenticated stats + payout settings, with an
+// open-pool fallback. A token Bearer against api/miner unlocks the
+// settings form; otherwise the input is tried as a worker name against
+// the public api/worker row (read-only — open pools have no tokens and
+// payout settings stay pool defaults). Failure order matters: a token
+// pool 403s the worker lookup for strangers, so report the token error.
 let mtok='';
-async function loadMiner(){
-  mtok=document.getElementById('mtoken').value.trim();
+function minerCards(rows){
+  return '<div class="grid">'+rows+'</div>';
+}
+function statCard(k,v,cls){return '<div class="card"><div class="k">'+k+'</div><div class="v'+(cls?' '+cls:'')+'">'+v+'</div></div>';}
+async function loadMiner(keepMsg){
+  const input=document.getElementById('mtoken').value.trim();
   const msg=document.getElementById('mmsg');
-  if(!mtok){msg.textContent='enter your worker token';return;}
+  if(!input){msg.textContent='enter your worker token or worker name';return;}
+  // Token path first: the only route that unlocks payout settings.
   try{
-    const r=await fetch('api/miner',{cache:'no-store',headers:{Authorization:'Bearer '+mtok}});
+    const r=await fetch('api/miner',{cache:'no-store',headers:{Authorization:'Bearer '+input}});
     const j=await r.json();
-    if(!r.ok||j.error)throw new Error(j.error||r.statusText);
-    const m=j.miner;
-    document.getElementById('mstats').innerHTML='<div class="grid">'+
-      '<div class="card"><div class="k">worker</div><div class="v">'+esc(m.name)+'</div></div>'+
-      '<div class="card"><div class="k">device</div><div class="v">'+esc(device(m.agent))+'</div></div>'+
-      '<div class="card"><div class="k">60s / 10m</div><div class="v">'+hs(m.rates[0])+' · '+hs(m.rates[1])+'</div></div>'+
-      '<div class="card"><div class="k">shares / rejects</div><div class="v">'+esc(m.shares)+' / '+esc(m.rejects)+'</div></div>'+
-      '<div class="card"><div class="k">owed</div><div class="v gold">'+coin8(m.owed)+'</div></div>'+
-      '<div class="card"><div class="k">paid</div><div class="v">'+coin8(m.paid)+'</div></div></div>';
-    document.getElementById('maddr').value=j.settings.address||'';
-    document.getElementById('mthr').value=j.settings.threshold_coins||'';
-    document.getElementById('msettings').style.display='block';
-    msg.textContent='loaded · pool default threshold '+j.defaults.threshold_coins+' tLKYL';
-  }catch(e){msg.textContent=e.message;
-    document.getElementById('mstats').innerHTML='';
-    document.getElementById('msettings').style.display='none';}
+    if(r.ok&&!j.error){
+      mtok=input;
+      const m=j.miner;
+      document.getElementById('mstats').innerHTML=minerCards(
+        statCard('worker',esc(m.name))+
+        statCard('device',esc(device(m.agent)))+
+        statCard('60s / 10m',hs(m.rates[0])+' · '+hs(m.rates[1]))+
+        statCard('shares / rejects',esc(m.shares)+' / '+esc(m.rejects))+
+        statCard('owed',coin8(m.owed),'gold')+
+        statCard('paid',coin8(m.paid)));
+      document.getElementById('maddr').value=j.settings.address||'';
+      document.getElementById('mthr').value=j.settings.threshold_coins||'';
+      document.getElementById('msettings').style.display='block';
+      document.getElementById('mopen').style.display='none';
+      msg.textContent=keepMsg||('loaded · pool default threshold '+j.defaults.threshold_coins+' '+TICK);
+      return;
+    }
+  }catch(e){/* fall through to the worker-name path */}
+  // Open-pool path: public row, no settings.
+  try{
+    const r=await fetch('api/worker/'+encodeURIComponent(input),{cache:'no-store'});
+    const j=await r.json();
+    if(r.ok&&!j.error){
+      mtok='';
+      const div=j.division_class?('division '+esc(j.division_class)+' #'+esc(j.division_rank)+'/'+esc(j.division_size)):'unranked this season';
+      const seen=j.online?'online':(j.last_seen?('idle (last seen '+ago(j.last_seen)+')'):'idle');
+      document.getElementById('mstats').innerHTML=minerCards(
+        statCard('worker',esc(j.name||j.miner))+
+        statCard('device',esc(device(j.agent)))+
+        statCard('60s / 10m',hs(j.rate60)+' · '+hs(j.rate10m))+
+        statCard('shares / rejects',esc(j.shares)+' / '+esc(j.rejects))+
+        statCard('streak',j.streak?(esc(j.streak)+'d'+(j.best_streak>j.streak?' (best '+esc(j.best_streak)+'d)':'')):'—')+
+        statCard('division',div)+
+        statCard('status',seen)+
+        statCard('owed',coin8(j.owed),'gold')+
+        statCard('paid',coin8(j.paid)));
+      document.getElementById('msettings').style.display='none';
+      document.getElementById('mopen').style.display='block';
+      msg.textContent=keepMsg||('loaded '+(j.name||j.miner)+' · open pool (read-only)');
+      return;
+    }
+    msg.textContent=r.status===403
+      ?'this pool needs a worker token for that name — paste the token instead'
+      :'never seen on this pool — check the worker name';
+  }catch(e){msg.textContent='lookup failed: '+e;}
+  document.getElementById('mstats').innerHTML='';
+  document.getElementById('msettings').style.display='none';
+  document.getElementById('mopen').style.display='none';
 }
 async function saveMinerSettings(){
   const msg=document.getElementById('mmsg');
+  if(!mtok){msg.textContent='payout settings need a worker token (open-pool rows are read-only)';return;}
+  const thr=document.getElementById('mthr').value.trim();
+  // Validate client-side: the API treats junk as "clear", which would
+  // silently drop a threshold on a typo.
+  if(thr&&!/^\d+(\.\d{1,8})?$/.test(thr)){msg.textContent='threshold must be a decimal coin amount (empty clears it)';return;}
   try{
     const r=await fetch('api/payout/settings',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({token:mtok,address:document.getElementById('maddr').value.trim(),threshold:document.getElementById('mthr').value.trim()})});
+      body:JSON.stringify({token:mtok,address:document.getElementById('maddr').value.trim(),threshold:thr})});
     const j=await r.json();
     if(!r.ok||j.error)throw new Error(j.error||r.statusText);
-    msg.textContent=j.cleared?'settings cleared — defaults apply':'saved';
-    await loadMiner();
+    await loadMiner(j.cleared?'settings cleared — defaults apply':'saved');
   }catch(e){msg.textContent=e.message;}
 }
 document.getElementById('mload').onclick=loadMiner;
@@ -3217,6 +3266,19 @@ mod tests {
         assert_eq!(status, "200 OK");
         assert!(body.contains("\"owed\""));
         open.stop();
+    }
+
+    #[test]
+    fn my_miner_falls_back_to_worker_lookup() {
+        // Token pools gate /api/miner; open pools have no tokens at all.
+        // The tab tries the token route first, then the public worker
+        // row (read-only — settings stay token-only), and validates the
+        // threshold client-side instead of letting junk silently clear it.
+        assert!(INDEX_HTML.contains("fetch('api/miner'"));
+        assert!(INDEX_HTML.contains("fetch('api/worker/'+encodeURIComponent(input)"));
+        assert!(INDEX_HTML.contains("id=\"mopen\""));
+        assert!(INDEX_HTML.contains("/^\\d+(\\.\\d{1,8})?$/"));
+        assert!(INDEX_HTML.contains("open-pool rows are read-only"));
     }
 
     #[test]
