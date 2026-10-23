@@ -84,7 +84,8 @@ pub fn jackpot_threshold(target: U256) -> U256 {
 }
 
 /// Jackpot check on a big-endian PoW digest: `out < floor(T / 100)`.
-/// Same strict-less semantics as [`crate::meets_target`]; equal is not a win.
+/// Strict `<` against the *threshold* here (unlike [`crate::meets_target`],
+/// which is `<=` against the target); equal is not a win.
 #[must_use]
 pub fn is_jackpot(out_be: &[u8; 32], target: U256) -> bool {
     let thr_be = jackpot_threshold(target).to_big_endian();

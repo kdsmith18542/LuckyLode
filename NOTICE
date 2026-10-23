@@ -44,5 +44,8 @@ Fair-launch note
 ----------------
 
 Lucky Lode has no premine, no ICO, and no team allocation. The genesis
-game-fund seed is consensus state that pays miners only (see docs/06 and
-docs/04).
+game-fund seed (jackpot + pot) is consensus state that pays miners
+through the payout rules (see docs/06 and docs/04); the prize-fund
+seed pays Luckynode Draw winners and the faucet/dev reserves pay
+capped operational claims the same way — no genesis output is
+spendable by anyone except through the rules.

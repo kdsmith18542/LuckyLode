@@ -3,9 +3,12 @@
 ## 4.1 Emission: fair + forever (anti-fade by construction)
 
 - **No premine, no ICO** (non-negotiable for the narrative; TRTL lesson).
-  The only genesis allocation is the **game-fund seed** (doc 06 §6.2/§6.6):
-  consensus-locked, no keys, no address, spendable only through the
-  jackpot/pot payout rules — it pays miners, never insiders.
+  The genesis seeds are consensus-locked balances with no keys and no
+  spendable outputs: the **game-fund seed** (jackpot + pot, doc 06
+  §6.2/§6.6) pays miners through the payout rules; the **prize-fund
+  seed** (doc 06 §6.7) pays Luckynode Draw winners; the **faucet/dev
+  reserves** (§4.2) pay capped operational claims. None of it pays
+  insiders — every satoshi leaves only through the rules.
 - **Emission schedule — LOCKED 2026-10-13** (60 s blocks, 1,440/day):
   - **Week 1 (blocks 1–10,080): linear ramp 0 → 16 LKYL/block.** Early
     miners earn in proportion to hash as the reward climbs — no block-1
@@ -23,9 +26,10 @@
   jackpot-reserve overflow feeds the prize fund, pot overflow burns.
   Expectation-neutral by construction — the game layer redistributes
   miner-earned value, it never mints.
-- **Luckynodes** (docs/11 §11.6 Direction A,: cheap-bond
-  service nodes paid from fun-layer budgets (prize fund), **never from
-  inflation** — so the emission schedule funds only PoW miners and PoS
+- **Luckynodes** (docs/11 §11.6, doc 06 §6.7): on-chain `ln-*`
+  identities whose heartbeats enter the consensus Luckynode Draw, paid
+  from the prize fund — **never from inflation** and never through pool
+  custody — so the emission schedule funds only PoW miners and PoS
   stakers.
 - Fees: minimal anti-spam floor; no fee burns at launch (keep the economy
   legible while small).
@@ -104,9 +108,10 @@ testnet incident or a known gap):**
   as of 2026-10-17) — until then the wallet keeps signing the sprout
   format the chain validates.
 - **Default-port truth:** fresh-install defaults come from chainparams
-  only (P2P 9270/RPC 9271 mainnet, 19270/19271 testnet, doc 13 §13.3);
-  per-install conf overrides are documented, never baked into software
-  defaults.
+  only (mainnet P2P 9270/RPC 9271, testnet P2P 19270/RPC **42253** —
+  the flagless `-testnet` default, verified on a clean datadir, doc 13
+  §13.3); per-install conf overrides are documented, never baked into
+  software defaults.
 
 ## 4.4 Phased roadmap
 

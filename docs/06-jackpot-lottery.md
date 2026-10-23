@@ -157,9 +157,9 @@ issuance. Executable spec: `lm-rewards/src/pot.rs`; consensus:
   (unspendable by construction). The jackpot reserve's overflow instead
   feeds the prize fund (§6.2) — different valves for different funds.
 - **Who can win:** draws are gated to **PoW finders** in consensus (the
-  locked 2026-10-13 rule); PoS blocks never claim. The pity splash lands
+  locked 2026-10-13 rule); PoS blocks never claim. The   pity splash lands
   on the next finder regardless of the draw class. Stakers get their game-layer luck through the **Luckynode
-  Draw**, a separate pool-side event — the finder's prize is
+  Draw**, a consensus epoch draw (§6.7 below) — the finder's prize is
   never diluted.
 - **Testnet gates (extend §6.5):** ≥20,000 blocks with the pot event rate
   inside [0.05%, 0.2%], pity-timer firings as expected, and exact
@@ -216,9 +216,9 @@ controller). Registering `ln-<yourname>@` **is** registration:
 
 - Epoch `E` spans heights `[E·epoch, (E+1)·epoch)`; `epoch = 2880`
   mainnet (~48 h), 3 on testnet — unchanged from the v1 cadence.
-- **Seed:** `SHA256D(blockhash(E·epoch − epoch) ‖ (E+1)·epoch)` — the
-  epoch-start block hash plus the boundary height, fixed a full epoch
-  before the draw. Same pre-commitment posture as §6.1: nothing to
+- **Seed:** `SHA256D(blockhash((E−1)·epoch) ‖ E·epoch)` — the
+  previous epoch's start-block hash plus this epoch's boundary height,
+  fixed a full epoch before the draw. Same pre-commitment posture as §6.1: nothing to
   withhold, no grind surface.
 - **Winner:** `u64(seed[..8]) % Σweights`, walked id-ascending — the
   exact v1 `draw_winner` math (mirrored in `lm-rewards::prize`), computed
@@ -232,7 +232,7 @@ controller). Registering `ln-<yourname>@` **is** registration:
   pays the release; the slice scales with hashrate. No pity timer —
   the formula self-throttles.
 - **Claim (directed, like the seed funds):** any block in epoch
-  `E+1` may carry a coinbase output paying the **winner's registered
+  `E` may carry a coinbase output paying the **winner's registered
   primary-address script**, up to the epoch budget. `ConnectBlock`
   recomputes the winner from parent identity state and validates the
   script and amount — a computed pin, not a chainparams one.

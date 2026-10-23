@@ -9,26 +9,27 @@ auditable on-chain.
 
 ## The coin
 
-- **No premine, no ICO, no team allocation.** The only genesis
-  allocation is a consensus-locked game fund with no keys and no
-  address — it pays miners through the jackpot and pot rules and can be
-  verified from genesis by any node.
+- **No premine, no ICO, no team allocation.** The genesis seeds are
+  consensus-locked balances with no keys and no spendable outputs: a
+  **game fund** (jackpot + pot) that pays miners, a **prize fund** that
+  pays Luckynode Draw winners, and **faucet/dev reserves** that pay
+  capped operational claims. Every satoshi leaves through the rules —
+  verifiable from genesis by any node.
 - **Emission:** 60-second blocks. Week one ramps linearly from 0 to 16
   LKYL per block (no block-1 spike to front-run); the reward halves
   every two years (16 → 8 → 4 → 2), then pays a fixed **1 LKYL per
   block forever** — miners never face a fees-only future. Roughly
   31.6M LKYL over the first eight years, plus ~526k per year of tail.
 - **Hybrid consensus:** 50% PoW / 50% PoS by design from genesis
-  (consensus accepts either block type at any height). In practice the
-  first PoS blocks only appear once stakers hold mature coins
-  (coinbase maturity is 100 blocks), so a fresh chain is PoW-only for
-  roughly its first hundred-plus blocks — the testnet showed zero PoS
-  blocks through h122 for exactly this reason. The proof of
+  (consensus accepts either block type at any height). In practice a
+  fresh chain is PoW-only until coins mature (coinbase maturity is 100
+  blocks); after that either block type validates. The proof of
   work is **LuckyHash**, a purpose-built Argon2id construction (1 MiB,
   height-bound salt, frozen public test vectors — doc 05), chosen for
   low-end hardware over raw speed. Staking mints from the node wallet;
-  bonded service nodes ("luckynodes") are paid from game budgets, never
-  from inflation.
+  **luckynodes** are on-chain `ln-*` identities whose heartbeats enter
+  the consensus Luckynode Draw — no bond, no pool custody, paid from
+  the prize fund, never from inflation.
 - **Game layer (funded by a 5% block levy, expectation-neutral by
   construction):**
   - **Jackpot blocks** (~1 per 100): the finder earns a bonus up to
@@ -37,7 +38,8 @@ auditable on-chain.
     pot on pre-committable, verifiable draw outcomes.
   - **Luck classes:** every block lands in one of ten themed classes
     (mythic, aurora, comet, beacon, bonfire, cinder, ember, flare,
-    glint, spark) that fund bonuses and division prizes.
+    glint, spark) — a display/flavor layer, not consensus: classes
+    fund nothing today.
   - **Divisions and streaks** run pool-side on the same auditable
     ledger; the **Luckynode Draw** is consensus money (doc 06 §6.7) —
     stakers enter it with on-chain `ln-*` identities rather than

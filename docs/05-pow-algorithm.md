@@ -21,7 +21,7 @@ salt = "LMv1" || height_le64                         # 12 B, binds block height
 mem  = Argon2id(seed, salt, AD="lowmine-pow/v1",
                 m=1024 KiB, t=3, p=1, out=32)        # the memory-hard pass
 out  = BLAKE3(mem || seed)                           # 32 B final digest
-valid ⇔ uint256_be(out) < target                     # target from nBits (§5.3)
+valid ⇔ uint256_be(out) <= target                 # target from nBits (§5.3)
 ```
 
 Reference: Argon2 v0x13, BLAKE3 (2020-01-04+ behavior). All integers
