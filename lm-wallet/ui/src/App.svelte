@@ -23,11 +23,19 @@
   let legacy = $state(false);
   let phrase = $state<string | null>(null);
   let confirmBackup = $state(false);
-  let restoreInput = $state("");
   let setupErr = $state("");
   let busy = $state(false);
   let pw = $state("");
   let pw2 = $state("");
+  // First-run form state: create and restore are separate tabs with
+  // separate password fields (sharing one variable used to mirror
+  // typing across both forms).
+  let firstTab = $state<"create" | "restore">("create");
+  let cpw = $state("");
+  let cpw2 = $state("");
+  let rPhrase = $state("");
+  let rpw = $state("");
+  let rpw2 = $state("");
   // Lock-screen recovery uses its own fields so typing a recovery phrase
   // never mutates the unlock/create password state.
   let showRecover = $state(false);
@@ -55,10 +63,10 @@
     busy = true;
     setupErr = "";
     try {
-      const r: any = await api.walletCreate(pw);
+      const r: any = await api.walletCreate(cpw);
       phrase = r.phrase;
-      pw = "";
-      pw2 = "";
+      cpw = "";
+      cpw2 = "";
       // Stay on this screen until the phrase is acknowledged (Continue):
       // re-checking here used to flip straight into the wallet and hide
       // the seed before it could be written down (2026-10-16).
@@ -72,10 +80,10 @@
     busy = true;
     setupErr = "";
     try {
-      await api.walletRestore(restoreInput.trim(), pw);
-      restoreInput = "";
-      pw = "";
-      pw2 = "";
+      await api.walletRestore(rPhrase.trim(), rpw);
+      rPhrase = "";
+      rpw = "";
+      rpw2 = "";
       hasWallet = true;
       locked = false;
       legacy = false;
@@ -215,20 +223,31 @@
             The node is just a data source and broadcast relay. Set a spending password —
             you'll enter it every time the app opens.
           </p>
-          <label for="npw">spending password (min 8 characters, encrypts the seed)</label>
-          <input id="npw" type="password" bind:value={pw} spellcheck="false" />
-          <label for="npw2">repeat password</label>
-          <input id="npw2" type="password" bind:value={pw2} spellcheck="false" />
-          <div class="row" style="margin-top:10px">
-            <button class="btn primary" disabled={busy || pw.length < 8 || pw !== pw2} onclick={createWallet}>Create new wallet</button>
+          <div class="row" style="margin-bottom:12px">
+            <button class="btn" class:primary={firstTab === "create"} disabled={busy} onclick={() => { firstTab = "create"; setupErr = ""; }}>New wallet</button>
+            <button class="btn" class:primary={firstTab === "restore"} disabled={busy} onclick={() => { firstTab = "restore"; setupErr = ""; }}>Restore from phrase</button>
           </div>
-          <label for="rest" style="margin-top:14px">or restore from backup phrase</label>
-          <input id="rest" bind:value={restoreInput} placeholder="twelve words separated by spaces" spellcheck="false" />
-          <label for="rpw">spending password for this install</label>
-          <input id="rpw" type="password" bind:value={pw} spellcheck="false" />
-          <div class="row">
-            <button class="btn" disabled={busy || !restoreInput.trim() || pw.length < 8} onclick={restoreWallet}>Restore</button>
-          </div>
+          {#if firstTab === "create"}
+            <label for="npw">spending password (min 8 characters, encrypts the seed)</label>
+            <input id="npw" type="password" bind:value={cpw} spellcheck="false" />
+            <label for="npw2">repeat password</label>
+            <input id="npw2" type="password" bind:value={cpw2} spellcheck="false" />
+            {#if cpw && cpw2 && cpw !== cpw2}<div class="err">passwords do not match</div>{/if}
+            <div class="row" style="margin-top:10px">
+              <button class="btn primary" disabled={busy || cpw.length < 8 || cpw !== cpw2} onclick={createWallet}>{busy ? "creating…" : "Create new wallet"}</button>
+            </div>
+          {:else}
+            <label for="rest">12-word backup phrase</label>
+            <input id="rest" bind:value={rPhrase} placeholder="twelve words separated by spaces" spellcheck="false" />
+            <label for="rpw">spending password for this install (min 8 characters)</label>
+            <input id="rpw" type="password" bind:value={rpw} spellcheck="false" />
+            <label for="rpw2">repeat password</label>
+            <input id="rpw2" type="password" bind:value={rpw2} spellcheck="false" />
+            {#if rpw && rpw2 && rpw !== rpw2}<div class="err">passwords do not match</div>{/if}
+            <div class="row" style="margin-top:10px">
+              <button class="btn primary" disabled={busy || !rPhrase.trim() || rpw.length < 8 || rpw !== rpw2} onclick={restoreWallet}>{busy ? "restoring…" : "Restore"}</button>
+            </div>
+          {/if}
         {:else}
           <b>Write these 12 words down — they are the only way to recover your funds.</b>
           <div class="addr" style="word-break:break-word;margin:10px 0;font-size:15px">{phrase}</div>
