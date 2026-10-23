@@ -139,7 +139,7 @@ footer{margin-top:26px;color:var(--dim);font-size:12px;line-height:1.5}
 <h2>API</h2>
 <p>Endpoints are relative to this page's path, so they work behind <code>/pool/</code> too:</p>
 <table><thead><tr><th>endpoint</th><th>returns</th></tr></thead><tbody>
-<tr><td><code>GET api/stats</code></td><td>pool, workers, blocks, payouts, game state, division boards (JSON) — per-worker owed/paid are NOT here; see My miner</td></tr>
+  <tr><td><code>GET api/stats</code></td><td>pool, workers, blocks, payouts, game state, division boards (JSON) + current-epoch draw status (<code>draw</code>: epoch/budget/remaining/winner) — per-worker owed/paid are NOT here; see My miner</td></tr>
 <tr><td><code>GET api/divisions</code></td><td>season division boards per device class (30-day effective work; ranks, streaks, attestation flags)</td></tr>
 <tr><td><code>GET api/worker/&lt;miner&gt;</code></td><td>one worker's public row, alive or idle (streak + division rank survive workerstats age-out; 404 when never seen) — owed/paid are included on open pools, and only with the matching worker token (<code>Authorization: Bearer</code>) when the pool runs a workers file</td></tr>
 <tr><td><code>GET api/miner</code> with <code>Authorization: Bearer &lt;token&gt;</code></td><td>your own row + payout settings (worker-token auth — the token is a header, never a URL)</td></tr>
@@ -219,6 +219,7 @@ async function tick(){
   add('shares', j.pool.shares); add('rejects', j.pool.rejects);
   add('blocks found', j.pool.blocks); add('prize fund', coin((j.jackpot||{}).prize));
   if(j.jackpot){add('jackpot reserve', coin(j.jackpot.reserve)); add('lucky pot', coin(j.jackpot.pot)); add('pot drought', j.jackpot.drought+' / '+(j.jackpot.potdrought||4320)+' blocks');}
+  if(j.draw&&j.draw.epoch>0){add('draw epoch', j.draw.epoch); add('draw budget', coin(j.draw.budget)); add('draw remaining', coin(j.draw.remaining)); add('draw winner', (j.draw.winner||'').slice(0,12)+'…');}
   // Faucet/dev reserves and stake supply are NOT pool cards: this page is the
   // miners' view (hashrate, payouts, winnable game layer). Treasury numbers
   // live on the faucet page (faucet reserve) and the explorer game page
@@ -457,6 +458,13 @@ fn stats_json<P: TemplateProvider + 'static>(
             })
         })
         .collect();
+    let d = server.latest_draw();
+    let draw_json = serde_json::json!({
+        "epoch": d.epoch,
+        "budget": d.budget,
+        "remaining": d.remaining,
+        "winner": d.winner,
+    });
     let mut obj = serde_json::json!({
         "mode": mode,
         "network": {
@@ -503,6 +511,10 @@ fn stats_json<P: TemplateProvider + 'static>(
                 .map(|(height, amount)| serde_json::json!({"height": height, "amount": amount}))
                 .collect::<Vec<_>>(),
         },
+        // Current-epoch Luckynode Draw advisory (display only — claims
+        // are spliced from the same node data at template build).
+        // Epoch 0 = no advisory (mock provider or pre-draw node).
+        "draw": draw_json,
     });
     if let Some((addr, user, pass)) = node {
         let rpc = RpcClient::new(addr, user, pass);

@@ -13,7 +13,7 @@
 //! the pool's check is advisory, the chain's authoritative, and only the
 //! chain mints money.
 
-use crate::provider::TemplateProvider;
+use crate::provider::{JobTemplate, TemplateProvider};
 use crate::v1::{
     error_response, notify, response, work_for_share, Dedupe, Job, JobRegistry, Message,
     Verdict,
@@ -146,6 +146,17 @@ const IDLE_DEADLINE_SECS: u64 = 120;
 /// uncapped open-flood grew memory per channel forever.
 const MAX_CHANNELS_PER_SESSION: usize = 64;
 
+/// Current-epoch Luckynode Draw status for the dashboard (display
+/// only — claims are spliced from the same advisories at template
+/// build). Epoch 0 = no advisory (mock provider or pre-draw node).
+#[derive(Debug, Clone, Default)]
+pub struct DrawStatus {
+    pub epoch: u64,
+    pub budget: u64,
+    pub remaining: u64,
+    pub winner: String,
+}
+
 struct Shared<P> {
     provider: Mutex<P>,
     ledger: Mutex<Ledger>,
@@ -179,6 +190,9 @@ struct Shared<P> {
     /// uninitialized; first tick starts from the live tip, no backfill —
     /// same restart rule as the draw loop's epoch init).
     prize_tip: Mutex<u64>,
+    /// Latest consensus draw advisory seen on a template (refreshed
+    /// every provider tick — the dashboard's current-epoch card).
+    latest_draw: Mutex<DrawStatus>,
     /// Live connection accounting for the accept caps (RAII-guarded).
     conn_total: std::sync::atomic::AtomicUsize,
     conn_per_ip: Mutex<std::collections::HashMap<std::net::IpAddr, usize>>,
@@ -344,6 +358,16 @@ fn broadcast_job<P>(shared: &Shared<P>) -> (Job, u64) {
     (bc.job.clone(), bc.version)
 }
 
+/// Snapshot of a template's draw advisory for the dashboard card.
+fn draw_status_of(tpl: &JobTemplate) -> DrawStatus {
+    DrawStatus {
+        epoch: tpl.draw_epoch,
+        budget: tpl.draw_budget,
+        remaining: tpl.draw_remaining,
+        winner: tpl.draw_winner.clone(),
+    }
+}
+
 /// Background refresh loop: poll the provider and publish new jobs. The
 /// ONLY thread that calls `provider.current()` after startup — a slow
 /// node RPC stalls this thread, not the miners. Submits still take the
@@ -352,6 +376,9 @@ fn broadcast_job<P>(shared: &Shared<P>) -> (Job, u64) {
 fn refresh_loop<P: TemplateProvider + 'static>(shared: Arc<Shared<P>>) {
     while !shared.shutdown.load(Ordering::Relaxed) {
         let tpl = shared.provider.lock().expect("provider").current();
+        // Current-epoch draw card: refresh every tick (not just on new
+        // jobs) so budget/remaining track the live template.
+        *shared.latest_draw.lock().expect("latest draw") = draw_status_of(&tpl);
         {
             // The broadcast guard must drop BEFORE the tick sleep: holding
             // it across the sleep starves every connection thread (release
@@ -1603,6 +1630,11 @@ impl<P: TemplateProvider + 'static> RunningServer<P> {
         log.extend(credits.iter().copied());
     }
 
+    /// Current-epoch Luckynode Draw advisory for the dashboard card.
+    pub fn latest_draw(&self) -> DrawStatus {
+        self.shared.latest_draw.lock().expect("latest draw").clone()
+    }
+
     /// Signal shutdown and wait for the accept loop (connection threads exit
     /// on their next 100 ms tick) and the refresh loop.
     pub fn stop(mut self) {
@@ -1713,6 +1745,9 @@ pub fn spawn_server<P: TemplateProvider + 'static>(
     listener.set_nonblocking(true)?;
     let local = listener.local_addr()?;
     let tpl = provider.current();
+    // Draw advisory for the dashboard card (moved fields below borrow
+    // first — header is moved into the seed job).
+    let draw = draw_status_of(&tpl);
     let job = Job {
         id: "00000000".to_string(),
         header: tpl.header,
@@ -1731,6 +1766,7 @@ pub fn spawn_server<P: TemplateProvider + 'static>(
         prize_credited: Mutex::new(HashSet::new()),
         prize_credit_log: Mutex::new(BTreeMap::new()),
         prize_tip: Mutex::new(0),
+        latest_draw: Mutex::new(draw),
         workers: Mutex::new(WorkerStats::default()),
         balances: Mutex::new(PayoutLedger::default()),
         credited_total: Mutex::new(0),
@@ -2522,7 +2558,6 @@ mod auth_tests {
 mod division_tests {
     use super::*;
     use crate::provider::MockProvider;
-    use crate::provider::TemplateProvider;
 
     fn pending(pairs: &[(u64, u64)]) -> BTreeMap<u64, u64> {
         pairs.iter().copied().collect()
@@ -2573,6 +2608,29 @@ mod division_tests {
         p.set_prize(876_192);
         let t = p.current();
         assert_eq!((t.height, t.prize), (1, 876_192));
+    }
+
+    #[test]
+    fn latest_draw_tracks_the_template_advisory() {
+        // The refresh loop copies the template's draw advisory into the
+        // dashboard status every tick — here via a mock advertising one.
+        let mut provider =
+            crate::provider::MockProvider::new([0xffu8; 32], [0xffu8; 32], 1_000_000, 0);
+        provider.set_draw(14, 200_000_000, 159_200_000, "LtDrawWinner1");
+        let server = spawn_server(provider, "127.0.0.1:0", None, None, None).expect("spawn");
+        let mut seen = DrawStatus::default();
+        for _ in 0..50 {
+            seen = server.latest_draw();
+            if seen.epoch == 14 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        assert_eq!(seen.epoch, 14);
+        assert_eq!(seen.budget, 200_000_000);
+        assert_eq!(seen.remaining, 159_200_000);
+        assert_eq!(seen.winner, "LtDrawWinner1");
+        server.stop();
     }
 
     /// Prize credits are exposed per height for the explorer, including

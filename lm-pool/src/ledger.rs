@@ -124,8 +124,12 @@ pub fn rank_by_division(board: Vec<BoardEntry>) -> Vec<(DeviceFamily, Vec<(u32, 
         .collect()
 }
 
-/// The pool's share log plus its league prize-pool balance (fed by
-/// `lm-rewards` reserve overflow, doc 06 §6.2).
+/// The pool's share log: raw accepted shares plus the compacted
+/// per-miner day rollup (streaks, comeback state). Holds no money —
+///
+/// jackpot/pot splits pay out of per-block PPLNS weights and per-height
+/// prize-inflow credits live in the pool server's `prize_credit_log`,
+/// not here.
 ///
 /// Bounded by construction (review finding G): raw shares live for
 /// [`SHARE_RETENTION_SECS`]; per-miner UTC active days and comeback state
@@ -541,7 +545,7 @@ mod tests {
     }
 
     #[test]
-    fn rank_by_division_numbers_within_their_league() {
+    fn rank_by_division_numbers_within_their_division() {
         let entry = |miner: &str, class: DeviceFamily, work: u64| BoardEntry {
             miner: miner.to_string(),
             class,

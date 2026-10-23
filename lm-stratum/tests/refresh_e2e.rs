@@ -55,6 +55,10 @@ impl TemplateProvider for GatedProvider {
             pool_target: [0xffu8; 32],
             net_target: [0x00u8; 32],
             prize: 0,
+            draw_epoch: 0,
+            draw_budget: 0,
+            draw_remaining: 0,
+            draw_winner: String::new(),
         }
     }
     fn submit_block(&mut self, _header: &[u8], _height: u64, _nonce: u64) -> BlockOutcome {
@@ -150,6 +154,10 @@ fn background_refresh_publishes_new_templates() {
                 pool_target: [0xffu8; 32],
                 net_target: [0x00u8; 32],
                 prize: 0,
+                draw_epoch: 0,
+                draw_budget: 0,
+                draw_remaining: 0,
+                draw_winner: String::new(),
             }
         }
     fn submit_block(&mut self, _h: &[u8], _ht: u64, _n: u64) -> BlockOutcome {
@@ -225,6 +233,10 @@ fn external_finds_credit_prize_without_pool_submit() {
                 pool_target: [0xffu8; 32],
                 net_target: [0x00u8; 32],
                 prize: self.per_height,
+                draw_epoch: 0,
+                draw_budget: 0,
+                draw_remaining: 0,
+                draw_winner: String::new(),
             }
         }
         fn submit_block(&mut self, _h: &[u8], _ht: u64, _n: u64) -> BlockOutcome {

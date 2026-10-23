@@ -2,7 +2,8 @@
 //!
 //! - [`streak`]: uptime-streak (+1%/day to +30%), comeback (+10% × 7 days),
 //!   overnight (+5%) share weights — doc 03 §3.4.
-//! - [`league`]: device-class divisions from observed rate — doc 03 §3.3.
+//! - [`division`]: device-class divisions from declared labels policed by
+//!   rate — doc 03 §3.6.
 //! - [`ledger`]: PPLNS share log, effective-share aggregation, jackpot
 //!   payouts (via `lm-rewards` sqrt/cap/dust), prize-fund splits,
 //!   seasonal leaderboard.

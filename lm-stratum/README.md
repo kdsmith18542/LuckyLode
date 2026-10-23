@@ -80,7 +80,10 @@ This is the reference implementation; run it on testnet knowing:
   are read from the node (`getjackpotinfo`); `--pot-divisor /
   --jackpot-divisor` are regtest-only overrides. The node must run the
   matching build (GBT advertises `jackpotbonus`/`potcredited` and the
-  `prizedraw*` advisories).
+  `prizedraw*` advisories). `/api/stats` carries the current-epoch draw
+  advisory as `draw` (epoch/budget/remaining/winner; epoch 0 = no
+  advisory), rendered as dashboard cards; pool-mined boundary claims land
+  in `last_blocks` as `prize_claim`/`prize_winner`.
 - **Work-identity dedupe is windowed** (2^16 identities). A replay older
   than the window can pass; accepted as the reference trade-off.
 - **Stratum V1 is the default wire; V2 serves alongside it** behind flags

@@ -18,12 +18,21 @@ pub struct JobTemplate {
     pub height: u64,
     pub pool_target: [u8; 32],
     pub net_target: [u8; 32],
-    /// Advisory prize-fund overflow this height will generate (base
+    /// Advisory prize-fund overflow for this height (base
     /// units): the jackpot-levy slice overflowing the reserve cap. The
     /// pool credits it for EVERY new tip — mined locally or found
     /// externally (staker/peer) — so Luckynode Draw budgets track the
     /// full chain, not just pool finds.
     pub prize: u64,
+    /// Consensus Luckynode Draw advisory for display (doc 06 §6.7):
+    /// epoch, budget, remaining budget, winner address. The claim
+    /// splice itself is exact and node-validated; these fields only
+    /// feed the dashboard's current-epoch card (0/empty = no advisory:
+    /// mock provider or pre-draw node).
+    pub draw_epoch: u64,
+    pub draw_budget: u64,
+    pub draw_remaining: u64,
+    pub draw_winner: String,
 }
 
 /// Result of handing a network-meeting share to the chain.
@@ -38,7 +47,7 @@ pub struct BlockOutcome {
     pub bonus: u64,
     /// Pot splash included in the coinbase (0 without a pot event).
     pub pot: u64,
-    /// Levy slice diverted to the prize prize pool (cap overflow).
+    /// Levy slice diverted to the Prize Fund (cap overflow).
     pub prize_inflow: u64,
     /// Consensus draw claim landed in this block (0 = none; third-party
     /// winner, never miner-owed — doc 06 §6.7).
@@ -89,6 +98,10 @@ pub struct MockProvider {
     reserve: u64,
     blocks: u64,
     prize: u64,
+    draw_epoch: u64,
+    draw_budget: u64,
+    draw_remaining: u64,
+    draw_winner: String,
 }
 
 impl MockProvider {
@@ -102,6 +115,10 @@ impl MockProvider {
             reserve: 0,
             blocks: 0,
             prize: 0,
+            draw_epoch: 0,
+            draw_budget: 0,
+            draw_remaining: 0,
+            draw_winner: String::new(),
         }
     }
 
@@ -109,6 +126,15 @@ impl MockProvider {
     /// refresh loop records it per height for the tip-change reconcile).
     pub fn set_prize(&mut self, prize: u64) {
         self.prize = prize;
+    }
+
+    /// Consensus draw advisory the mock's templates advertise (dashboard
+    /// card path without a node).
+    pub fn set_draw(&mut self, epoch: u64, budget: u64, remaining: u64, winner: &str) {
+        self.draw_epoch = epoch;
+        self.draw_budget = budget;
+        self.draw_remaining = remaining;
+        self.draw_winner = winner.to_string();
     }
 
     /// Instant-block harness: every share is a block (both targets max).
@@ -143,6 +169,10 @@ impl TemplateProvider for MockProvider {
             pool_target: self.pool_target,
             net_target: self.net_target,
             prize: self.prize,
+            draw_epoch: self.draw_epoch,
+            draw_budget: self.draw_budget,
+            draw_remaining: self.draw_remaining,
+            draw_winner: self.draw_winner.clone(),
         }
     }
 

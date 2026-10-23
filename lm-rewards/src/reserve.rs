@@ -9,8 +9,8 @@
 //!
 //! 1. Compute `levy = floor((R + F) * 500 / 10000)`.
 //! 2. Credit the levy to the reserve up to the cap (`50 * R` at the block's
-//!    own `R`); the excess flows to the **league prize pool** instead of
-//!    burning (doc 06 §6.2 "Overflow").
+//!    own `R`); the excess flows to the **Prize Fund** instead of
+//!    burning (doc 06 §6.7 "Overflow").
 //! 3. On a jackpot block, pay `min(5 * R, reserve_after_levy)` from the
 //!    reserve on top of the normal payout.
 //!
@@ -59,7 +59,7 @@ pub struct BlockPayout {
     pub bonus: u64,
     /// Levy slice credited to the reserve this block.
     pub to_reserve: u64,
-    /// Levy slice diverted to the league prize pool (cap overflow).
+    /// Levy slice diverted to the Prize Fund (cap overflow).
     pub to_prize: u64,
     /// Reserve balance after this block.
     pub reserve: u64,

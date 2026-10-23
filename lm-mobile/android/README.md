@@ -114,7 +114,7 @@ at stake.
 - [x] Dashboard (doc 07 §7.4): local tiles from the mining loop
       (hashrate, shares, rejected), device tiles (battery temp/level/
       charging), pool tiles from the official pool's public API every
-      30 s (this worker's pool-side shares, rejects, streak, **league
+      30 s (this worker's pool-side shares, rejects, streak, **division
       rank**, pool-wide stats, jackpot reserve/pot, latest block),
       battery-honesty copy, and the advanced screen exposing the §7.2
       thresholds (persisted; the service reads them at start).
@@ -126,9 +126,9 @@ at stake.
       V1 default). Live-proven 2026-10-18: emulator → public testnet
       pool, worker `android-v2`, 3 shares / 0 rejects over V2 (the
       app's agent reports `v2 lm-miner cpu`).
-- [x] League rank tile: the worker's season rank inside its device
-      class, read from `/api/stats` worker rows (`league_class`,
-      `league_rank`, `league_size`).
+- [x] Division rank tile: the worker's season rank inside its device
+      class, read from `/api/stats` worker rows (`division_class`,
+      `division_rank`, `division_size`).
 - [x] Attestation hook (doc 03 §3.6 / doc 07 §7.4), testnet form:
       opt-in advanced checkbox posts a self-labeled verdict
       (`{worker, provider:"self", detail}`) to the pool's `/api/attest`;
@@ -136,6 +136,6 @@ at stake.
       terminal form — miners are banned from the Play Store, so there is
       no Play Integrity upgrade path; the pool-side endpoint and storage
       stay verdict-shaped in case a non-Play device check ever exists.
-- [ ] Streak/league-rank tiles for *offline* workers: rows age out of
+- [ ] Streak/division-rank tiles for *offline* workers: rows age out of
       the pool's worker stats when idle, so a stopped miner shows "no
       active streak" until it reconnects (ledger rollup still has it).

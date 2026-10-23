@@ -247,8 +247,10 @@ fn mp_entries_fee_total(mp: &serde_json::Value) -> i64 {
         .unwrap_or(0)
 }
 
-/// Game layer: live jackpot/pot state, Luckynode Draws, jackpot hits and
-/// pot splashes (pool-reported per block).
+/// Game layer: live jackpot/pot state, jackpot hits, pot splashes
+/// (pool-reported per block), and pool-observed consensus Luckynode Draw
+/// claims (epoch-boundary blocks whose coinbase paid the draw winner
+/// straight from the prize fund).
 fn game_page(idx: &Indexer) -> String {
     let state = idx.game_state().unwrap_or(serde_json::json!({}));
     let reserve = state.get("reserve").and_then(|v| v.as_i64()).unwrap_or(0);
@@ -290,11 +292,24 @@ fn game_page(idx: &Indexer) -> String {
     if splashes.is_empty() {
         splashes = "<tr><td colspan=3 class=dim>no pot splashes yet</td></tr>".to_string();
     }
+    let mut claims = String::new();
+    for c in idx.game_claims_recent(50).unwrap_or_default() {
+        claims += &format!(
+            "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
+            link_block(c["height"].as_i64().unwrap_or(0)),
+            addr_or_text(c["finder"].as_str().unwrap_or("")),
+            coins(c["claim"].as_i64().unwrap_or(0)),
+            addr_or_text(c["winner"].as_str().unwrap_or("")),
+        );
+    }
+    if claims.is_empty() {
+        claims = "<tr><td colspan=4 class=dim>no prize draw claims yet</td></tr>".to_string();
+    }
 
     page(
         "rewards",
         format!(
-            "{}<div class=card>jackpot reserve <b>{}</b> · pot <b>{}</b> · pot drought <b>{}/{}</b> · faucet reserve <b>{}</b> · dev reserve <b>{}</b> · odds (PoW finds, pre-committed per height): jackpot 1-in-{} blocks,             pot 1-in-{} &mdash; forced splash after {} dry blocks max</div><h2>Jackpot hits</h2><table><tr><th>height</th><th>finder</th><th>bonus</th><th>prize inflow</th></tr>{hits}</table><h2>Pot splashes</h2><table><tr><th>height</th><th>finder</th><th>splash</th></tr>{splashes}</table>",
+            "{}<div class=card>jackpot reserve <b>{}</b> · pot <b>{}</b> · pot drought <b>{}/{}</b> · faucet reserve <b>{}</b> · dev reserve <b>{}</b> · odds (PoW finds, pre-committed per height): jackpot 1-in-{} blocks,             pot 1-in-{} &mdash; forced splash after {} dry blocks max</div><h2>Jackpot hits</h2><table><tr><th>height</th><th>finder</th><th>bonus</th><th>prize inflow</th></tr>{hits}</table><h2>Pot splashes</h2><table><tr><th>height</th><th>finder</th><th>splash</th></tr>{splashes}</table><h2>Prize draw claims</h2><div class=dim>epoch-boundary blocks whose coinbase paid the Luckynode Draw winner straight from the prize fund — pool-observed claims only (pool-mined boundaries); the wallet Luckynodes tab shows the current epoch.</div><table><tr><th>height</th><th>finder</th><th>claim</th><th>winner</th></tr>{claims}</table>",
             search_box(),
             coins(reserve),
             coins(pot),
@@ -779,13 +794,25 @@ fn block_page(idx: &Indexer, b: &serde_json::Value) -> String {    let h = b["he
         );
     }
     let game_rows = match idx.game_block(h).unwrap_or(None) {
-        Some(g) => format!(
-            "<tr><th>jackpot bonus</th><td>{}</td></tr><tr><th>pot splash</th><td>{}</td></tr><tr><th>prize inflow</th><td>{}</td></tr><tr><th>finder</th><td>{}</td></tr>",
-            coins(g["bonus"].as_i64().unwrap_or(0)),
-            coins(g["pot"].as_i64().unwrap_or(0)),
-            coins(g["prize"].as_i64().unwrap_or(0)),
-            addr_or_text(g["finder"].as_str().unwrap_or("")),
-        ),
+        Some(g) => {
+            let claim = g["claim"].as_i64().unwrap_or(0);
+            let claim_rows = if claim > 0 {
+                format!(
+                    "<tr><th>prize draw claim</th><td>{} → {}</td></tr>",
+                    coins(claim),
+                    addr_or_text(g["winner"].as_str().unwrap_or("")),
+                )
+            } else {
+                String::new()
+            };
+            format!(
+                "<tr><th>jackpot bonus</th><td>{}</td></tr><tr><th>pot splash</th><td>{}</td></tr><tr><th>prize inflow</th><td>{}</td></tr><tr><th>finder</th><td>{}</td></tr>{claim_rows}",
+                coins(g["bonus"].as_i64().unwrap_or(0)),
+                coins(g["pot"].as_i64().unwrap_or(0)),
+                coins(g["prize"].as_i64().unwrap_or(0)),
+                addr_or_text(g["finder"].as_str().unwrap_or("")),
+            )
+        }
         None => String::new(),
     };
     page(
@@ -970,7 +997,6 @@ fn handle(idx: &mut Indexer, method: &str, path: &str) -> String {
     if route == "/api/game" {
         let out = serde_json::json!({
             "state": idx.game_state().unwrap_or(serde_json::json!({})),
-            "draws": idx.draws_recent(50).unwrap_or_default(),
             "blocks": idx.game_blocks_recent(100).unwrap_or_default(),
         });
         return json_resp(&out);

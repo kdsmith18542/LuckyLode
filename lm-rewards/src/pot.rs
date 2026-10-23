@@ -111,7 +111,7 @@ pub struct PotPayout {
     pub to_pot: u64,
     /// Pot-levy slice burned (pot cap overflow).
     pub to_burn: u64,
-    /// Jackpot-levy slice diverted to the league prize pool (cap overflow).
+    /// Jackpot-levy slice diverted to the Prize Fund (cap overflow).
     pub to_prize: u64,
     /// Jackpot reserve balance after this block.
     pub reserve: u64,

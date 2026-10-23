@@ -638,6 +638,14 @@ pub fn parse_prize_inflow(gbt: &serde_json::Value) -> u64 {
     gbt.get("prizeoverflow").and_then(|v| v.as_u64()).unwrap_or(0)
 }
 
+/// Consensus Luckynode Draw budget for one template (base units): the
+/// epoch's total budget; the remaining budget rides in
+/// [`parse_prize_draw`]. Old nodes (no fields) read as 0 → no advisory.
+#[must_use]
+pub fn parse_prize_budget(gbt: &serde_json::Value) -> u64 {
+    gbt.get("prizedrawbudget").and_then(|v| v.as_u64()).unwrap_or(0)
+}
+
 /// Consensus Luckynode Draw claim for one template (doc 06 §6.7): the
 /// epoch, validity, remaining budget, winner address (display/logging
 /// only — the script is the splice target), and winner script bytes.
@@ -768,6 +776,12 @@ pub fn parse_gbt(gbt: &serde_json::Value) -> Result<(JobTemplate, Vec<Vec<u8>>),
             // node's own advisory — the pool credits it when the height
             // lands, whoever found the block.
             prize: parse_prize_inflow(gbt),
+            // Draw advisory filled by build_template from the same GBT
+            // (parse_gbt sees only header/targets).
+            draw_epoch: 0,
+            draw_budget: 0,
+            draw_remaining: 0,
+            draw_winner: String::new(),
         },
         txs,
     ))
@@ -995,8 +1009,14 @@ pub fn build_template(
     // when ANY existing output already pays that script — the sum would
     // drift and the block would be refused (same builder rule as the
     // internal miner; the budget stays for another block).
-    let (_draw_epoch, draw_valid, draw_remaining, draw_winner, draw_script) =
+    let (draw_epoch, draw_valid, draw_remaining, draw_winner, draw_script) =
         parse_prize_draw(gbt);
+    // Dashboard advisory (display only — the splice above stays exact):
+    // the current epoch draw the template belongs to.
+    tpl.draw_epoch = draw_epoch;
+    tpl.draw_budget = parse_prize_budget(gbt);
+    tpl.draw_remaining = draw_remaining;
+    tpl.draw_winner = draw_winner.clone();
     let mut prize = PrizeSplice::default();
     if claim_prize && draw_valid && draw_remaining > 0 && !draw_script.is_empty() {
         let scripts = crate::tx::output_scripts(&txs[0])
@@ -1719,10 +1739,26 @@ mod tests {
         let mut gbt: serde_json::Value = serde_json::from_str(GBT_FIXTURE).expect("json");
         gbt["prizedrawepoch"] = serde_json::json!(14u64);
         gbt["prizedrawvalid"] = serde_json::json!(true);
+        gbt["prizedrawbudget"] = serde_json::json!(200_000_000u64);
         gbt["prizedrawremaining"] = serde_json::json!(159_200_000u64);
         gbt["prizedrawwinner"] = serde_json::json!("LtPrizeWinner111111111111111111");
         gbt["prizedrawscript"] = serde_json::json!(PRIZE_WINNER_SCRIPT);
         gbt
+    }
+
+    #[test]
+    fn prize_draw_advisory_rides_the_template_for_display() {
+        // The dashboard's current-epoch card reads the same node
+        // advisories the splice uses (epoch/budget/remaining/winner) —
+        // display only, no consensus effect.
+        let gbt = gbt_with_prize_draw();
+        let (t, _, _, _, _, _, _, _, _) =
+            build_template(&gbt, false, false, 100, 1000, &SeedClaim::default(), true)
+                .expect("prize template");
+        assert_eq!(t.draw_epoch, 14);
+        assert_eq!(t.draw_budget, 200_000_000);
+        assert_eq!(t.draw_remaining, 159_200_000);
+        assert_eq!(t.draw_winner, "LtPrizeWinner111111111111111111");
     }
 
     #[test]
