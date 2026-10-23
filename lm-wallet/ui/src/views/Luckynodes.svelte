@@ -49,17 +49,31 @@
   });
 
   async function register() {
+    // Stage the review; Confirm broadcasts. Separate step so the
+    // irreversible spend is never one click.
     msg = "";
     err = "";
+    confirming = { name: name.trim(), addr: addr.trim() };
+  }
+  async function confirmRegister() {
+    if (!confirming) return;
+    msg = "";
+    err = "";
+    regBusy = true;
     try {
-      const r: any = await api.luckynodeRegister(name.trim(), addr.trim());
+      const r: any = await api.luckynodeRegister(confirming.name, confirming.addr);
       const names = new Set(localNames);
       names.add(r.name);
       localNames = [...names];
       msg = `registered ${r.name} — update ${r.update_height}, eligible ${r.eligible ? "yes" : "not yet (mine a block)"}`;
+      confirming = null;
+      name = "";
+      addr = "";
       await load();
     } catch (e) {
       err = String(e);
+    } finally {
+      regBusy = false;
     }
   }
   async function start(n: string, address: string) {
@@ -142,13 +156,27 @@
 <h2>Register a luckynode identity</h2>
 <div class="card" style="max-width:640px">
   <label for="lname">identity name (ln- namespace)</label>
-  <input id="lname" bind:value={name} placeholder="ln-foo" spellcheck="false" />
+  <input id="lname" bind:value={name} oninput={() => (confirming = null)} placeholder="ln-foo" spellcheck="false" />
   <label for="addr" style="margin-top:10px">payout address (draw winnings pay this address)</label>
-  <input id="addr" bind:value={addr} placeholder="L… / m… / n…" spellcheck="false" />
+  <input id="addr" bind:value={addr} oninput={() => (confirming = null)} placeholder="L… / m… / n…" spellcheck="false" />
   <div class="row" style="margin-top:12px">
-  <button class="btn primary" disabled={!name || !addr} onclick={register}>Register on chain</button>
-  <span class="muted">name commitment + identity registration, funded from the connected node's wallet (100 LKYL registration fee)</span>
+  <button class="btn primary" disabled={!name || !addr || regBusy} onclick={register}>Register on chain</button>
+  <span class="muted">name commitment + identity registration, funded from the connected node's wallet (identity fee set by the chain — 100 tLKYL on the current testnet)</span>
   </div>
+  {#if confirming}
+    <div class="card" style="margin-top:12px;border:1px solid var(--gold)">
+      <b>Review — this spends real chain fees</b>
+      <table><tbody>
+        <tr><th>identity</th><td class="addr">{confirming.name}</td></tr>
+        <tr><th>payout address</th><td class="addr">{confirming.addr}</td></tr>
+        <tr><th>funded from</th><td class="muted">the connected node's wallet (not this app)</td></tr>
+      </tbody></table>
+      <div class="row" style="margin-top:10px">
+        <button class="btn primary" disabled={regBusy} onclick={confirmRegister}>{regBusy ? "registering…" : "Confirm & register"}</button>
+        <button class="btn" disabled={regBusy} onclick={() => (confirming = null)}>Back</button>
+      </div>
+    </div>
+  {/if}
   {#if msg}<div class="muted" style="margin-top:10px">{msg}</div>{/if}
 </div>
 {#if err}<div class="err">{err}</div>{/if}

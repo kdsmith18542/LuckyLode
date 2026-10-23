@@ -70,6 +70,9 @@
   let stakeBusy = $state(false);
   let importBusy = $state(false);
   let importDone = $state(false);
+  // Key export is one-way (the node keeps copies indefinitely), so it
+  // is two-step like every other irreversible action here.
+  let confirmImport = $state(false);
 
   async function importKeys() {
     err = "";
@@ -77,6 +80,7 @@
     try {
       await api.stakeAppCoins();
       importDone = true;
+      confirmImport = false;
       await load();
     } catch (e) {
       err = String(e);
@@ -207,8 +211,23 @@
           {#if nodeBal > 0}node wallet holds {api.coinU(nodeBal)}.
           {:else if importDone}your app coins are imported — the node is staking them.
           {:else if step1local}
-            <button class="btn primary" disabled={importBusy} onclick={importKeys}>{importBusy ? "importing…" : "Stake my app coins"}</button>
+            <button class="btn primary" disabled={importBusy} onclick={() => (confirmImport = true)}>{importBusy ? "importing…" : "Stake my app coins"}</button>
             &mdash; imports your funded keys into this node (same machine; no transfer, mature coins eligible immediately).
+            {#if confirmImport}
+              <div class="card" style="margin-top:10px;border:1px solid var(--gold)">
+                <b>Review — this copies private keys out of the app</b>
+                <div class="muted" style="margin-top:4px">
+                  Every funded app key is exported into the node's wallet
+                  (labeled <span class="addr">lucky-lode-app</span>) so the node can
+                  stake them. The node keeps those copies indefinitely —
+                  only confirm on a node you fully control.
+                </div>
+                <div class="row" style="margin-top:10px">
+                  <button class="btn primary" disabled={importBusy} onclick={importKeys}>{importBusy ? "importing…" : "Confirm & import keys"}</button>
+                  <button class="btn" disabled={importBusy} onclick={() => (confirmImport = false)}>Cancel</button>
+                </div>
+              </div>
+            {/if}
             <br /><span class="muted">or <button class="btn" disabled={fundBusy} onclick={fundNode}>{fundBusy ? "building…" : "Send coins to the node instead"}</button> (cleaner separation, but waits 150 confs).</span>
           {:else}fund the node wallet (faucet or a send to its address), then come back.
           {/if}</span></td>
