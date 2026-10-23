@@ -113,7 +113,7 @@ fn now() -> u64 {
         .unwrap_or(0)
 }
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 struct Limits {
     /// address -> last drip unix time
     last: HashMap<String, u64>,
@@ -486,4 +486,35 @@ fn main() -> ExitCode {
         std::thread::spawn(move || handle(stream, &ctx));
     }
     ExitCode::SUCCESS
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn limits_roundtrip_and_rate_math() {
+        let dir = std::env::temp_dir().join("faucet-limits-test.json");
+        let _ = std::fs::remove_file(&dir);
+        let mut l = Limits::default();
+        assert_eq!(l.wait("m1", 86_400, 1_000), 0, "first drip is immediate");
+        l.last.insert("m1".to_string(), 1_000);
+        assert_eq!(l.wait("m1", 86_400, 1_000), 86_400);
+        assert_eq!(l.wait("m1", 86_400, 87_400), 0);
+        l.save(&dir);
+        let back = Limits::load(&dir).expect("load");
+        assert_eq!(back.wait("m1", 86_400, 1_000), 86_400);
+        let _ = std::fs::remove_file(&dir);
+    }
+
+    #[test]
+    fn missing_state_is_fresh_but_corrupt_refuses() {
+        let dir = std::env::temp_dir().join("faucet-missing-state.json");
+        let _ = std::fs::remove_file(&dir);
+        assert!(Limits::load(&dir).is_ok(), "absent file = fresh start");
+        std::fs::write(&dir, "{oops").expect("write");
+        let err = Limits::load(&dir).expect_err("corrupt state must fail closed");
+        assert!(err.contains("corrupt state file"), "{err}");
+        let _ = std::fs::remove_file(&dir);
+    }
 }

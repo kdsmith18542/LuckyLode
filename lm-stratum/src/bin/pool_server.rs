@@ -3428,4 +3428,76 @@ mod tests {
         // Cards name what they count.
         assert!(INDEX_HTML.contains("workers online / seen"));
     }
+    #[test]
+    fn state_file_roundtrips_and_refuses_corruption() {
+        let dir = std::env::temp_dir().join("pool-state-roundtrip-test.json");
+        let _ = std::fs::remove_file(&dir);
+        let _ = std::fs::remove_file(dir.with_extension("corrupt"));
+
+        let s1 = spawn_server(
+            MockProvider::new([0xff; 32], [0xff; 32], 1_000, 0),
+            "127.0.0.1:0",
+            None,
+            None,
+            None,
+        )
+        .expect("spawn");
+        s1.restore_credited(123_456_789);
+        s1.restore_names(&[("w1".to_string(), "worker one".to_string())]);
+        s1.restore_prize_credits(&[(42, 777)]);
+        save_state(&s1, &dir);
+        s1.stop();
+
+        let s2 = spawn_server(
+            MockProvider::new([0xff; 32], [0xff; 32], 1_000, 0),
+            "127.0.0.1:0",
+            None,
+            None,
+            None,
+        )
+        .expect("spawn");
+        load_state(&s2, &dir).expect("valid state loads");
+        assert_eq!(s2.credited_total(), 123_456_789);
+        assert!(s2.names().contains(&("w1".to_string(), "worker one".to_string())));
+        assert_eq!(s2.prize_credits(), vec![(42, 777)]);
+        s2.stop();
+
+        // Corrupt state: move aside and refuse — a zeroed ledger would
+        // double-pay every balance.
+        std::fs::write(&dir, "{not json").expect("write corrupt");
+        let s3 = spawn_server(
+            MockProvider::new([0xff; 32], [0xff; 32], 1_000, 0),
+            "127.0.0.1:0",
+            None,
+            None,
+            None,
+        )
+        .expect("spawn");
+        let err = load_state(&s3, &dir).expect_err("corrupt state must refuse");
+        assert!(err.contains("refusing to start"), "{err}");
+        assert!(dir.with_extension("corrupt").exists(), "file moved aside");
+        s3.stop();
+        let _ = std::fs::remove_file(dir.with_extension("corrupt"));
+    }
+
+    #[test]
+    fn http_line_reader_caps_length_and_honours_the_deadline() {
+        use std::time::{Duration, Instant};
+        // Normal line.
+        let mut r = std::io::Cursor::new(b"GET / HTTP/1.1\r\n".to_vec());
+        let line = read_line_capped(&mut r, 1024, Instant::now() + Duration::from_secs(1))
+            .expect("line");
+        assert_eq!(line, "GET / HTTP/1.1\r");
+        // Over the cap: rejected, not buffered forever.
+        let mut r = std::io::Cursor::new(vec![b'a'; 100]);
+        let err = read_line_capped(&mut r, 10, Instant::now() + Duration::from_secs(1))
+            .expect_err("over cap");
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+        // Past the deadline: rejected before reading.
+        let mut r = std::io::Cursor::new(b"x\n".to_vec());
+        let err = read_line_capped(&mut r, 1024, Instant::now() - Duration::from_secs(1))
+            .expect_err("deadline");
+        assert_eq!(err.kind(), std::io::ErrorKind::TimedOut);
+    }
+
 }

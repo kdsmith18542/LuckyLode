@@ -163,13 +163,6 @@ pub fn format_coins(v: u64) -> String {
     format!("{}.{:08}", v / COIN_BASE, v % COIN_BASE)
 }
 
-/// Transparent payout address shape: 34-char base58. The leading version
-/// byte is chain-specific — 'R' (Verus mainnets), 'L' (Lucky Lode
-/// mainnet), 'm'/'n'/'2' (Lucky Lode testnet, Bitcoin-style 111/196) — so
-/// all are accepted. Shape check only — the node is the final arbiter at
-/// send time (it checks the network params and returns an error the
-/// payout loop treats as a failed send).
-#[must_use]
 /// Base58check decode: 25 bytes (version byte, 20-byte hash160,
 /// 4-byte sha256d checksum), checksum-verified. `b58check_ok` is this
 /// plus the length check.
@@ -216,38 +209,12 @@ fn b58check_ok(s: &str) -> bool {
     b58check_decode(s).is_some()
 }
 
-/// Expected locking script (hex) for one of our payout addresses, so the
-/// pool can verify a designated bond UTXO actually pays the registered
-/// address (and not some unrelated output). P2PKH for R/L/m/n prefixes,
-/// P2SH for the `2...` multisig prefix — the same prefix set as
-/// [`valid_payout_address`]. Returns None for anything else (fail closed).
-#[must_use]
-pub fn payout_script_pubkey(address: &str) -> Option<String> {
-    if !valid_payout_address(address) {
-        return None;
-    }
-    let raw = b58check_decode(address)?;
-    let hash160: String = raw[1..21].iter().map(|b| format!("{b:02x}")).collect();
-    match address.as_bytes().first() {
-        Some(b'2') => Some(format!("a914{hash160}87")),
-        _ => Some(format!("76a914{hash160}88ac")),
-    }
-}
-
-/// Bond-UTXO binding check: the designated output must pay the registered
-/// address (script match), hold at least the bond (satoshis), and be
-/// unspent. Pure function over node-verified fields so the tick and the
-/// registration path share one rule; both fail closed on any mismatch.
-#[must_use]
-pub fn bond_utxo_matches(expected_script_hex: &str, utxo_script_hex: &str, value_sats: u64, bond_sats: u64) -> bool {
-    !expected_script_hex.is_empty()
-        && expected_script_hex.eq_ignore_ascii_case(utxo_script_hex)
-        && value_sats >= bond_sats
-}
-
 /// Payout-address validity: our chains' prefixes, then FULL base58check.
 /// Lengths 33-35 all occur (the leading-zero pattern of the version byte
-/// decides); the checksum is the real gate.
+/// decides); the checksum is the real gate — shape alone let a typo hold
+/// a balance forever. The node is the final arbiter at send time.
+/// Prefixes: 'R' (inherited Verus mainnets), 'L' (Lucky Lode mainnet),
+/// 'm'/'n'/'2' (testnet/regtest P2PKH and P2SH).
 pub fn valid_payout_address(s: &str) -> bool {
     (33..=35).contains(&s.len())
         && s.starts_with(['R', 'L', 'm', 'n', '2'])
@@ -380,46 +347,6 @@ mod tests {
         assert!(!valid_payout_address(&format!("Z{}", "a".repeat(33)))); // wrong prefix
         assert!(!valid_payout_address(&format!("R{}", "a".repeat(31)))); // too short
         assert!(!valid_payout_address(&format!("R{}", "a".repeat(36)))); // too long
-    }
-
-    #[test]
-    fn payout_script_matches_chain_vectors() {
-        // Frozen vectors, decoded independently (Python hashlib): the pool
-        // must derive the exact locking script the node will check, or the
-        // bond-UTXO binding compares against the wrong bytes.
-        assert_eq!(
-            payout_script_pubkey("mxVc37AiDBhP4FcydkCu5AEZqgfMYy8hC9"),
-            Some("76a914ba38cfe49e436bb2a43898083a98becc148c204488ac".to_string())
-        );
-        assert_eq!(
-            payout_script_pubkey("2NFdM6aq2Rtr444aGVrE9CZXLzZ2JF8dadE"),
-            Some("a914f581da35b024c755572850ad3a9d6f5bd8b1afcc87".to_string())
-        );
-        assert_eq!(
-            payout_script_pubkey("2MstP8uJfYBsk1HfmCU9MW3qqKgvrw3ESd1").map(|s| s[..4].to_string()),
-            Some("a914".to_string())
-        );
-        // Junk never yields a script (fail closed, never a match).
-        assert_eq!(payout_script_pubkey("t1short"), None);
-        assert_eq!(payout_script_pubkey(""), None);
-        assert_eq!(payout_script_pubkey("mfWyW5fc9NUj75YAnFgoRLrjxgLDmNrbUb"), None);
-    }
-
-    #[test]
-    fn bond_utxo_binding_needs_script_and_value() {
-        let script = "76a914ba38cfe49e436bb2a43898083a98becc148c204488ac";
-        // Exact match at/above the bond passes.
-        assert!(bond_utxo_matches(script, script, 40_000_000_000, 40_000_000_000));
-        assert!(bond_utxo_matches(script, script, 40_000_000_001, 40_000_000_000));
-        // Case-insensitive hex (node returns lowercase; be liberal here).
-        assert!(bond_utxo_matches(&script.to_uppercase(), script, 40_000_000_000, 40_000_000_000));
-        // Dust designated as "locked" fails: value below the bond.
-        assert!(!bond_utxo_matches(script, script, 1, 40_000_000_000));
-        // Someone else's UTXO fails: script pays a different address.
-        assert!(!bond_utxo_matches(script, "76a914000000000000000000000000000000000000000088ac", 50_000_000_000, 40_000_000_000));
-        // Empty script never matches.
-        assert!(!bond_utxo_matches("", script, 50_000_000_000, 40_000_000_000));
-        assert!(!bond_utxo_matches(script, "", 50_000_000_000, 40_000_000_000));
     }
 
     #[test]
