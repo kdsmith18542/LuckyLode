@@ -82,10 +82,13 @@ fn fmt_time(ts: i64) -> String {
 }
 
 fn coins(v: i64) -> String {
-    // Adaptive precision: up to 8 decimals,
-    // trailing zeros trimmed — `0.33`, never `0.33000000`, and never `0`
-    // for a non-zero balance. Same rule as the wallet/pool formatters.
-    let s = format!("{}.{:08}", v / 100_000_000, (v % 100_000_000).abs());
+    // Adaptive precision: up to 8 decimals, trailing zeros trimmed —
+    // `0.33`, never `0.33000000`, and never `0` for a non-zero balance.
+    // Sign-safe: a sub-1-coin negative used to truncate to 0 and lose the
+    // minus (address "out" flows showed as positive).
+    let sign = if v < 0 { "-" } else { "" };
+    let a = v.unsigned_abs();
+    let s = format!("{sign}{}.{:08}", a / 100_000_000, a % 100_000_000);
     let t = s.trim_end_matches('0').trim_end_matches('.');
     let t = if t.is_empty() || t == "-" { "0" } else { t };
     format!("{t} {TICK}")
@@ -297,7 +300,7 @@ fn home(idx: &mut Indexer) -> String {
     html_page(
         "home",
         format!(
-            "{}{}<div class=card>height <b>{}</b> · hash <span class=dim>{}</span> · supply <b>{}</b> · difficulty {:.2} · minted (PoS) in last 20: <b>{}</b></div>{}{}{}<h2>Recent blocks</h2><table><tr><th>height</th><th>type</th><th>hash</th><th>txs</th><th>block reward</th><th>jackpot bonus</th><th>pot splash</th><th>prize inflow</th></tr>{rows}</table><h2>Recent transactions</h2><table><tr><th>txid</th><th>block</th><th>time</th><th>value</th><th>fee</th><th>size</th><th>fee rate (sat/vB)</th></tr>{txrows}</table>",
+            "{}{}<div class=card>height <b>{}</b> · hash <span class=dim>{}</span> · supply <b>{}</b> · difficulty {:.2} · minted (PoS) in last 20: <b>{}</b></div>{}{}{}<h2>Recent blocks</h2><table><tr><th>height</th><th>type</th><th>hash</th><th>txs</th><th>coinbase total</th><th>jackpot bonus</th><th>pot splash</th><th>prize inflow</th></tr>{rows}</table><h2>Recent transactions</h2><table><tr><th>txid</th><th>block</th><th>time</th><th>value</th><th>fee</th><th>size</th><th>fee rate (sat/vB)</th></tr>{txrows}</table>",
             search_box(),
             node_banner(idx),
             if h >= 0 { link_block(h) } else { "–".to_string() },
@@ -1564,5 +1567,20 @@ mod presentation_tests {
         assert!(html.contains("<title>block 7 · Lucky Lode explorer</title>"), "{html:.200}");
         // Outage banner is part of the chrome helpers.
         assert!(crate::http::CSS.contains(".warnbox"));
+    }
+}
+
+#[cfg(test)]
+mod money_tests {
+    #[test]
+    fn coins_keep_the_minus_sign() {
+        // -0.5 coins must not render as +0.5 (sub-unit negatives used to
+        // truncate the integer division to zero and drop the sign).
+        assert_eq!(super::coins(-50_000_000), "-0.5 tLKYL");
+        assert_eq!(super::coins(-1), "-0.00000001 tLKYL");
+        assert_eq!(super::coins(50_000_000), "0.5 tLKYL");
+        assert_eq!(super::coins(0), "0 tLKYL");
+        assert_eq!(super::coins(100_000_000), "1 tLKYL");
+        assert_eq!(super::coins(-100_000_000), "-1 tLKYL");
     }
 }
