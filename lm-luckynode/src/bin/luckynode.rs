@@ -129,7 +129,7 @@ fn show(st: &lm_luckynode::identity::IdentityState) -> String {
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.iter().any(|a| a == "--help" || a == "-h") {
-        println!("usage:\n  luckynode --node-rpc HOST:PORT --rpc-user U --rpc-pass P --name ln-foo --payout-address ADDR [--epoch N] [--state-file PATH] [--heartbeat-interval SECS] [--register-only] [--once]");
+        println!("usage:\n  luckynode --node-rpc HOST:PORT --rpc-user U --rpc-pass P --name ln-foo --payout-address ADDR [--epoch N] [--state-file PATH] [--heartbeat-interval SECS] [--register-only] [--once] [--allow-mainnet]");
         flush_out();
         return;
     }
@@ -148,6 +148,7 @@ fn main() {
     let mut interval: u64 = 60;
     let mut register_only = false;
     let mut once = false;
+    let mut allow_mainnet = false;
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
@@ -185,6 +186,7 @@ fn main() {
             }
             "--register-only" => register_only = true,
             "--once" => once = true,
+            "--allow-mainnet" => allow_mainnet = true,
             _ => usage(),
         }
         i += 1;
@@ -197,10 +199,59 @@ fn main() {
         flush_out();
         std::process::exit(2);
     }
+    // Local state first (fail fast, no network): a corrupt state file
+    // refuses before anything fee-paying is even attempted.
+    let mut state = load_state(&state_file).unwrap_or_else(|e| {
+        eprintln!("luckynode: {e}");
+        flush_out();
+        std::process::exit(1);
+    });
     let rpc = Rpc {
         node: node.clone(),
         auth: base64(format!("{user}:{pass}").as_bytes()),
     };
+    // Chain guard: registration spends node-wallet funds, so say which
+    // chain we see and refuse anything but testnet without an explicit
+    // opt-in ("main" covers mainnet AND regtest, which reports "main").
+    let chain = rpc
+        .call("getblockchaininfo", serde_json::json!([]))
+        .ok()
+        .and_then(|v| {
+            v.get("chain")
+                .and_then(|c| c.as_str())
+                .map(str::to_string)
+        });
+    match chain.as_deref() {
+        Some("test") => {}
+        Some(other) if allow_mainnet => {
+            println!("luckynode: chain {other} (allowed via --allow-mainnet)");
+            flush_out();
+        }
+        Some(other) => {
+            eprintln!(
+                "luckynode: refusing to spend on chain {other:?} without --allow-mainnet (regtest also reports \"main\" — the flag covers both)"
+            );
+            flush_out();
+            std::process::exit(2);
+        }
+        None => {
+            eprintln!("luckynode: cannot read node chain (getblockchaininfo failed)");
+            flush_out();
+            std::process::exit(1);
+        }
+    }
+    // Payout preflight: a typo'd address must never reach the fee-paying
+    // registration sequence.
+    let payout_ok = rpc
+        .call("validateaddress", serde_json::json!([payout]))
+        .ok()
+        .and_then(|v| v.get("isvalid").and_then(|b| b.as_bool()))
+        .unwrap_or(false);
+    if !payout_ok {
+        eprintln!("luckynode: payout address {payout:?} is not valid on this node");
+        flush_out();
+        std::process::exit(2);
+    }
     let epoch_len = match identity::resolve_epoch_len(&rpc, epoch) {
         Ok(v) => v,
         Err(e) => {
@@ -224,17 +275,26 @@ fn main() {
         pending: Option<identity::PendingCommitment>,
         last_heartbeat_tip: Option<u64>,
     }
-    fn load_state(path: &Option<String>) -> State {
+    fn load_state(path: &Option<String>) -> Result<State, String> {
         let mut st = State::default();
         let Some(p) = path.as_ref() else {
-            return st;
+            return Ok(st);
         };
-        let Ok(text) = std::fs::read_to_string(p) else {
-            return st;
+        // A missing file is a fresh start; anything else that stops us
+        // reading (or parses wrong) fails CLOSED — silently dropping a
+        // pending fee-paying commitment is how duplicates get minted.
+        let text = match std::fs::read_to_string(p) {
+            Ok(t) => t,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(st),
+            Err(e) => {
+                return Err(format!(
+                    "cannot read state file {p}: {e} (refusing to run blind — move it aside or fix permissions)"
+                ))
+            }
         };
-        let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else {
-            return st;
-        };
+        let v: serde_json::Value = serde_json::from_str(&text).map_err(|e| {
+            format!("corrupt state file {p}: {e} (refusing to run blind — move it aside or delete it)")
+        })?;
         if let (Some(txid), Some(reservation)) = (
             v.get("commitment_txid").and_then(|t| t.as_str()),
             v.get("namereservation"),
@@ -245,7 +305,7 @@ fn main() {
             });
         }
         st.last_heartbeat_tip = v.get("last_heartbeat_tip").and_then(|t| t.as_u64());
-        st
+        Ok(st)
     }
     fn save_state(path: &Option<String>, st: &State) {
         let Some(path) = path.as_ref() else {
@@ -259,11 +319,27 @@ fn main() {
         if let Some(tip) = st.last_heartbeat_tip {
             v.insert("last_heartbeat_tip".into(), serde_json::json!(tip));
         }
-        if let Err(e) = std::fs::write(path, serde_json::Value::Object(v).to_string()) {
+        let bytes = serde_json::Value::Object(v).to_string().into_bytes();
+        // Atomic: tmp + fsync + rename + dir fsync. A crash mid-write
+        // must never leave a truncated file that reads back as "no
+        // pending commitment".
+        let tmp = format!("{path}.tmp");
+        let result = std::fs::File::create(&tmp).and_then(|mut f| {
+            use std::io::Write;
+            f.write_all(&bytes)?;
+            f.sync_all()?;
+            std::fs::rename(&tmp, path)?;
+            if let Some(dir) = std::path::Path::new(path).parent() {
+                if let Ok(d) = std::fs::File::open(dir) {
+                    let _ = d.sync_all();
+                }
+            }
+            Ok(())
+        });
+        if let Err(e) = result {
             eprintln!("luckynode: state file write failed: {e}");
         }
     }
-    let mut state = load_state(&state_file);
     let st = loop {
         match identity::ensure_identity(
             &rpc,
