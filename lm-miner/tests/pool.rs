@@ -77,3 +77,50 @@ fn pool_connection_and_usage_failures_are_typed() {
         .expect("run");
     assert_eq!(out.status.code(), Some(1));
 }
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+#[test]
+fn binary_mines_two_shares_over_v2() {
+    // Parity gate for the single session loop: the same two-share session
+    // over the V2 (Noise + Lucky jobs) wire must accept and land blocks.
+    let mut server =
+        spawn_server(MockProvider::instant(1_000_000), "127.0.0.1:0", None, None, None)
+            .expect("bind");
+    let authority = lm_stratum::v2_session::generate_authority();
+    let v2 = server
+        .spawn_v2_listener("127.0.0.1:0", authority, std::time::Duration::from_secs(3600))
+        .expect("v2 listen");
+    let out = Command::new(env!("CARGO_BIN_EXE_lm-miner"))
+        .args([
+            "pool",
+            "--pool",
+            &v2.to_string(),
+            "--worker",
+            "e2e-v2",
+            "--threads",
+            "1",
+            "--max-shares",
+            "2",
+            "--job-timeout",
+            "10",
+            "--v2",
+            "--v2-authority",
+            &hex(&authority.0),
+        ])
+        .output()
+        .expect("run pool miner (v2)");
+    assert!(
+        out.status.success(),
+        "exit {:?} stderr: {}",
+        out.status.code(),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8(out.stdout).expect("utf8");
+    assert!(stdout.contains("share accepted"), "{stdout}");
+    assert!(stdout.contains("session complete: 2/2"), "{stdout}");
+    assert_eq!(server.stats().shares, 2);
+    server.stop();
+}

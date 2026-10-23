@@ -331,7 +331,106 @@ pub fn run(
     }
 }
 
-/// V1 (JSON stratum) session loop.
+/// Wire-agnostic job snapshot: both wires carry an opaque header
+/// template, height, pool target and an id (string on V1, numeric on V2).
+#[derive(Clone)]
+struct WireJob {
+    id: String,
+    header: Vec<u8>,
+    height: u64,
+    pool_target: [u8; 32],
+}
+
+fn v1_job(j: lm_stratum::v1::Job) -> WireJob {
+    WireJob {
+        id: j.id,
+        header: j.header,
+        height: j.height,
+        pool_target: j.pool_target,
+    }
+}
+
+fn v2_job(j: lm_stratum::v2::LuckyJob) -> WireJob {
+    WireJob {
+        id: j.job_id.to_string(),
+        header: j.header,
+        height: j.height,
+        pool_target: j.pool_target,
+    }
+}
+
+/// The only per-wire surface the session loop needs. Everything else —
+/// stop handling, dev-fee rotation, backoff, chunked grind, nonce-cursor
+/// preservation, stale-job retirement, the post-submit settle, counters —
+/// lives once in [`run_session`]. The two wire implementations are thin.
+trait Wire {
+    fn v2(&self) -> bool;
+    /// Non-blocking: adopt a newer job if one is buffered.
+    fn poll(&mut self) -> Result<Option<WireJob>, String>;
+    /// Blocking up to `timeout`: used only when no job is current.
+    fn wait(&mut self, timeout: Duration) -> Result<Option<WireJob>, String>;
+    fn submit(&mut self, job: &WireJob, nonce: u64) -> Result<(bool, Option<String>), String>;
+}
+
+struct V1Wire {
+    client: lm_stratum::client::PoolClient,
+    worker: String,
+}
+
+impl Wire for V1Wire {
+    fn v2(&self) -> bool {
+        false
+    }
+    fn poll(&mut self) -> Result<Option<WireJob>, String> {
+        self.client
+            .poll_job()
+            .map(|o| o.map(v1_job))
+            .map_err(|e| e.to_string())
+    }
+    fn wait(&mut self, timeout: Duration) -> Result<Option<WireJob>, String> {
+        self.client
+            .read_job(timeout)
+            .map(|o| o.map(v1_job))
+            .map_err(|e| e.to_string())
+    }
+    fn submit(&mut self, job: &WireJob, nonce: u64) -> Result<(bool, Option<String>), String> {
+        match self.client.submit(&self.worker, &job.id, nonce) {
+            Ok((ok, err)) => Ok((ok, err.map(|(code, text)| format!("{code} {text}")))),
+            Err(e) => Err(e.to_string()),
+        }
+    }
+}
+
+struct V2Wire {
+    client: lm_stratum::v2_client::V2Client,
+    channel_id: u32,
+}
+
+impl Wire for V2Wire {
+    fn v2(&self) -> bool {
+        true
+    }
+    fn poll(&mut self) -> Result<Option<WireJob>, String> {
+        self.client
+            .poll_job()
+            .map(|o| o.map(v2_job))
+            .map_err(|e| e.to_string())
+    }
+    fn wait(&mut self, timeout: Duration) -> Result<Option<WireJob>, String> {
+        self.client
+            .read_job(timeout)
+            .map(|o| o.map(v2_job))
+            .map_err(|e| e.to_string())
+    }
+    fn submit(&mut self, job: &WireJob, nonce: u64) -> Result<(bool, Option<String>), String> {
+        let job_id: u32 = job
+            .id
+            .parse()
+            .map_err(|_| format!("bad V2 job id {:?}", job.id))?;
+        self.client.submit(self.channel_id, job_id, nonce)
+    }
+}
+
 fn run_v1(
     cfg: &PoolConfig,
     backend: &Backend,
@@ -341,7 +440,86 @@ fn run_v1(
     agent: String,
     addr: SocketAddr,
 ) -> Outcome {
-    use lm_stratum::v1::Job;
+    let pool = cfg.pool.clone();
+    let password = cfg.password.clone();
+    let tls = cfg.tls.clone();
+    let mut connect = |worker: &str| -> Result<Box<dyn Wire>, String> {
+        let tls_name = tls
+            .as_ref()
+            .and_then(|t| t.server_name.clone())
+            .or_else(|| pool.rsplit_once(':').map(|(h, _)| h.to_string()));
+        let tls_cfg = tls.as_ref().map(|t| TlsCfg {
+            server_name: Some(tls_name.unwrap_or_default()),
+            ca_pem: t.ca_pem.clone(),
+            insecure: t.insecure,
+        });
+        let client = connect_session(addr, &agent, worker, &password, tls_cfg.as_ref())?;
+        Ok(Box::new(V1Wire {
+            client,
+            worker: worker.to_string(),
+        }))
+    };
+    run_session(cfg, backend, policy, stop, sink, &mut connect)
+}
+
+// V2 carries the host/port for SetupConnection beyond the V1 parameter
+// set; the wrapper exists only to build that setup and the connect closure.
+#[allow(clippy::too_many_arguments)]
+fn run_v2(
+    cfg: &PoolConfig,
+    backend: &Backend,
+    policy: &MiningPolicy,
+    stop: &AtomicBool,
+    sink: &mut dyn FnMut(Event),
+    agent: String,
+    pool_host: String,
+    addr: SocketAddr,
+) -> Outcome {
+    use lm_stratum::v2::{SetupConnection, PROTOCOL_MINING};
+    use lm_stratum::v2_client::V2Client;
+    let setup = SetupConnection {
+        protocol: PROTOCOL_MINING,
+        min_version: 2,
+        max_version: 2,
+        flags: 0,
+        endpoint_host: pool_host,
+        endpoint_port: addr.port(),
+        // Vendor carries the configured agent verbatim (identity + device
+        // family), so the pool labels the same worker on both wires.
+        vendor: agent.clone(),
+        hardware_version: backend.device().to_string(),
+        firmware: "0.2".to_string(),
+        // V2 has no password field; the token rides in the device id and
+        // the pool checks it against the same map as V1.
+        device_id: cfg.password.clone(),
+    };
+    let authority = cfg.v2_authority;
+    let mut connect = |worker: &str| -> Result<Box<dyn Wire>, String> {
+        let mut client = V2Client::connect(addr, authority, &setup)
+            .map_err(|e| format!("v2: {e}"))?;
+        let opened = client
+            .open_channel(1, worker, 0.0, [0xffu8; 32])
+            .map_err(|e| format!("v2 channel refused: {e}"))?;
+        Ok(Box::new(V2Wire {
+            client,
+            channel_id: opened.channel_id,
+        }))
+    };
+    run_session(cfg, backend, policy, stop, sink, &mut connect)
+}
+
+/// The one session loop both wires run. Wire differences are confined to
+/// [`Wire`]: connect (via the closure), job acquisition and submit.
+type WireConnect<'a> = &'a mut dyn FnMut(&str) -> Result<Box<dyn Wire>, String>;
+
+fn run_session(
+    cfg: &PoolConfig,
+    backend: &Backend,
+    policy: &MiningPolicy,
+    stop: &AtomicBool,
+    sink: &mut dyn FnMut(Event),
+    connect: WireConnect<'_>,
+) -> Outcome {
     let mut submitted = 0u64;
     let mut accepted = 0u64;
     // Grind each job in chunks and adopt newer jobs as they arrive: one
@@ -362,23 +540,17 @@ fn run_v1(
         }
         let session_worker = dev_worker(cfg, t0);
         if session_worker != cfg.worker {
-            sink(Event::DevFee { worker: session_worker.clone() });
+            sink(Event::DevFee {
+                worker: session_worker.clone(),
+            });
         }
-        let tls_name = cfg
-            .tls
-            .as_ref()
-            .and_then(|t| t.server_name.clone())
-            .or_else(|| cfg.pool.rsplit_once(':').map(|(h, _)| h.to_string()));
-        let tls = cfg.tls.as_ref().map(|t| TlsCfg {
-            server_name: Some(tls_name.clone().unwrap_or_default()),
-            ca_pem: t.ca_pem.clone(),
-            insecure: t.insecure,
-        });
-        let mut client = match connect_session(addr, &agent, &session_worker, &cfg.password, tls.as_ref()) {
-            Ok(c) => c,
+        let mut wire = match connect(&session_worker) {
+            Ok(w) => w,
             Err(e) => {
                 if cfg.fail_fast {
-                    return Outcome::Failed { error: format!("cannot reach pool: {e}") };
+                    return Outcome::Failed {
+                        error: format!("cannot reach pool: {e}"),
+                    };
                 }
                 sink(Event::Reconnect {
                     reason: format!("pool connect failed: {e}"),
@@ -393,15 +565,15 @@ fn run_v1(
         };
         backoff = Duration::from_secs(1);
         sink(Event::Connected {
-            v2: false,
+            v2: wire.v2(),
             worker: session_worker.clone(),
             detail: backend.detail(),
         });
-        let mut current: Option<Job> = None;
+        let mut current: Option<WireJob> = None;
         let mut pos = cfg.start;
         loop {
             if stop.load(Ordering::Relaxed) {
-                drop(client);
+                drop(wire);
                 return stopped(accepted, submitted);
             }
             if dev_worker(cfg, t0) != session_worker {
@@ -423,19 +595,19 @@ fn run_v1(
             // Non-blocking: pick up any newer job sitting in the buffer.
             // A vardiff retarget keeps the SAME header with a fresh job id —
             // keep the nonce position then, or the range gets re-ground and
-            // the pool dedupe rejects the replayed shares (found in testing:
-            // ~10% of shares were duplicate re-finds after rotations).
+            // the pool dedupe rejects the replayed shares.
             loop {
-                match client.poll_job() {
+                match wire.poll() {
                     Ok(Some(j)) => {
                         if current.as_ref().map(|c| c.id != j.id).unwrap_or(true) {
-                            let same_header = current
-                                .as_ref()
-                                .map(|c| c.header == j.header)
-                                .unwrap_or(false);
+                            let same_header =
+                                current.as_ref().map(|c| c.header == j.header).unwrap_or(false);
                             if !same_header {
                                 pos = cfg.start;
-                                sink(Event::JobAdopted { job: j.id.clone(), height: j.height });
+                                sink(Event::JobAdopted {
+                                    job: j.id.clone(),
+                                    height: j.height,
+                                });
                             }
                             current = Some(j);
                         }
@@ -443,7 +615,9 @@ fn run_v1(
                     Ok(None) => break,
                     Err(e) => {
                         if cfg.fail_fast {
-                            return Outcome::Failed { error: format!("pool connection lost: {e}") };
+                            return Outcome::Failed {
+                                error: format!("pool connection lost: {e}"),
+                            };
                         }
                         sink(Event::Reconnect {
                             reason: format!("pool connection lost: {e}"),
@@ -454,9 +628,12 @@ fn run_v1(
                 }
             }
             if current.is_none() {
-                match client.read_job(Duration::from_secs(cfg.job_timeout_secs)) {
+                match wire.wait(Duration::from_secs(cfg.job_timeout_secs)) {
                     Ok(Some(j)) => {
-                        sink(Event::JobAdopted { job: j.id.clone(), height: j.height });
+                        sink(Event::JobAdopted {
+                            job: j.id.clone(),
+                            height: j.height,
+                        });
                         current = Some(j);
                         pos = cfg.start;
                     }
@@ -478,7 +655,9 @@ fn run_v1(
                     }
                     Err(e) => {
                         if cfg.fail_fast {
-                            return Outcome::Failed { error: format!("pool connection lost: {e}") };
+                            return Outcome::Failed {
+                                error: format!("pool connection lost: {e}"),
+                            };
                         }
                         sink(Event::Reconnect {
                             reason: format!("pool connection lost: {e}"),
@@ -500,34 +679,33 @@ fn run_v1(
             match backend.search(&job.header, job.height, &job.pool_target, pos, take, policy) {
                 Ok(Some(sol)) => {
                     hashed += sol.nonce.saturating_sub(pos).saturating_add(1);
-                    match client.submit(&session_worker, &job.id, sol.nonce) {
+                    match wire.submit(&job, sol.nonce) {
                         Ok((true, _)) => {
                             submitted += 1;
                             accepted += 1;
-                            sink(Event::ShareAccepted { job: job.id.clone(), nonce: sol.nonce });
+                            sink(Event::ShareAccepted {
+                                job: job.id.clone(),
+                                nonce: sol.nonce,
+                            });
                         }
                         Ok((false, err)) => {
                             submitted += 1;
-                            let err_text =
-                                err.as_ref().map(|(_, t)| t.as_str()).unwrap_or_default();
+                            let err_text = err.clone().unwrap_or_default();
                             if err_text.contains("stale") {
                                 // The pool declared this job dead; drop it
-                                // instead of grinding it to exhaustion (seen
-                                // live on testnet: three stale rejects, then
-                                // a full nonce budget of wasted work on the
-                                // dead template before the idle reconnect).
+                                // instead of grinding it to exhaustion.
                                 current = None;
                             }
                             sink(Event::ShareRejected {
                                 job: job.id.clone(),
-                                error: err
-                                    .map(|(c, t)| format!("{c} {t}"))
-                                    .unwrap_or_default(),
+                                error: err_text,
                             });
                         }
                         Err(e) => {
                             if cfg.fail_fast {
-                                return Outcome::Failed { error: format!("pool connection lost: {e}") };
+                                return Outcome::Failed {
+                                    error: format!("pool connection lost: {e}"),
+                                };
                             }
                             sink(Event::Reconnect {
                                 reason: format!("pool connection lost: {e}"),
@@ -539,11 +717,10 @@ fn run_v1(
                     // Post-submit settle: an accepted block rotates the job
                     // within the pool's refresh tick, and grinding the stale
                     // job in the meantime submits shares the chain rejects.
-                    // Poll briefly for the rotation before carrying on.
                     let mut rotated = false;
                     let settle = Instant::now() + Duration::from_millis(300);
                     while Instant::now() < settle {
-                        match client.poll_job() {
+                        match wire.poll() {
                             Ok(Some(j)) => {
                                 if current.as_ref().map(|c| c.id != j.id).unwrap_or(true) {
                                     let same_header = current
@@ -572,283 +749,11 @@ fn run_v1(
                             }
                         }
                     }
-                    pos = if rotated { cfg.start } else { sol.nonce.saturating_add(1) };
-                }
-                Ok(None) => {
-                    hashed += take;
-                    pos += take;
-                }
-                Err(e) => {
-                    sink(Event::Note(format!("error: {e}")));
-                    return Outcome::Failed { error: e };
-                }
-            }
-        }
-    }
-}
-
-/// V2 (Noise + Lucky extension) session loop — the same chunked grind
-/// over [`LuckyJob`] templates with u64 submits. Dev-fee rotation, backoff
-/// reconnects, counters and stop semantics mirror [`run_v1`]; the wire is
-/// the only difference.
-// The extra context (agent is unused on V1-style subscribe; host/port
-// ride with the SetupConnection) mirrors run_v1's parameterization
-// one-to-one.
-#[allow(clippy::too_many_arguments)]
-fn run_v2(
-    cfg: &PoolConfig,
-    backend: &Backend,
-    policy: &MiningPolicy,
-    stop: &AtomicBool,
-    sink: &mut dyn FnMut(Event),
-    agent: String,
-    pool_host: String,
-    addr: SocketAddr,
-) -> Outcome {
-    use lm_stratum::v2::{SetupConnection, LuckyJob, PROTOCOL_MINING};
-    use lm_stratum::v2_client::V2Client;
-    let setup = SetupConnection {
-        protocol: PROTOCOL_MINING,
-        min_version: 2,
-        max_version: 2,
-        flags: 0,
-        endpoint_host: pool_host,
-        endpoint_port: addr.port(),
-        // The vendor field carries the configured agent verbatim (identity
-        // + device family, e.g. "lm-miner-mobile/0.1 android"), so the
-        // pool reads the same device label on both wires. `hardware_version`
-        // stays the backend device ("cpu"/"opencl").
-        vendor: agent.clone(),
-        hardware_version: backend.device().to_string(),
-        firmware: "0.2".to_string(),
-        // The pool authenticates the worker against the same password /
-        // worker-token map as V1; V2 has no password field, so the token
-        // rides in the free-form device id.
-        device_id: cfg.password.clone(),
-    };
-    let mut submitted = 0u64;
-    let mut accepted = 0u64;
-    let chunk = cfg.chunk.min(cfg.count);
-    let mut hashed: u64 = 0;
-    let mut report_at = Instant::now() + Duration::from_secs(cfg.report_secs.max(1));
-    let mut backoff = Duration::from_secs(1);
-    let t0 = Instant::now();
-    let stopped = |accepted: u64, submitted: u64| Outcome::Stopped { accepted, submitted };
-    'session: loop {
-        if stop.load(Ordering::Relaxed) {
-            return stopped(accepted, submitted);
-        }
-        let mut client = match V2Client::connect(addr, cfg.v2_authority, &setup) {
-            Ok(c) => c,
-            Err(e) => {
-                if cfg.fail_fast {
-                    return Outcome::Failed { error: format!("cannot reach pool (v2): {e}") };
-                }
-                sink(Event::Reconnect {
-                    reason: format!("pool(v2) connect failed: {e}"),
-                    wait_secs: backoff.as_secs(),
-                });
-                if !sleep_stop(backoff, stop) {
-                    return stopped(accepted, submitted);
-                }
-                backoff = (backoff * 2).min(Duration::from_secs(30));
-                continue 'session;
-            }
-        };
-        backoff = Duration::from_secs(1);
-        let session_worker = dev_worker(cfg, t0);
-        if session_worker != cfg.worker {
-            sink(Event::DevFee { worker: session_worker.clone() });
-        }
-        let opened = match client.open_channel(1, &session_worker, 0.0, [0xffu8; 32]) {
-            Ok(opened) => opened,
-            Err(e) => {
-                if cfg.fail_fast {
-                    return Outcome::Failed { error: format!("pool refused V2 channel: {e}") };
-                }
-                sink(Event::Reconnect {
-                    reason: format!("pool refused V2 channel: {e}"),
-                    wait_secs: 0,
-                });
-                continue 'session;
-            }
-        };
-        let channel_id = opened.channel_id;
-        sink(Event::Connected {
-            v2: true,
-            worker: session_worker.clone(),
-            detail: backend.detail(),
-        });
-        let mut current: Option<LuckyJob> = None;
-        let mut pos = cfg.start;
-        loop {
-            if stop.load(Ordering::Relaxed) {
-                drop(client);
-                return stopped(accepted, submitted);
-            }
-            if dev_worker(cfg, t0) != session_worker {
-                continue 'session;
-            }
-            if submitted >= cfg.max_shares {
-                return Outcome::SessionComplete { accepted, submitted };
-            }
-            if Instant::now() >= report_at {
-                let secs = cfg.report_secs.max(1) as f64;
-                sink(Event::Rate {
-                    hps: hashed as f64 / secs,
-                    hashes: hashed,
-                    window_secs: secs as u64,
-                });
-                hashed = 0;
-                report_at = Instant::now() + Duration::from_secs(cfg.report_secs.max(1));
-            }
-            // Non-blocking: adopt newer jobs; a same-header rotation keeps
-            // the nonce cursor (V1's duplicate-re-find lesson applies to
-            // both wires).
-            loop {
-                match client.poll_job() {
-                    Ok(Some(j)) => {
-                        if current.as_ref().map(|c| c.job_id != j.job_id).unwrap_or(true) {
-                            let same_header = current
-                                .as_ref()
-                                .map(|c| c.header == j.header)
-                                .unwrap_or(false);
-                            if !same_header {
-                                pos = cfg.start;
-                                sink(Event::JobAdopted { job: j.job_id.to_string(), height: j.height });
-                            }
-                            current = Some(j);
-                        }
-                    }
-                    Ok(None) => break,
-                    Err(e) => {
-                        if cfg.fail_fast {
-                            return Outcome::Failed { error: format!("pool connection lost: {e}") };
-                        }
-                        sink(Event::Reconnect {
-                            reason: format!("pool connection lost: {e}"),
-                            wait_secs: 0,
-                        });
-                        continue 'session;
-                    }
-                }
-            }
-            if current.is_none() {
-                match client.read_job(Duration::from_secs(cfg.job_timeout_secs)) {
-                    Ok(Some(j)) => {
-                        sink(Event::JobAdopted { job: j.job_id.to_string(), height: j.height });
-                        current = Some(j);
-                        pos = cfg.start;
-                    }
-                    Ok(None) => {
-                        if cfg.fail_fast {
-                            return Outcome::Failed {
-                                error: format!(
-                                    "idle: no job within {}s ({accepted}/{submitted} accepted)",
-                                    cfg.job_timeout_secs
-                                ),
-                            };
-                        }
-                        sink(Event::Idle {
-                            timeout_secs: cfg.job_timeout_secs,
-                            accepted,
-                            submitted,
-                        });
-                        continue 'session;
-                    }
-                    Err(e) => {
-                        if cfg.fail_fast {
-                            return Outcome::Failed { error: format!("pool connection lost: {e}") };
-                        }
-                        sink(Event::Reconnect {
-                            reason: format!("pool connection lost: {e}"),
-                            wait_secs: 0,
-                        });
-                        continue 'session;
-                    }
-                }
-            }
-            let job = current.clone().expect("job set above");
-            let job_end = cfg.start.saturating_add(cfg.count);
-            if pos >= job_end {
-                sink(Event::JobExhausted { job: job.job_id.to_string() });
-                current = None;
-                pos = cfg.start;
-                continue;
-            }
-            let take = chunk.min(job_end - pos);
-            match backend.search(&job.header, job.height, &job.pool_target, pos, take, policy) {
-                Ok(Some(sol)) => {
-                    hashed += sol.nonce.saturating_sub(pos).saturating_add(1);
-                    match client.submit(channel_id, job.job_id, sol.nonce) {
-                        Ok((true, _)) => {
-                            submitted += 1;
-                            accepted += 1;
-                            sink(Event::ShareAccepted { job: job.job_id.to_string(), nonce: sol.nonce });
-                        }
-                        Ok((false, err)) => {
-                            submitted += 1;
-                            let err_text = err.clone().unwrap_or_default();
-                            if err_text.contains("stale") {
-                                // Same defensive drop as V1: a stale verdict
-                                // retires the job instead of wasting the
-                                // rest of its nonce budget.
-                                current = None;
-                            }
-                            sink(Event::ShareRejected {
-                                job: job.job_id.to_string(),
-                                error: err_text,
-                            });
-                        }
-                        Err(e) => {
-                            if cfg.fail_fast {
-                                return Outcome::Failed { error: format!("pool connection lost: {e}") };
-                            }
-                            sink(Event::Reconnect {
-                                reason: format!("pool connection lost: {e}"),
-                                wait_secs: 0,
-                            });
-                            continue 'session;
-                        }
-                    }
-                    // Post-submit settle: poll briefly for a rotation before
-                    // carrying on (same stale-job avoidance as V1).
-                    let mut rotated = false;
-                    let settle = Instant::now() + Duration::from_millis(300);
-                    while Instant::now() < settle {
-                        match client.poll_job() {
-                            Ok(Some(j)) => {
-                                if current.as_ref().map(|c| c.job_id != j.job_id).unwrap_or(true) {
-                                    let same_header = current
-                                        .as_ref()
-                                        .map(|c| c.header == j.header)
-                                        .unwrap_or(false);
-                                    if !same_header {
-                                        sink(Event::JobAdopted { job: j.job_id.to_string(), height: j.height });
-                                    }
-                                    current = Some(j);
-                                    if !same_header {
-                                        rotated = true;
-                                    }
-                                }
-                                break;
-                            }
-                            Ok(None) => std::thread::sleep(Duration::from_millis(20)),
-                            Err(e) => {
-                                if cfg.fail_fast {
-                                    return Outcome::Failed {
-                                        error: format!("pool connection lost: {e}"),
-                                    };
-                                }
-                                sink(Event::Reconnect {
-                                    reason: format!("pool connection lost: {e}"),
-                                    wait_secs: 0,
-                                });
-                                continue 'session;
-                            }
-                        }
-                    }
-                    pos = if rotated { cfg.start } else { sol.nonce.saturating_add(1) };
+                    pos = if rotated {
+                        cfg.start
+                    } else {
+                        sol.nonce.saturating_add(1)
+                    };
                 }
                 Ok(None) => {
                     hashed += take;
