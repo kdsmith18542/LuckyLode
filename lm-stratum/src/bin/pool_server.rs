@@ -73,6 +73,9 @@ input[type=password],input[type=text]{background:var(--card);border:1px solid va
 .tabbtn{background:none;border:1px solid var(--line);border-radius:8px;color:var(--fg);padding:6px 12px;font:inherit;font-size:13px;cursor:pointer}
 .tabbtn:hover{border-color:var(--gold);color:var(--gold)}
 footer{margin-top:26px;color:var(--dim);font-size:12px;line-height:1.5}
+.muted{color:var(--dim);font-size:12px}
+.gold{color:var(--gold)}
+.twrap{overflow-x:auto}
 </style></head><body>
 <header>
   <h1>Lucky Lode &mdash; official pool</h1>
@@ -94,15 +97,14 @@ footer{margin-top:26px;color:var(--dim);font-size:12px;line-height:1.5}
 <h2>Workers</h2>
 <input type="search" id="wfilter" placeholder="filter by worker / payout address (Enter looks up idle workers)">
 <div id="wlook" style="color:var(--dim);font-size:12px;margin:6px 0"></div>
-<table><thead><tr><th></th><th>worker</th><th>device</th><th>60s</th><th>10m</th><th>1h</th><th>24h</th><th>shares</th><th>streak</th><th>division</th><th>rejects</th><th>last share</th></tr></thead><tbody id="workers"></tbody></table>
+<div class="twrap"><table><thead><tr><th></th><th>worker</th><th>device</th><th>60s</th><th>10m</th><th>1h</th><th>24h</th><th>shares</th><th>streak</th><th>division</th><th>rejects</th><th>last share</th></tr></thead><tbody id="workers"></tbody></table></div>
 <h2>Division boards <span style="text-transform:none">(season = 30 days, effective work; declared device family, policed by rate)</span></h2>
 <div id="divisions"><span style="color:var(--dim)">no ranked workers yet</span></div>
 <h2>Blocks</h2>
-<table><thead><tr><th>height</th><th>finder</th><th>block reward</th><th>jackpot bonus</th><th>pot splash</th><th>prize inflow</th><th>draw claim</th><th>pplns payouts</th></tr></thead><tbody id="blocks"></tbody></table>
+<div class="twrap"><table><thead><tr><th>height</th><th>finder</th><th>block reward</th><th>jackpot bonus</th><th>pot splash</th><th>prize inflow</th><th>draw claim</th><th>pplns payouts</th></tr></thead><tbody id="blocks"></tbody></table></div>
 <h2>Payouts</h2>
 <p class="muted">Sent payouts with txids. Your own due/paid balances live on the <b>My miner</b> tab (worker-token auth).</p>
-<table><thead><tr><th>time</th><th>worker</th><th>amount</th><th>txid</th></tr></thead><tbody id="payouts"></tbody></table><div class="muted" id="pool-totals"></div>
-<table><thead><tr><th>time</th><th>worker</th><th>amount</th><th>txid</th></tr></thead><tbody id="payouts"></tbody></table>
+<div class="twrap"><table><thead><tr><th>time</th><th>worker</th><th>amount</th><th>txid</th></tr></thead><tbody id="payouts"></tbody></table></div><div class="muted" id="pool-totals"></div>
 </section>
 <section id="tab-start">
 <h2>Mine to the official pool</h2>
@@ -171,7 +173,7 @@ footer{margin-top:26px;color:var(--dim);font-size:12px;line-height:1.5}
 <footer id="note"></footer>
 <div class="err" id="err"></div>
 <script>
-const esc=v=>String(v??'-');
+const esc=v=>String(v??'-').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 let TICK='tLKYL';
 const coin=v=>typeof v==='number'?(v/1e8).toLocaleString(undefined,{maximumFractionDigits:8})+' '+TICK:'-';
 const coin8=v=>typeof v==='number'?(v/1e8).toLocaleString(undefined,{maximumFractionDigits:8})+' '+TICK:'-';
@@ -241,12 +243,12 @@ async function tick(){
   document.getElementById('cards').innerHTML=c.join('');
   document.getElementById('mode').textContent=j.mode||'';
   document.getElementById('payoutmode').textContent=j.payout
-    ? (j.payout.exec ? `payouts: EXEC ≥ ${coin(j.payout.threshold)} ${NET.ticker}` : `payouts: dry-run ≥ ${coin(j.payout.threshold)} ${NET.ticker}`)
+    ? (j.payout.exec ? (j.payout.threshold>0 ? `payouts: EXEC ≥ ${coin(j.payout.threshold)}` : 'payouts: EXEC (every balance)') : `payouts: dry-run ≥ ${coin(j.payout.threshold)}`)
     : '';
   document.getElementById('updated').textContent='updated '+new Date().toLocaleTimeString();
   document.getElementById('workers').innerHTML=(j.workers||[]).map(w=>
     `<tr class="${w.online?'':'off'}"><td><span class="dot"></span></td><td>${esc(w.name||w.miner)}</td><td>${esc(device(w.agent))}</td><td>${hs(w.rate60)}</td><td>${hs(w.rate10m)}</td><td>${hs(w.rate1h)}</td><td>${hs(w.rate24h)}</td><td>${esc(w.shares)}</td><td>${w.streak?`${esc(w.streak)}d${w.best_streak>w.streak?` <span class="dim">(best ${esc(w.best_streak)})</span>`:''}`:'—'}</td><td>${w.division_class?esc(w.division_class)+' #'+esc(w.division_rank)+'/'+esc(w.division_size)+(w.attested?' <span class="badge">attested</span>':''):'—'}</td><td>${esc(w.rejects)}</td><td>${ago(w.last_seen)}</td></tr>`).join('')
-    || '<tr><td colspan="11">no workers yet</td></tr>';
+    || '<tr><td colspan="12">no workers yet</td></tr>';
   applyWF();
   const divisions=(j.divisions&&j.divisions.boards)||[];
   document.getElementById('divisions').innerHTML=divisions.map(b=>{
@@ -268,8 +270,8 @@ async function tick(){
   const claimNote = (mode.includes('pot') || mode.includes('jackpot'))
     ? 'Claim mode: draws are pre-committed per height (SHA256D of the parent hash); every find lands — no withholding.'
     : '';
-  document.getElementById('note').textContent =
-    'Official Lucky Lode reference pool · <span id="foot-net">testnet</span> · no operator fee (1% miner + 0.5pp pool dev slice applies at mainnet). '
+  document.getElementById('note').innerHTML =
+    'Official Lucky Lode reference pool · <span id="foot-net">'+esc(NET.name)+'</span> · no operator fee (1% miner + 0.5pp pool dev slice applies at mainnet). '
     + claimNote;
   document.getElementById('err').textContent='';
  }catch(e){document.getElementById('err').textContent='stats fetch failed: '+e;}
@@ -3215,5 +3217,32 @@ mod tests {
         assert_eq!(status, "200 OK");
         assert!(body.contains("\"owed\""));
         open.stop();
+    }
+
+    #[test]
+    fn dashboard_escapes_untrusted_strings() {
+        // Worker names and subscribe agents are arbitrary client input
+        // rendered into innerHTML: the esc() helper must entity-escape,
+        // and markup-building spots must not bypass it. A regression
+        // here is stored XSS on the public dashboard.
+        let esc = "const esc=v=>String(v??'-').replace(/[&<>\"']/g,";
+        assert!(
+            INDEX_HTML.contains(esc),
+            "dashboard esc() must entity-escape &<>\"'"
+        );
+        // One payouts table: a duplicate id leaves the second table
+        // permanently empty (and is invalid HTML).
+        assert_eq!(INDEX_HTML.matches("id=\"payouts\"").count(), 1);
+        // The footer carries markup, so it must use innerHTML (textContent
+        // would print the raw <span>).
+        assert!(INDEX_HTML.contains("getElementById('note').innerHTML"));
+        // Wide tables scroll instead of breaking phone layouts.
+        assert!(INDEX_HTML.contains("class=\"twrap\""));
+        assert!(INDEX_HTML.contains(".twrap{overflow-x:auto}"));
+        // Classes the markup references must exist.
+        assert!(INDEX_HTML.contains(".muted{"));
+        assert!(INDEX_HTML.contains(".gold{"));
+        // The empty-workers row spans the full 12-column table.
+        assert!(INDEX_HTML.contains("colspan=\"12\""));
     }
 }

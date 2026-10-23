@@ -762,7 +762,12 @@ fn handle_conn<P: TemplateProvider + 'static>(stream: TcpStream, shared: Arc<Sha
                     .and_then(|a| a.first())
                     .and_then(|v| v.as_str())
                 {
-                    agent = a.to_string();
+                    // Subscribe agents are arbitrary client strings and feed
+                    // the dashboard verbatim — cap like worker names (the
+                    // dashboard escapes them, this bounds stored state).
+                    let mut a = a.to_string();
+                    a.truncate(MAX_WORKER_NAME_LEN);
+                    agent = a;
                 }
                 let _ = writeln!(
                     stream.get_mut(),
@@ -1130,9 +1135,11 @@ fn handle_v2_conn<P: TemplateProvider + 'static>(
                     continue;
                 }
                 let miner_id = open.user_identity.clone();
+                let mut agent = format!("v2 {} {}", setup.vendor, setup.hardware_version);
+                agent.truncate(MAX_WORKER_NAME_LEN);
                 shared.workers.lock().expect("workers").authorized(
                     &miner_id,
-                    &format!("v2 {} {}", setup.vendor, setup.hardware_version),
+                    &agent,
                     now_secs(),
                 );
                 let channel_id = shared.job_counter.fetch_add(1, Ordering::SeqCst) as u32;
@@ -2649,6 +2656,26 @@ mod division_tests {
         // Restore path (state-file load) replaces the log wholesale.
         server.restore_prize_credits(&[(290, 1_841_270)]);
         assert_eq!(server.prize_credits(), vec![(290, 1_841_270)]);
+        server.stop();
+    }
+
+    #[test]
+    fn v1_overlong_subscribe_agent_is_truncated() {
+        // Subscribe agents are arbitrary client strings stored per worker
+        // and rendered on the dashboard: cap them like worker names
+        // instead of persisting unbounded input.
+        let provider = crate::provider::MockProvider::new([0xffu8; 32], [0xffu8; 32], 1_000_000, 0);
+        let server = spawn_server(provider, "127.0.0.1:0", None, None, None).expect("spawn");
+        let mut c = crate::client::PoolClient::connect(server.addr()).expect("connect");
+        assert!(c.subscribe(&"a".repeat(500)).expect("subscribe"));
+        assert!(c.authorize("trunc-me").expect("authorize"));
+        let agent = server
+            .agents()
+            .into_iter()
+            .find(|(m, _)| m == "trunc-me")
+            .map(|(_, a)| a)
+            .expect("worker recorded");
+        assert_eq!(agent, "a".repeat(MAX_WORKER_NAME_LEN));
         server.stop();
     }
 }
