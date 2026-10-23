@@ -468,7 +468,7 @@ pub fn send_preview(
     }
     if spendable.is_empty() && locked > 0 {
         return Err(format!(
-            "nothing spendable: {:.8} {} sits in luckynode bond addresses (release in Settings → Wallet)",
+            "nothing spendable: {:.8} {} sits in protected addresses (release in Settings → Wallet)",
             locked as f64 / 100_000_000.0,
             ticker(c.net)
         ));
@@ -485,7 +485,7 @@ pub fn send_preview(
     .map_err(|e| {
         if locked > 0 {
             format!(
-                "{e} — plus {:.8} {} locked in luckynode bond addresses (release in Settings → Wallet)",
+                "{e} — plus {:.8} {} locked in protected addresses (release in Settings → Wallet)",
                 locked as f64 / 100_000_000.0,
                 ticker(c.net)
             )
@@ -740,7 +740,7 @@ pub fn protect_address(state: State<'_, AppState>, address: String) -> Result<se
 }
 
 /// Bond lock release: make an address spendable again (draw eligibility
-/// is lost if this held a node bond — the pool re-checks every tick).
+/// stays protected until released here (legacy entries; new identities use on-chain registration).
 #[tauri::command]
 pub fn unprotect_address(state: State<'_, AppState>, address: String) -> Result<serde_json::Value, String> {
     let mut cfg = state.cfg.lock().expect("cfg");
@@ -857,7 +857,7 @@ pub fn send(state: State<'_, AppState>, to: String, amount: String) -> Result<se
     }
     if spendable.is_empty() && locked > 0 {
         return Err(format!(
-            "nothing spendable: {:.8} {} sits in luckynode bond addresses (release in Settings → Wallet)",
+            "nothing spendable: {:.8} {} sits in protected addresses (release in Settings → Wallet)",
             locked as f64 / 100_000_000.0,
             ticker(c.net)
         ));
@@ -874,7 +874,7 @@ pub fn send(state: State<'_, AppState>, to: String, amount: String) -> Result<se
     .map_err(|e| {
         if locked > 0 {
             format!(
-                "{e} — plus {:.8} {} locked in luckynode bond addresses (release in Settings → Wallet)",
+                "{e} — plus {:.8} {} locked in protected addresses (release in Settings → Wallet)",
                 locked as f64 / 100_000_000.0,
                 ticker(c.net)
             )

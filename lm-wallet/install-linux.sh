@@ -58,7 +58,7 @@ cat > "$HOME/.local/share/applications/luckylode-wallet.desktop" <<EOF
 [Desktop Entry]
 Type=Application
 Name=Lucky Lode Wallet
-Comment=Lucky Lode wallet, luckynodes and game stats
+Comment=Lucky Lode wallet: self-custody keys, mining, luckynodes and rewards
 Exec=$INSTALL_DIR/lucky-lode-wallet
 Icon=$ICON
 Terminal=false

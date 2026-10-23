@@ -374,12 +374,12 @@
       <button class="btn" disabled={!oldPw || newPw.length < 8 || newPw !== newPw2} onclick={changePw}>Change</button>
     </div>
     {#if protectedAddrs.length > 0}
-      <label style="margin-top:12px">locked for luckynode bonds (Send will not touch these)</label>
+      <label style="margin-top:12px">protected addresses — Send never spends these</label>
       {#each protectedAddrs as a}
         <div class="row" style="align-items:center;gap:8px">
           <span class="addr" style="word-break:break-all">{a}</span>
           {#if releaseArm === a}
-            <span class="muted">release? a luckynode using it loses draw eligibility</span>
+            <span class="muted">release? Send may spend this address afterwards</span>
             <button class="btn" style="border-color:var(--red);color:var(--red)" onclick={() => release(a)}>Confirm</button>
             <button class="btn" onclick={() => (releaseArm = "")}>Cancel</button>
           {:else}
@@ -535,7 +535,7 @@
       <input id="u" bind:value={cfg.rpc_user} spellcheck="false" />
       <label for="p">RPC password</label>
       <input id="p" bind:value={cfg.rpc_pass} type="password" />
-      <label for="pool">pool dashboard API URL <span class="muted">(Overview/Game stats only — not a node setting, and not the miner's stratum endpoint)</span></label>
+      <label for="pool">pool dashboard API URL <span class="muted">(Overview/Rewards stats only — not a node setting, and not the miner's stratum endpoint)</span></label>
       <input id="pool" bind:value={cfg.pool_url} spellcheck="false" />
       <label for="nbin">luckyd binary path (empty = auto-detect: PATH + usual install locations; legacy verusd also detected)</label>
       <input id="nbin" bind:value={cfg.node_bin} spellcheck="false" placeholder="auto-detect" />
@@ -565,7 +565,7 @@
 
 <h2>About</h2>
 <div class="card muted" style="max-width:640px">
-  Lucky Lode Wallet v0.1 ({api.ticker() === "LKYL" ? "mainnet" : api.ticker() === "rLKYL" ? "regtest" : "testnet"}). Open source (GPL-3.0-only); upstream attributions in NOTICE.
+  Lucky Lode Wallet v{__APP_VERSION__} ({api.ticker() === "LKYL" ? "mainnet" : api.ticker() === "rLKYL" ? "regtest" : "testnet"}). Open source (GPL-3.0-only); upstream attributions in NOTICE.
   This wallet holds its own 12-word seed on this machine and signs every spend locally —
   keys never touch the node. Luckynode participation is an on-chain identity; the node
   wallet only pays registration and per-epoch update fees.
