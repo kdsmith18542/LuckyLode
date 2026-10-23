@@ -219,6 +219,24 @@ impl Indexer {
             "ALTER TABLE blocks ADD COLUMN fees INTEGER NOT NULL DEFAULT 0",
             [],
         );
+        // Migration: block header details (version/bits/nonce/prevhash)
+        // for the block page. Idempotent; older DBs backfill below.
+        let _ = db.execute(
+            "ALTER TABLE blocks ADD COLUMN version INTEGER NOT NULL DEFAULT 0",
+            [],
+        );
+        let _ = db.execute(
+            "ALTER TABLE blocks ADD COLUMN bits TEXT NOT NULL DEFAULT ''",
+            [],
+        );
+        let _ = db.execute(
+            "ALTER TABLE blocks ADD COLUMN nonce TEXT NOT NULL DEFAULT ''",
+            [],
+        );
+        let _ = db.execute(
+            "ALTER TABLE blocks ADD COLUMN prevhash TEXT NOT NULL DEFAULT ''",
+            [],
+        );
         // Migration: game_blocks prize-draw `claim` + `winner` (consensus
         // Luckynode Draw claims observed on pool-mined boundary blocks).
         let _ = db.execute(
@@ -248,6 +266,9 @@ impl Indexer {
         // Backfill size/merkleroot the same way (one getblock each, skipped
         // silently when the node is unreachable — the columns just stay 0).
         this.backfill_block_meta();
+        // Header details (version/bits/nonce/prev) for rows indexed before
+        // the columns existed.
+        this.backfill_block_header();
         // Backfill chainwork the same way (getblock carries it).
         this.backfill_chainwork();
         // Backfill per-block fee totals for rows indexed before the
@@ -324,6 +345,38 @@ impl Indexer {
                     rusqlite::params![size, root, h],
                 );
             }
+        }
+    }
+
+    /// Fill header details (version/bits/nonce/previous hash) for rows
+    /// indexed before those columns existed. `getblockheader` is cheap;
+    /// bounded per pass like the other backfills.
+    fn backfill_block_header(&mut self) {
+        let rows: Vec<(i64, String)> = self
+            .db
+            .prepare("SELECT height, hash FROM blocks WHERE prevhash = '' AND height > 0 ORDER BY height DESC LIMIT 5000")
+            .and_then(|mut st| {
+                st.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+                    .and_then(|it| it.collect::<Result<Vec<_>, _>>())
+            })
+            .unwrap_or_default();
+        for (h, hash) in rows {
+            let Ok(hdr) = self.rpc.call("getblockheader", serde_json::json!([hash])) else { continue };
+            let version = hdr.get("version").and_then(|v| v.as_i64()).unwrap_or(0);
+            let bits = hdr.get("bits").and_then(|v| v.as_str()).unwrap_or("");
+            let nonce = hdr
+                .get("nonce")
+                .and_then(|v| v.as_u64())
+                .map(|n| format!("{n:016x}"))
+                .unwrap_or_default();
+            let prev = hdr
+                .get("previousblockhash")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let _ = self.db.execute(
+                "UPDATE blocks SET version = ?1, bits = ?2, nonce = ?3, prevhash = ?4 WHERE height = ?5",
+                rusqlite::params![version, bits, nonce, prev, h],
+            );
         }
     }
 
@@ -507,15 +560,26 @@ impl Indexer {
         // Cumulative work hex — the hashrate chart differentiates this
         // the same way the node's `getnetworkhashps` does.
         let chainwork = b.get("chainwork").and_then(|v| v.as_str()).unwrap_or("");
+        let version = b.get("version").and_then(|v| v.as_i64()).unwrap_or(0);
+        let bits = b.get("bits").and_then(|v| v.as_str()).unwrap_or("");
+        let nonce = b
+            .get("nonce")
+            .and_then(|v| v.as_u64())
+            .map(|n| format!("{n:016x}"))
+            .unwrap_or_default();
+        let prevhash = b
+            .get("previousblockhash")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
 
         let txn = self
             .db
             .transaction()
             .map_err(|e| format!("index txn: {e}"))?;
         txn.execute(
-            "INSERT INTO blocks(height, hash, time, ntx, difficulty, reserve, pot, drought, pos, size, merkleroot, chainwork)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
-            params![height as i64, hash, time, txs.len() as i64, difficulty, reserve, pot, drought, pos, size, merkleroot, chainwork],
+            "INSERT INTO blocks(height, hash, time, ntx, difficulty, reserve, pot, drought, pos, size, merkleroot, chainwork, version, bits, nonce, prevhash)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+            params![height as i64, hash, time, txs.len() as i64, difficulty, reserve, pot, drought, pos, size, merkleroot, chainwork, version, bits, nonce, prevhash],
         )
         .map_err(|e| format!("index block {height}: {e}"))?;
         for t in txs {
@@ -882,17 +946,17 @@ impl Indexer {
     }
 
     pub fn block_by_height(&self, height: i64) -> Result<Option<serde_json::Value>, String> {
-        type BlockRow = (String, i64, i64, f64, i64, i64, i64, i64, i64, String);
+        type BlockRow = (String, i64, i64, f64, i64, i64, i64, i64, i64, String, i64, String, String, String);
         let row: Option<BlockRow> = self
             .db
             .query_row(
-                "SELECT hash, time, ntx, difficulty, reserve, pot, drought, pos, size, merkleroot FROM blocks WHERE height = ?1",
+                "SELECT hash, time, ntx, difficulty, reserve, pot, drought, pos, size, merkleroot, version, bits, nonce, prevhash FROM blocks WHERE height = ?1",
                 [height],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?, r.get(8)?, r.get(9)?)),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?, r.get(8)?, r.get(9)?, r.get(10)?, r.get(11)?, r.get(12)?, r.get(13)?)),
             )
             .map(Some)
             .unwrap_or(None);
-        let Some((hash, time, ntx, difficulty, reserve, pot, drought, pos, size, merkleroot)) = row else {
+        let Some((hash, time, ntx, difficulty, reserve, pot, drought, pos, size, merkleroot, version, bits, nonce, prevhash)) = row else {
             return Ok(None);
         };
         // Fees collected by this block: sum of spent inputs minus sum of
@@ -912,6 +976,7 @@ impl Indexer {
             "confirmations": tip - height + 1,
             "difficulty": difficulty, "reserve": reserve, "pot": pot, "drought": drought,
             "pos": pos != 0, "size": size, "merkleroot": merkleroot, "fees": fees,
+            "version": version, "bits": bits, "nonce": nonce, "prevhash": prevhash,
         })))
     }
 
@@ -1043,6 +1108,42 @@ impl Indexer {
                 |r| r.get(0),
             )
             .map_err(|e| format!("addr balance: {e}"))?;
+        // Total sent = value of this address's outputs that later got
+        // spent (self-spends net out naturally: both sides count once).
+        let sent: i64 = self
+            .db
+            .query_row(
+                "SELECT COALESCE(SUM(value),0) FROM outs WHERE address = ?1 AND spent_by IS NOT NULL",
+                [addr],
+                |r| r.get(0),
+            )
+            .map_err(|e| format!("addr sent: {e}"))?;
+        // Unspent outputs, newest first (standard explorer view).
+        let mut utxos = Vec::new();
+        {
+            let mut st = self
+                .db
+                .prepare(
+                    "SELECT o.txid, o.n, o.value, t.height FROM outs o
+                     JOIN txs t ON t.txid = o.txid
+                     WHERE o.address = ?1 AND o.spent_by IS NULL
+                     ORDER BY t.height DESC LIMIT 100",
+                )
+                .map_err(|e| format!("addr utxos: {e}"))?;
+            let rows = st
+                .query_map([addr], |r| {
+                    Ok(serde_json::json!({
+                        "txid": r.get::<_, String>(0)?,
+                        "n": r.get::<_, i64>(1)?,
+                        "value": r.get::<_, i64>(2)?,
+                        "height": r.get::<_, i64>(3)?,
+                    }))
+                })
+                .map_err(|e| format!("addr utxos: {e}"))?;
+            for r in rows {
+                utxos.push(r.map_err(|e| format!("addr utxos: {e}"))?);
+            }
+        }
         let mut st = self
             .db
             .prepare(
@@ -1075,8 +1176,8 @@ impl Indexer {
             history.push(serde_json::json!({"txid": txid, "height": height, "flow": flow}));
         }
         Ok(serde_json::json!({
-            "address": addr, "balance": balance, "received": received,
-            "txs": history, "txs_truncated": history.len() == Self::ADDRESS_PAGE_ROWS as usize,
+            "address": addr, "balance": balance, "received": received, "sent": sent,
+            "utxos": utxos, "txs": history, "txs_truncated": history.len() == Self::ADDRESS_PAGE_ROWS as usize,
             "page": page, "pages": (tx_count(addr, &self.db).unwrap_or(history.len() as i64) + Self::ADDRESS_PAGE_ROWS - 1) / Self::ADDRESS_PAGE_ROWS,
             "txcount": tx_count(addr, &self.db).unwrap_or(history.len() as i64),
             "first_seen": first_seen(addr, &self.db),
@@ -1856,6 +1957,16 @@ impl Indexer {
     }
 
     /// Live game state from the node (reserve/pot/drought/divisors).
+    /// Raw transaction hex, fetched from the node on demand (the /tx/raw
+    /// route). Not cached: raw hex is only requested when a user asks.
+    pub fn raw_tx(&self, txid: &str) -> Result<String, String> {
+        self.rpc
+            .call("getrawtransaction", serde_json::json!([txid, 0]))?
+            .as_str()
+            .map(str::to_string)
+            .ok_or_else(|| "node returned no hex".to_string())
+    }
+
     /// Current consensus Luckynode Draw as last mirrored from the pool
     /// (epoch 0 = no pool sync yet / pre-draw node).
     pub fn draw_state(&self) -> serde_json::Value {

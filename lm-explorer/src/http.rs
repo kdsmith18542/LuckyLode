@@ -976,7 +976,7 @@ fn block_page(idx: &Indexer, b: &serde_json::Value) -> String {
     html_page(
         &format!("block {h}"),
         format!(
-            "{}{}<table><tr><th>height</th><td>{}</td></tr><tr><th>hash</th><td>{}</td></tr><tr><th>time</th><td>{}</td></tr><tr><th>type</th><td>{}</td></tr><tr><th>confirmations</th><td>{}</td></tr><tr><th>txs</th><td>{}</td></tr><tr><th>size</th><td>{} bytes</td></tr><tr><th>merkle root</th><td>{}</td></tr><tr><th>difficulty</th><td>{:.2}</td></tr><tr><th>fees collected</th><td>{}</td></tr><tr><th>jackpot reserve</th><td>{}</td></tr><tr><th>pot</th><td>{}</td></tr><tr><th>drought</th><td>{} blocks</td></tr>{game_rows}</table><h2>Transactions</h2><table><tr><th>txid</th><th>size</th><th>fee rate (sat/vB)</th></tr>{rows}</table>{}",
+            "{}{}<table><tr><th>height</th><td>{}</td></tr><tr><th>hash</th><td>{}</td></tr><tr><th>time</th><td>{}</td></tr><tr><th>type</th><td>{}</td></tr><tr><th>confirmations</th><td>{}</td></tr><tr><th>txs</th><td>{}</td></tr><tr><th>size</th><td>{} bytes</td></tr><tr><th>merkle root</th><td>{}</td></tr><tr><th>previous block</th><td>{}</td></tr><tr><th>version</th><td>{}</td></tr><tr><th>bits</th><td>{}</td></tr><tr><th>nonce</th><td>{}</td></tr><tr><th>difficulty</th><td>{:.2}</td></tr><tr><th>fees collected</th><td>{}</td></tr><tr><th>jackpot reserve</th><td>{}</td></tr><tr><th>pot</th><td>{}</td></tr><tr><th>drought</th><td>{} blocks</td></tr>{game_rows}</table><h2>Transactions</h2><table><tr><th>txid</th><th>size</th><th>fee rate (sat/vB)</th></tr>{rows}</table>{}",
             search_box(),
             nav,
             link_block(h),
@@ -987,6 +987,13 @@ fn block_page(idx: &Indexer, b: &serde_json::Value) -> String {
             b["ntx"],
             b["size"].as_i64().unwrap_or(0),
             b["merkleroot"].as_str().unwrap_or("–"),
+            match b["prevhash"].as_str().unwrap_or("") {
+                "" | "-" => "<span class=dim>–</span>".to_string(),
+                h => format!("<a href=/block/{h}>{}</a>", &h[..h.len().min(16)]),
+            },
+            b["version"].as_i64().unwrap_or(0),
+            b["bits"].as_str().unwrap_or("–"),
+            b["nonce"].as_str().unwrap_or("–"),
             b["difficulty"].as_f64().unwrap_or(0.0),
             coins(b["fees"].as_i64().unwrap_or(0)),
             coins(b["reserve"].as_i64().unwrap_or(0)),
@@ -1037,7 +1044,7 @@ fn tx_page(_idx: &Indexer, t: &serde_json::Value) -> String {
     html_page(
         "tx",
         format!(
-            "{}<table><tr><th>txid</th><td>{}</td></tr><tr><th>block</th><td>{} ({} confs)</td></tr><tr><th>fee</th><td>{}</td></tr><tr><th>size</th><td>{}</td></tr><tr><th>fee rate</th><td>{} sat/vB</td></tr><tr><th>total in / out</th><td>{} / {}</td></tr></table><h2>Inputs</h2><table><tr><th>#</th><th>from</th><th>value</th><th>tx</th></tr>{ins}</table><h2>Outputs</h2><table><tr><th>#</th><th>to</th><th>value</th><th>state</th></tr>{outs}</table>",
+            "{}<table><tr><th>txid</th><td>{}</td></tr><tr><th>block</th><td>{} ({} confs)</td></tr><tr><th>fee</th><td>{}</td></tr><tr><th>size</th><td>{}</td></tr><tr><th>fee rate</th><td>{} sat/vB</td></tr><tr><th>total in / out</th><td>{} / {}</td></tr><tr><th>raw</th><td><a href=/tx/{}/raw>raw hex</a> <span class=dim>(fetched from the node on demand)</span></td></tr></table><h2>Inputs</h2><table><tr><th>#</th><th>from</th><th>value</th><th>tx</th></tr>{ins}</table><h2>Outputs</h2><table><tr><th>#</th><th>to</th><th>value</th><th>state</th></tr>{outs}</table>",
             search_box(),
             t["txid"].as_str().unwrap_or(""),
             link_block(t["height"].as_i64().unwrap_or(0)),
@@ -1047,6 +1054,7 @@ fn tx_page(_idx: &Indexer, t: &serde_json::Value) -> String {
             feerate_cell(t),
             coins(in_total),
             coins(out_total),
+            t["txid"].as_str().unwrap_or(""),
         ),
     )
 }
@@ -1093,6 +1101,23 @@ fn address_page(a: &serde_json::Value, page: i64) -> String {
     } else {
         String::new()
     };
+    let addr_html = esc(addr);
+    let copy = format!(
+        " <button onclick=\"navigator.clipboard.writeText('{addr}')\">copy</button>"
+    );
+    let mut utxos = String::new();
+    for u in a["utxos"].as_array().cloned().unwrap_or_default() {
+        utxos += &format!(
+            "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
+            link_tx(u["txid"].as_str().unwrap_or("")),
+            u["n"].as_i64().unwrap_or(0),
+            coins(u["value"].as_i64().unwrap_or(0)),
+            link_block(u["height"].as_i64().unwrap_or(0)),
+        );
+    }
+    if utxos.is_empty() {
+        utxos = "<tr><td colspan=4 class=dim>no unspent outputs</td></tr>".to_string();
+    }
     let unconfirmed = match a.get("unconfirmed") {
         Some(v) if !v.is_null() => coins(v.as_i64().unwrap_or(0)),
         _ => "<span class=dim>–</span>".to_string(),
@@ -1104,12 +1129,12 @@ fn address_page(a: &serde_json::Value, page: i64) -> String {
     html_page(
         "address",
         format!(
-            "{}{}<table><tr><th>address</th><td>{}</td></tr><tr><th>balance</th><td>{}</td></tr><tr><th>total received</th><td>{}</td></tr><tr><th>transactions</th><td>{}</td></tr><tr><th>first seen</th><td>{}</td></tr><tr><th>unconfirmed</th><td>{}</td></tr></table>{}<h2>Transactions</h2><table><tr><th>txid</th><th>block</th><th>direction</th><th>net</th></tr>{rows}</table>{pager}",
+            "{}{}<table><tr><th>address</th><td>{addr_html}{copy}</td></tr><tr><th>balance</th><td>{}</td></tr><tr><th>total received</th><td>{}</td></tr><tr><th>total sent</th><td>{}</td></tr><tr><th>transactions</th><td>{}</td></tr><tr><th>first seen</th><td>{}</td></tr><tr><th>unconfirmed</th><td>{}</td></tr></table>{}<h2>Unspent outputs</h2><table><tr><th>txid</th><th>vout</th><th>value</th><th>height</th></tr>{utxos}</table><h2>Transactions</h2><table><tr><th>txid</th><th>block</th><th>direction</th><th>net</th></tr>{rows}</table>{pager}",
             search_box(),
             "",
-            esc(addr),
             coins(a["balance"].as_i64().unwrap_or(0)),
             coins(a["received"].as_i64().unwrap_or(0)),
+            coins(a["sent"].as_i64().unwrap_or(0)),
             a["txcount"].as_i64().map(|n| n.to_string()).unwrap_or_else(|| "–".to_string()),
             first_seen,
             unconfirmed,
@@ -1302,6 +1327,26 @@ fn handle(idx: &mut Indexer, method: &str, path: &str) -> String {
         };
     }
     if let Some(key) = route.strip_prefix("/tx/") {
+        // Raw hex is fetched from the node on demand (explicit click), not
+        // during page rendering — it never sits under the index lock in a
+        // normal view.
+        if let Some(txid) = key.strip_suffix("/raw") {
+            return match idx.raw_tx(txid) {
+                Ok(hex) => format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    hex.len(),
+                    hex
+                ),
+                Err(e) => {
+                    let body = format!("raw transaction unavailable: {e}");
+                    format!(
+                        "HTTP/1.1 502 Bad Gateway\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        body.len(),
+                        body
+                    )
+                }
+            };
+        }
         return match idx.tx(key).unwrap_or(None) {
             Some(t) if json => json_resp(&t),
             Some(t) => html_resp(&tx_page(idx, &t)),
@@ -1614,5 +1659,66 @@ mod money_tests {
         assert_eq!(super::coins(0), "0 tLKYL");
         assert_eq!(super::coins(100_000_000), "1 tLKYL");
         assert_eq!(super::coins(-100_000_000), "-1 tLKYL");
+    }
+}
+
+#[cfg(test)]
+mod extras_tests {
+    use super::*;
+    use crate::index::Indexer;
+    use lm_stratum::rpc::RpcClient;
+
+    fn idx(name: &str) -> (Indexer, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(name);
+        let _ = std::fs::remove_file(&dir);
+        let rpc = RpcClient::new("127.0.0.1:1", "u", "p");
+        let i = Indexer::open(dir.to_str().expect("path"), rpc).expect("open");
+        (i, dir)
+    }
+
+    #[test]
+    fn block_page_shows_header_details() {
+        let (mut i, dir) = idx("explorer-extras-block.db");
+        i.fixture_exec(
+            "INSERT INTO blocks(height, hash, time, ntx, difficulty, reserve, pot, drought, pos, size, merkleroot, version, bits, nonce, prevhash)
+             VALUES (5, 'h5', 1700000000, 1, 1.0, 0, 0, 0, 0, 200, 'root', 4, '1e0fffff', '00000000000000ff', 'h4')",
+        )
+        .expect("fixture");
+        let r = handle(&mut i, "GET", "/block/5");
+        assert!(r.contains("previous block") && r.contains("href=/block/h4"));
+        assert!(r.contains("1e0fffff"), "bits row");
+        assert!(r.contains("00000000000000ff"), "nonce row");
+        assert!(r.contains("version"), "version row");
+        let _ = std::fs::remove_file(&dir);
+    }
+
+    #[test]
+    fn address_page_shows_sent_and_utxos() {
+        let (mut i, dir) = idx("explorer-extras-addr.db");
+        let a = format!("m{}", "1".repeat(33));
+        i.fixture_exec(&format!(
+            "INSERT INTO blocks(height, hash, time, ntx, difficulty, reserve, pot, drought)
+             VALUES (2, 'h2', 1700000000, 2, 1.0, 0, 0, 0);
+             INSERT INTO txs(txid, height, coinbase) VALUES ('in1', 2, 0), ('out1', 2, 0);
+             INSERT INTO outs(txid, n, address, value, coinbase, spent_by, spent_n)
+             VALUES ('in1', 0, '{a}', 50000000, 0, NULL, NULL),
+                    ('old', 0, '{a}', 30000000, 0, 'spend', 0);"
+        ))
+        .expect("fixture");
+        let r = handle(&mut i, "GET", &format!("/address/{a}"));
+        assert!(r.contains("total sent"), "sent row");
+        assert!(r.contains("0.3 tLKYL"), "sent value: {r:.400}");
+        assert!(r.contains("Unspent outputs") && r.contains("0.5 tLKYL"), "utxo view");
+        assert!(r.contains("navigator.clipboard"), "copy button");
+        let _ = std::fs::remove_file(&dir);
+    }
+
+    #[test]
+    fn raw_tx_route_reports_node_failure() {
+        let (mut i, dir) = idx("explorer-extras-raw.db");
+        let r = handle(&mut i, "GET", "/tx/deadbeef/raw");
+        assert!(r.starts_with("HTTP/1.1 502"), "{r:.80}");
+        assert!(r.contains("raw transaction unavailable"));
+        let _ = std::fs::remove_file(&dir);
     }
 }
