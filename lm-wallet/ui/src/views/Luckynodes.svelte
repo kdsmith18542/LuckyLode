@@ -6,6 +6,9 @@
   let addr = $state("");
   let msg = $state("");
   let err = $state("");
+  // Two-step register flow: stage the review, then broadcast on confirm.
+  let confirming = $state<{ name: string; addr: string } | null>(null);
+  let regBusy = $state(false);
   let loading = $state(true);
 
   // Identities registered from this app (ln- names). Legacy pool-era

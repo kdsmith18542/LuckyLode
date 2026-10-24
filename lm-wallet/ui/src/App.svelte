@@ -148,6 +148,12 @@
     await checkWallet();
   }
 
+  // A view that throws while mounting must not leave the previous view
+  // frozen on screen (the classic "tab does nothing" bug).
+  function reportViewError(e: unknown) {
+    console.error("view failed:", e);
+  }
+
   function toggleTheme() {
     theme = theme === "dark" ? "light" : "dark";
     setTheme(theme);
@@ -367,7 +373,16 @@
       <div class="banner pot">💧 NEXT BLOCK ({next.height}) IS A POT EVENT — tier {next.tier} ({next.pot_pct}% of the pot) splash</div>
     {/if}
 
-    {#if view === "overview"}<Overview />{:else if view === "send"}<Send />{:else if view === "receive"}<Receive />{:else if view === "miner"}<Miner />{:else if view === "luckynodes"}<Luckynodes />{:else if view === "rewards"}<Rewards />{:else if view === "settings"}<Settings />{/if}
+    <svelte:boundary onerror={reportViewError}>
+      {#if view === "overview"}<Overview />{:else if view === "send"}<Send />{:else if view === "receive"}<Receive />{:else if view === "miner"}<Miner />{:else if view === "luckynodes"}<Luckynodes />{:else if view === "rewards"}<Rewards />{:else if view === "settings"}<Settings />{/if}
+      {#snippet failed(error, reset)}
+        <div class="card" style="border-color:var(--red)">
+          <b style="color:var(--red)">This view failed to render</b>
+          <div class="muted" style="margin-top:6px;white-space:pre-wrap">{String(error)}</div>
+          <button class="btn" style="margin-top:10px" onclick={reset}>Retry</button>
+        </div>
+      {/snippet}
+    </svelte:boundary>
   </main>
 </div>
 {/if}
