@@ -63,6 +63,13 @@ fn log_line(log: &Mutex<VecDeque<String>>, line: String) {
     l.push_back(line);
 }
 
+/// Backoff between grind retries after consecutive backend search failures:
+/// 5 s doubling to a 60 s cap. A transient GPU hiccup rides out without a
+/// manual restart; a dead backend just sleeps longer between attempts.
+fn search_backoff_secs(consecutive: u32) -> u64 {
+    (5u64 << consecutive.saturating_sub(1).min(4)).min(60)
+}
+
 fn set_error(status: &Mutex<Status>, log: &Mutex<VecDeque<String>>, err: Option<String>) {
     if let Some(e) = &err {
         log_line(log, format!("error: {e}"));
@@ -591,6 +598,7 @@ fn run_solo(
     let mut rejected: u64 = 0;
     let mut nonce: u64 = rand_nonce();
     let mut tpl: Option<(lm_stratum::provider::JobTemplate, Vec<Vec<u8>>)> = None;
+    let mut search_errors: u32 = 0;
     let mut last_fetch = Instant::now()
         .checked_sub(std::time::Duration::from_secs(SOLO_REFRESH_SECS + 1))
         .unwrap_or_else(Instant::now);
@@ -678,10 +686,30 @@ fn run_solo(
         };
         let t0 = Instant::now();
         let sol = match backend.search(&t.header, t.height, &t.net_target, nonce, chunk, &policy) {
-            Ok(s) => s,
+            Ok(s) => {
+                if search_errors > 0 {
+                    search_errors = 0;
+                    set_error(&status, &log, None);
+                }
+                s
+            }
             Err(e) => {
-                set_error(&status, &log, Some(format!("search: {e}")));
-                break;
+                search_errors = search_errors.saturating_add(1);
+                set_error(
+                    &status,
+                    &log,
+                    Some(format!(
+                        "search: {e} (retrying in {}s)",
+                        search_backoff_secs(search_errors)
+                    )),
+                );
+                if !sleep_stop(
+                    std::time::Duration::from_secs(search_backoff_secs(search_errors)),
+                    &stop,
+                ) {
+                    break;
+                }
+                continue;
             }
         };
         let dt = t0.elapsed().as_secs_f64().max(0.001);
@@ -703,14 +731,22 @@ fn run_solo(
                 Ok(v) if v.is_null() => {
                     accepted += 1;
                     log_line(&log, format!("block found: height {}", t.height));
+                    // The tip moved: retire the template instead of
+                    // grinding one stale chunk after our own find.
+                    tpl = None;
                 }
                 Ok(v) => {
                     rejected += 1;
-                    log_line(&log, format!("block rejected: {v}"));
+                    log_line(&log, format!("block rejected ({v}): retiring template"));
+                    // A reject means this template is dead (stale height,
+                    // spent/duplicate submission): refetch next tick
+                    // instead of grinding the remaining nonce budget.
+                    tpl = None;
                 }
                 Err(e) => {
                     rejected += 1;
-                    log_line(&log, format!("block rejected: {e}"));
+                    log_line(&log, format!("block rejected ({e}): retiring template"));
+                    tpl = None;
                 }
             }
         }
@@ -805,6 +841,17 @@ mod tests {
     use super::*;
     use std::sync::atomic::Ordering;
     use std::time::Duration;
+
+    #[test]
+    fn search_backoff_doubles_to_a_sixty_second_cap() {
+        assert_eq!(search_backoff_secs(0), 5);
+        assert_eq!(search_backoff_secs(1), 5);
+        assert_eq!(search_backoff_secs(2), 10);
+        assert_eq!(search_backoff_secs(3), 20);
+        assert_eq!(search_backoff_secs(4), 40);
+        assert_eq!(search_backoff_secs(5), 60);
+        assert_eq!(search_backoff_secs(100), 60);
+    }
 
     /// End-to-end smoke: connect to a live local pool, mine a bit, stop.
     /// Ignored by default — run with `-- --ignored` while a pool serves
