@@ -504,6 +504,35 @@ fn is_loopback_host(h: &str) -> bool {
 }
 
 /// Preview a payment: build + sign locally, stash the signed bytes for a
+/// Fee guidance for the Send chooser: the node's own `estimatefee`
+/// (BTC/kB → sat/kB, floored at the relay minimum) plus the hard floor
+/// the wallet enforces. No RBF here by design — the node disables
+/// replacement, so the rate is chosen up front, not bumped after.
+#[tauri::command(async)]
+pub fn fee_estimate(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
+    fn sats_per_kb(v: Option<&serde_json::Value>) -> u64 {
+        let btc = v.and_then(|x| x.as_f64()).unwrap_or(-1.0);
+        if btc < 0.0 {
+            return 0;
+        }
+        ((btc * 100_000_000.0).round() as u64).max(wallet::MIN_FEE_RATE_SAT_PER_KB)
+    }
+    let rpc = node::client(&state)?;
+    let fast = rpc
+        .call("estimatefee", serde_json::json!([1]))
+        .ok();
+    let slow = rpc
+        .call("estimatefee", serde_json::json!([6]))
+        .ok();
+    Ok(json!({
+        "relay_floor_sats_per_kb": wallet::MIN_FEE_RATE_SAT_PER_KB,
+        "default_sats_per_kb": lm_keys::sign::DEFAULT_FEE_RATE_SAT_PER_KB,
+        "fast_sats_per_kb": sats_per_kb(fast.as_ref()),
+        "slow_sats_per_kb": sats_per_kb(slow.as_ref()),
+        "max_sats_per_kb": wallet::MAX_FEE_RATE_SAT_PER_KB,
+    }))
+}
+
 /// one-shot confirm. Nothing broadcasts. The UI shows the exact fee and
 /// change for review; confirm can only broadcast these bytes.
 #[tauri::command(async)]
@@ -511,6 +540,7 @@ pub fn send_preview(
     state: State<'_, AppState>,
     to: String,
     amount: String,
+    fee_rate: Option<u64>,
 ) -> Result<serde_json::Value, String> {
     let amt = wallet::parse_amount_lkyl(&amount)?;
     let c = wctx(&state)?;
@@ -557,6 +587,7 @@ pub fn send_preview(
         amt,
         c.change_next,
         wallet::spend_epoch(&c.rpc),
+        fee_rate.unwrap_or(lm_keys::sign::DEFAULT_FEE_RATE_SAT_PER_KB),
     )
     .map_err(|e| {
         if locked > 0 {
@@ -981,6 +1012,7 @@ pub fn send(
     state: State<'_, AppState>,
     to: String,
     amount: String,
+    fee_rate: Option<u64>,
 ) -> Result<serde_json::Value, String> {
     let amt = wallet::parse_amount_lkyl(&amount)?;
     let c = wctx(&state)?;
@@ -1027,6 +1059,7 @@ pub fn send(
         to.trim(),
         amt,
         c.change_next,
+        fee_rate.unwrap_or(lm_keys::sign::DEFAULT_FEE_RATE_SAT_PER_KB),
     )
     .map_err(|e| {
         if locked > 0 {

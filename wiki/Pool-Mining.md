@@ -14,6 +14,11 @@ chain pays the same whoever builds the block).
   (`--device auto|cpu|opencl`; `--v2` for the V2 wire)
 - Your **worker name doubles as your payout address**. Use a real
   address or your balance sits unpayable (visible on the dashboard).
+- **Reference miner only (for now):** the V1 wire is custom (no
+  `mining.set_difficulty`, empty extranonce, custom notify params), so
+  today only `lm-miner` can mine here — third-party V1 miners expect
+  extranonce + `set_difficulty` and will not work. A compat layer is
+  queued; until then this page documents the reference path.
 
 ## How pay works
 

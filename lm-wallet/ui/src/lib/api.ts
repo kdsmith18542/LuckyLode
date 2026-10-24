@@ -36,12 +36,15 @@ export const walletChangePassword = (old_password: string, new_password: string)
   });
 export const walletReveal = () => invoke<Json>("wallet_reveal");
 export const walletRescan = () => invoke<Json>("wallet_rescan");
-export const send = (to: string, amount: string) => invoke<Json>("send", { to, amount });
+export const send = (to: string, amount: string, feeRate?: number) =>
+  invoke<Json>("send", { to, amount, fee_rate: feeRate ?? null });
 /** Review step: build + sign locally, returns the exact fee/change for confirmation. Nothing broadcasts. */
-export const sendPreview = (to: string, amount: string) =>
-  invoke<Json>("send_preview", { to, amount });
+export const sendPreview = (to: string, amount: string, feeRate?: number) =>
+  invoke<Json>("send_preview", { to, amount, fee_rate: feeRate ?? null });
 /** Confirm step: broadcast the exact reviewed bytes (single-use). */
 export const sendConfirm = (txid: string) => invoke<Json>("send_confirm", { txid });
+/** Fee guidance: node estimatefee hints + the enforced floor/cap. */
+export const feeEstimate = () => invoke<Json>("fee_estimate", {});
 export const gameInfo = () => invoke<Json>("game_info");
 export const emission = () => invoke<Json>("emission_info");
 export const nextDraw = () => invoke<Json>("next_draw");

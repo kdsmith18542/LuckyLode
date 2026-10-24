@@ -10,6 +10,9 @@
    balance.
 4. **Mine:** wallet **Miner** tab → GPU/CPU → Start. Or CLI:
    `lm-miner pool --pool luckylode.cc:3346 --worker YOUR_ADDRESS`.
+   Mining needs the reference miner for now: the V1 wire is custom
+   (no `set_difficulty`/extranonce), so third-party V1 miners don't
+   connect — see [Pool Mining](Pool-Mining).
 5. **Watch:** your worker appears on https://luckylode.cc/pool/ within a
    minute; payouts are sent automatically once coins mature and your
    balance reaches the payout threshold.

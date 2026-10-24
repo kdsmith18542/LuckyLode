@@ -85,6 +85,7 @@ fn main() {
             commands::new_address,
             commands::send,
             commands::send_preview,
+            commands::fee_estimate,
             commands::send_confirm,
             commands::receive_list,
             commands::wallet_status,

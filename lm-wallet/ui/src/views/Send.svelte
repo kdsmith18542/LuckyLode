@@ -10,6 +10,31 @@
   let saveName = $state("");
   let saved = $state("");
   let preview = $state<any>(null);
+  // Miner fee chooser (sat/kB): the rate is set up front — no RBF, the
+  // node disables replacement. Slow = relay floor, Normal = the long
+  // standing default, Fast = 5x for urgency, Custom = your number
+  // (100–100000, enforced backend-side too).
+  let feeTier = $state<"slow" | "normal" | "fast" | "custom">("normal");
+  let customRate = $state("");
+  let feeHint = $state<any>(null);
+  const feeRate = $derived.by(() => {
+    const floor = Number(feeHint?.relay_floor_sats_per_kb ?? 100) || 100;
+    const fast = Math.max(5000, Number(feeHint?.fast_sats_per_kb ?? 0) || 0);
+    if (feeTier === "slow") return floor;
+    if (feeTier === "fast") return fast;
+    if (feeTier === "custom") {
+      const n = Math.floor(Number(customRate));
+      return Number.isFinite(n) && n > 0 ? n : 1000;
+    }
+    return 1000;
+  });
+  async function loadFeeHint() {
+    try {
+      feeHint = await api.feeEstimate();
+    } catch {
+      feeHint = null;
+    }
+  }
   // Same-box staking shares the node's UTXO set :
   // a send can race the staker for the same coin. No coins are lost, but
   // one of the two transactions loses — warn so it is never a surprise.
@@ -38,6 +63,7 @@
   }
   $effect(() => {
     loadContacts();
+    loadFeeHint();
   });
 
   async function saveContact() {
@@ -60,7 +86,7 @@
     err = "";
     preview = null;
     try {
-      const r: any = await api.sendPreview(to.trim(), amount.trim());
+      const r: any = await api.sendPreview(to.trim(), amount.trim(), feeRate);
       preview = r; // { txid, to, amount_sats, fee_sats, change_sats }
     } catch (e) {
       err = String(e);
@@ -105,6 +131,16 @@
   <input id="to" bind:value={to} oninput={() => (preview = null)} placeholder="L… / m… / n…" spellcheck="false" />
   <label for="amt">amount</label>
   <input id="amt" bind:value={amount} oninput={() => (preview = null)} placeholder={"0.0 " + api.ticker()} inputmode="decimal" />
+  <div class="muted" style="margin-top:10px">miner fee (no RBF — the node disables replacement, so pick the rate now)</div>
+  <div class="row" style="margin-top:4px" role="radiogroup" aria-label="miner fee rate">
+    {#each [["slow", "Slow"], ["normal", "Normal"], ["fast", "Fast"], ["custom", "Custom"]] as [id, label]}
+      <button class="btn" class:primary={feeTier === id} onclick={() => { feeTier = id as typeof feeTier; preview = null; }}>{label}</button>
+    {/each}
+    {#if feeTier === "custom"}
+      <input bind:value={customRate} oninput={() => (preview = null)} placeholder="sat/kB" inputmode="numeric" style="max-width:120px" aria-label="custom fee rate in satoshis per kilobyte" />
+    {/if}
+    <span class="muted">{feeRate} sat/kB{#if feeHint?.fast_sats_per_kb} · network suggests ~{feeHint.fast_sats_per_kb}{/if}</span>
+  </div>
   {#if to.trim()}
     <div class="row" style="margin-top:10px">
       <input bind:value={saveName} aria-label="contact name" placeholder="save as contact…" style="max-width:220px" />
