@@ -2932,10 +2932,7 @@ mod division_tests {
         let mut c = crate::client::PoolClient::connect(extra).expect("connect extra");
         assert!(c.subscribe("probe/0.1").expect("subscribe"));
         assert!(c.authorize("extra-w").expect("authorize"));
-        assert!(server
-            .names()
-            .into_iter()
-            .any(|(m, _)| m == "extra-w"));
+        assert!(server.names().into_iter().any(|(m, _)| m == "extra-w"));
         server.stop();
     }
 

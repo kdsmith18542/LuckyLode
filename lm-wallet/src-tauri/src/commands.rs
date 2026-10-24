@@ -518,12 +518,8 @@ pub fn fee_estimate(state: State<'_, AppState>) -> Result<serde_json::Value, Str
         ((btc * 100_000_000.0).round() as u64).max(wallet::MIN_FEE_RATE_SAT_PER_KB)
     }
     let rpc = node::client(&state)?;
-    let fast = rpc
-        .call("estimatefee", serde_json::json!([1]))
-        .ok();
-    let slow = rpc
-        .call("estimatefee", serde_json::json!([6]))
-        .ok();
+    let fast = rpc.call("estimatefee", serde_json::json!([1])).ok();
+    let slow = rpc.call("estimatefee", serde_json::json!([6])).ok();
     Ok(json!({
         "relay_floor_sats_per_kb": wallet::MIN_FEE_RATE_SAT_PER_KB,
         "default_sats_per_kb": lm_keys::sign::DEFAULT_FEE_RATE_SAT_PER_KB,

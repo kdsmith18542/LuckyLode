@@ -1014,6 +1014,9 @@ pub fn activity(
 }
 
 /// Fee (sats/KB) for wallet sends: the network floor with headroom.
+/// (Test-only re-export; production code paths the full
+/// `lm_keys::sign::` path.)
+#[cfg(test)]
 pub use lm_keys::sign::DEFAULT_FEE_RATE_SAT_PER_KB;
 
 /// Fee-rate bounds for the Send chooser (sat/kB). Floor = the node's
@@ -1172,7 +1175,16 @@ pub fn send_payment(
     fee_rate_sat_per_kb: u64,
 ) -> Result<SendResult, String> {
     let epoch = spend_epoch(rpc);
-    let draft = prepare_payment(seed, net, utxos, dest_addr, amount_sats, change_next, epoch, fee_rate_sat_per_kb)?;
+    let draft = prepare_payment(
+        seed,
+        net,
+        utxos,
+        dest_addr,
+        amount_sats,
+        change_next,
+        epoch,
+        fee_rate_sat_per_kb,
+    )?;
     let txid: String = broadcast_payment(rpc, &draft.hex, &draft.txid)?;
     Ok(SendResult {
         txid,
@@ -1496,10 +1508,28 @@ mod tests {
         };
         let dest = "mvSvTtvD9H9fkgi8MGDyLALgRaR2LhnWFM";
         let epoch = lm_keys::sign::Epoch::Sprout;
-        let base = prepare_payment(&seed, Network::Testnet, &[utxo.clone()], dest, 500_000, 0, epoch, 1000)
-            .expect("base rate");
-        let fast = prepare_payment(&seed, Network::Testnet, &[utxo.clone()], dest, 500_000, 0, epoch, 5000)
-            .expect("fast rate");
+        let base = prepare_payment(
+            &seed,
+            Network::Testnet,
+            std::slice::from_ref(&utxo),
+            dest,
+            500_000,
+            0,
+            epoch,
+            1000,
+        )
+        .expect("base rate");
+        let fast = prepare_payment(
+            &seed,
+            Network::Testnet,
+            std::slice::from_ref(&utxo),
+            dest,
+            500_000,
+            0,
+            epoch,
+            5000,
+        )
+        .expect("fast rate");
         assert!(fast.fee > base.fee, "higher rate pays a higher fee");
         assert_eq!(fast.fee, base.fee * 5, "fee scales linearly with the rate");
         assert!(check_fee_rate(0).is_err(), "zero is not a rate");
@@ -1507,7 +1537,17 @@ mod tests {
         assert!(check_fee_rate(100).is_ok());
         assert!(check_fee_rate(100_000).is_ok());
         assert!(check_fee_rate(100_001).is_err(), "fat-finger guard");
-        assert!(prepare_payment(&seed, Network::Testnet, &[utxo], dest, 500_000, 0, epoch, 10).is_err());
+        assert!(prepare_payment(
+            &seed,
+            Network::Testnet,
+            &[utxo],
+            dest,
+            500_000,
+            0,
+            epoch,
+            10
+        )
+        .is_err());
     }
 
     #[test]
@@ -1534,12 +1574,30 @@ mod tests {
             mk(&"aa".repeat(32), 600_000, P2PKH),
             mk(&"bb".repeat(32), 100_000_000, GUARDED),
         ];
-        let d = prepare_payment(&seed, Network::Testnet, &mixed, dest, 500_000, 0, epoch, DEFAULT_FEE_RATE_SAT_PER_KB)
-            .unwrap_or_else(|e| panic!("mixed funds: {e}"));
+        let d = prepare_payment(
+            &seed,
+            Network::Testnet,
+            &mixed,
+            dest,
+            500_000,
+            0,
+            epoch,
+            DEFAULT_FEE_RATE_SAT_PER_KB,
+        )
+        .unwrap_or_else(|e| panic!("mixed funds: {e}"));
         assert!(d.change < 200_000, "change {} uses guarded funds", d.change);
         // Guarded-only: honest error naming the lock.
         let only = vec![mk(&"bb".repeat(32), 100_000_000, GUARDED)];
-        match prepare_payment(&seed, Network::Testnet, &only, dest, 1_000, 0, epoch, DEFAULT_FEE_RATE_SAT_PER_KB) {
+        match prepare_payment(
+            &seed,
+            Network::Testnet,
+            &only,
+            dest,
+            1_000,
+            0,
+            epoch,
+            DEFAULT_FEE_RATE_SAT_PER_KB,
+        ) {
             Ok(_) => panic!("guarded-only must not fund"),
             Err(e) => assert!(e.contains("stake-guarded"), "error was: {e}"),
         }
@@ -1774,7 +1832,16 @@ mod tests {
                 .as_str()
                 .ok_or("dest addr")?
                 .to_string();
-            let r = send_payment(&rpc, &seed, net, &scan_res.utxos, &dest, 400_000, 0, DEFAULT_FEE_RATE_SAT_PER_KB)?;
+            let r = send_payment(
+                &rpc,
+                &seed,
+                net,
+                &scan_res.utxos,
+                &dest,
+                400_000,
+                0,
+                DEFAULT_FEE_RATE_SAT_PER_KB,
+            )?;
             assert_eq!(r.change_used, Some(0));
             assert!(r.fee > 0 && r.fee < 10_000);
             eprintln!("e2e: sent {} (fee {}), waiting 1 conf", r.txid, r.fee);
@@ -1873,7 +1940,17 @@ mod tests {
             .any(|r| r.txid == fund && r.category == "receive"));
         // Send part of it back to the pool node address.
         let dest = "n2dQr43hTDtDx5XwKnwozN7un4ZbpFzESc";
-        let r = send_payment(&rpc, &seed, net, &scan.utxos, dest, 400_000, 0, DEFAULT_FEE_RATE_SAT_PER_KB).expect("send");
+        let r = send_payment(
+            &rpc,
+            &seed,
+            net,
+            &scan.utxos,
+            dest,
+            400_000,
+            0,
+            DEFAULT_FEE_RATE_SAT_PER_KB,
+        )
+        .expect("send");
         eprintln!("sent back {} (fee {})", r.txid, r.fee);
         // Confirm on chain.
         let t0 = Instant::now();

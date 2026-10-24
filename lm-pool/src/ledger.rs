@@ -242,8 +242,7 @@ impl Ledger {
         // scan): per-share effective work uses the exact aggregate
         // formula, with the comeback weight resolved above.
         let ov = if rec.overnight { OVERNIGHT_PERMILLE } else { 0 };
-        let eff = (rec.work as u128 * (1000 + ov) as u128 * (1000 + cb) as u128
-            / 1_000_000)
+        let eff = (rec.work as u128 * (1000 + ov) as u128 * (1000 + cb) as u128 / 1_000_000)
             .min(u64::MAX as u128) as u64;
         {
             let per_day = self.day_work.entry(rec.miner.clone()).or_default();
@@ -298,9 +297,7 @@ impl Ledger {
         if hour != self.last_prune_hour {
             self.last_prune_hour = hour;
             self.hour_work.retain(|_, hours| {
-                hours.retain(|h, _| {
-                    h.saturating_add(HOUR_WORK_RETAIN_HOURS) >= hour
-                });
+                hours.retain(|h, _| h.saturating_add(HOUR_WORK_RETAIN_HOURS) >= hour);
                 !hours.is_empty()
             });
         }
@@ -323,8 +320,7 @@ impl Ledger {
         for s in self.shares.iter() {
             let r = &s.rec;
             let ov = if r.overnight { OVERNIGHT_PERMILLE } else { 0 };
-            let eff = (r.work as u128 * (1000 + ov) as u128
-                * (1000 + s.comeback_pm) as u128
+            let eff = (r.work as u128 * (1000 + ov) as u128 * (1000 + s.comeback_pm) as u128
                 / 1_000_000)
                 .min(u64::MAX as u128) as u64;
             let day = day_index(r.ts);
@@ -536,8 +532,7 @@ impl Ledger {
             let last_ts = self.last_seen.get(miner).copied().unwrap_or(0);
             let streak_days = current_streak(all_days, last_ts, now_ts);
             let streak_pm = streak_bonus_per_mille(streak_days);
-            let eff_work =
-                (eff * (1000 + streak_pm) as u128 / 1000).min(u64::MAX as u128) as u64;
+            let eff_work = (eff * (1000 + streak_pm) as u128 / 1000).min(u64::MAX as u128) as u64;
             rows.push(BoardEntry {
                 miner: miner.to_string(),
                 class: division_for(None, hps_map.get(miner).copied().unwrap_or(0)),
@@ -689,7 +684,11 @@ mod tests {
         assert_eq!(board[1].days_active, 2);
         // Day-aligned window: identical to the raw scan order.
         let mut raw: Vec<(String, u64)> = Vec::new();
-        for s in l.shares.iter().filter(|s| s.rec.ts <= now && s.rec.ts > now - 2 * D) {
+        for s in l
+            .shares
+            .iter()
+            .filter(|s| s.rec.ts <= now && s.rec.ts > now - 2 * D)
+        {
             match raw.iter_mut().find(|(m, _)| m == &s.rec.miner) {
                 Some((_, w)) => *w += s.rec.work,
                 None => raw.push((s.rec.miner.clone(), s.rec.work)),
@@ -742,7 +741,9 @@ mod tests {
         // Hours older than the 49 h tail go the same way.
         let hours = l.hour_work.get("m1").expect("miner present");
         assert!(
-            hours.keys().all(|h| h + HOUR_WORK_RETAIN_HOURS >= 100 * D / 3600),
+            hours
+                .keys()
+                .all(|h| h + HOUR_WORK_RETAIN_HOURS >= 100 * D / 3600),
             "only the trailing hours remain"
         );
     }
@@ -786,7 +787,8 @@ mod tests {
     }
 
     #[test]
-    fn farms_are_ranked_but_flagged() {        let mut l = Ledger::new();
+    fn farms_are_ranked_but_flagged() {
+        let mut l = Ledger::new();
         // 600 MH/s sustained over the class window: farm territory.
         l.submit(ShareRec {
             miner: "m9".to_string(),

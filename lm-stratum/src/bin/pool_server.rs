@@ -2745,7 +2745,11 @@ fn main() -> std::process::ExitCode {
             // With --tls-bind the main port stays plaintext and the TLS
             // config goes to the second bind below; without it the cert
             // wraps the main port (legacy behavior, covered by tls_e2e).
-            if tls_bind.is_some() { None } else { tls.clone() },
+            if tls_bind.is_some() {
+                None
+            } else {
+                tls.clone()
+            },
         ) {
             Ok(s) => s,
             Err(e) => {
@@ -2926,7 +2930,11 @@ fn main() -> std::process::ExitCode {
             &addr.to_string(),
             pool_password.clone(),
             worker_tokens,
-            if tls_bind.is_some() { None } else { tls.clone() },
+            if tls_bind.is_some() {
+                None
+            } else {
+                tls.clone()
+            },
         ) {
             Ok(s) => s,
             Err(e) => {

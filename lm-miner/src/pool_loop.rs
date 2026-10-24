@@ -588,13 +588,9 @@ fn run_v2(
                 .map(|opened| (client, opened.channel_id))
         })();
         match opened {
-            Ok((client, channel_id)) => Ok((
-                Box::new(V2Wire {
-                    client,
-                    channel_id,
-                }),
-                ep.arg.clone(),
-            )),
+            Ok((client, channel_id)) => {
+                Ok((Box::new(V2Wire { client, channel_id }), ep.arg.clone()))
+            }
             Err(e) => {
                 endpoints.advance();
                 Err(format!("{}: {e}", ep.arg))

@@ -645,7 +645,11 @@ fn parse_pool(args: &[String]) -> Result<PoolOpts, String> {
             }
             "--fallback-pool" => {
                 i += 1;
-                fallback_pools.push(args.get(i).ok_or("--fallback-pool needs a value")?.to_string());
+                fallback_pools.push(
+                    args.get(i)
+                        .ok_or("--fallback-pool needs a value")?
+                        .to_string(),
+                );
             }
             "--worker" => {
                 i += 1;
@@ -892,7 +896,12 @@ fn run_pool(o: &PoolOpts) -> ExitCode {
     #[cfg(not(feature = "opencl"))]
     let gpu_backend = false;
     let mut sink = |ev: Event| match ev {
-        Event::Connected { v2, worker, detail, pool } => {
+        Event::Connected {
+            v2,
+            worker,
+            detail,
+            pool,
+        } => {
             let wire = if v2 { "pool(v2)" } else { "pool" };
             println!("{wire} {pool} as '{worker}' ({detail})");
         }

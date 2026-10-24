@@ -643,7 +643,11 @@ mod tests {
         let _ = std::fs::remove_file(&dir);
         let mut l = Limits::default();
         assert_eq!(l.wait("m1", 86_400, 1_000), 0, "first drip is immediate");
-        assert_eq!(l.wait_ip("1.2.3.4", 86_400, 1_000), 0, "first IP is immediate");
+        assert_eq!(
+            l.wait_ip("1.2.3.4", 86_400, 1_000),
+            0,
+            "first IP is immediate"
+        );
         assert_eq!(l.wait_ip("", 86_400, 1_000), 0, "unknown IP never blocks");
         l.last.insert("m1".to_string(), 1_000);
         l.ips.insert("1.2.3.4".to_string(), 2_000);
