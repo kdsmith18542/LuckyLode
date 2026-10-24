@@ -2,6 +2,7 @@
   import * as api from "../lib/api";
   let data = $state<any>(null);
   let svc = $state<any>(null);
+  let stake = $state<any>(null);
   let name = $state("");
   let addr = $state("");
   let msg = $state("");
@@ -25,6 +26,7 @@
     try {
       data = await api.luckynodes(localNames.filter((n) => n.startsWith("ln-")));
       svc = await api.serviceStatus();
+      stake = await api.stakingInfo().catch(() => null);
       err = "";
     } catch (e) {
       err = String(e);
@@ -92,6 +94,11 @@
   const draw = $derived(data?.draw ?? {});
   const last = $derived(data?.last_claim ?? {});
   const identities = $derived<any[]>(data?.identities ?? []);
+  // What the connected node wallet holds right now — the registration fee
+  // comes out of this, automatically, when you press Confirm below.
+  const nodeBal = $derived(
+    typeof stake?.node_balance === "number" ? stake.node_balance : null,
+  );
 </script>
 
 <h2>Luckynodes</h2>
@@ -105,8 +112,20 @@
   Every epoch the chain picks a winner from registered
   <span class="addr">ln-*</span> identities, and the winning block pays them
   straight from the prize fund — no pool custody involved. Registration is
-  a one-time on-chain step (100 LKYL fee from the connected node's
-  wallet); staying eligible takes a small update transaction each epoch.
+  a one-time on-chain step; staying eligible takes a small update
+  transaction each epoch. <b>You do not send anything anywhere:</b> when you
+  press Confirm below, the app tells your connected node to build the
+  registration transaction, and the node pays the chain's identity fee
+  (100 {api.ticker()} on the current testnet) itself, out of its own
+  wallet balance.
+  {#if nodeBal === null}
+    <br />Connected node wallet balance: unknown (node unreachable?) — the
+    fee cannot be paid until the node answers.
+  {:else}
+    <br />Connected node wallet balance: <b>{api.coinU(nodeBal)}</b> — this
+    is where the fee comes from. If it is short, fund the node wallet first
+    (Overview → Node staking), then come back.
+  {/if}
 </div>
 
 <table style="margin-top:14px">
@@ -151,18 +170,17 @@
 <div class="card" style="max-width:640px">
   <label for="lname">identity name (ln- namespace)</label>
   <input id="lname" bind:value={name} oninput={() => (confirming = null)} placeholder="ln-foo" spellcheck="false" />
-  <label for="addr" style="margin-top:10px">payout address (draw winnings pay this address)</label>
+  <label for="addr" style="margin-top:10px">your payout address (draw winnings are paid to this address — your app Receive address is fine; the fee does <b>not</b> go here)</label>
   <input id="addr" bind:value={addr} oninput={() => (confirming = null)} placeholder="L… / m… / n…" spellcheck="false" />
   <div class="row" style="margin-top:12px">
   <button class="btn primary" disabled={!name || !addr || regBusy} onclick={register}>Register on chain</button>
-  <span class="muted">name commitment + identity registration, funded from the connected node's wallet (identity fee set by the chain — 100 tLKYL on the current testnet)</span>
+  <span class="muted">name commitment + identity registration. Nothing leaves this app — the connected node pays the chain fee itself; your coins stay put.</span>
   </div>
   <div class="muted" style="margin-top:8px">
-    The commitment's coins stay in the connected node's wallet, not this app.
-    A pending registration can therefore show as a debit under this app's
-    <b>unconfirmed</b> balance while the same value sits in the node wallet
-    (Overview → Node staking). Retrying a pending step resumes it — it does
-    not pay a second commitment.
+    While the registration is unconfirmed, this app's <b>unconfirmed</b>
+    balance may dip by the fee amount — nothing is lost; the value sits in
+    the connected node wallet until the block confirms. Retrying a pending
+    step resumes it — it does not pay a second commitment.
   </div>
   {#if confirming}
     <div class="card" style="margin-top:12px;border:1px solid var(--gold)">
@@ -170,7 +188,7 @@
       <table><tbody>
         <tr><th>identity</th><td class="addr">{confirming.name}</td></tr>
         <tr><th>payout address</th><td class="addr">{confirming.addr}</td></tr>
-        <tr><th>funded from</th><td class="muted">the connected node's wallet (not this app)</td></tr>
+        <tr><th>funded from</th><td class="muted">paid automatically by the connected node's wallet — not a Send you make</td></tr>
       </tbody></table>
       <div class="row" style="margin-top:10px">
         <button class="btn primary" disabled={regBusy} onclick={confirmRegister}>{regBusy ? "registering…" : "Confirm & register"}</button>
