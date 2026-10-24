@@ -77,31 +77,43 @@ exist yet** — and the game layer (doc 12) is exactly where such jobs live.
 
 ### Direction A — Luckynodes (service nodes for the game layer)
 
-Bonded, opt-in staking role. Duties (all currently sidecar/pool-layer, no
-consensus change if kept so):
+**Shipped as consensus (doc 06 rev 1.3 §6.7); what follows describes
+what is live plus what remains optional.** A luckynode is an on-chain
+identity in the reserved `ln-` LuckyID namespace — registering
+`ln-<yourname>@` **is** registration. No bond, no escrow (the pool-era
+refundable bond is retired — identity fees are the non-refundable
+Sybil cost), no pool, no side-identities:
 
-- **Draw notarization**: cosign jackpot/prize draw results (block hash +
-  rule id) so any player can verify the game ran honestly;
-- **Attestation relay**: sign and forward device-attestation verdicts
-  (doc 03 §3.6) without ever seeing identity;
-- **Index service**: replicate leaderboard/season state so the fun layer
-  has no single host.
+- **Payout:** the identity's primary address, paid by directed
+  coinbase claim.
+- **Liveness:** one `updateidentity` heartbeat per epoch (daemon and
+  wallet both drive the same node-RPC flow); latest update within one
+  epoch keeps the node eligible. Tenure tiers weight the draw
+  (1× <30d, 1.5× 30–90d, 2× ≥90d).
+- **The draw:** pre-committed per epoch from the previous epoch's
+  start-block hash, winner walked id-ascending over tenure weights,
+  budget = 10% of trailing-epoch prize inflow + a fixed seed release
+  (`seed/1000` per epoch), credit-once. Any block builder attaches the
+  claim; PoS-mined blocks claim exactly like PoW blocks.
 
-Economics: paid from **fun-layer budgets** (prize fund slice — doc 06
-§6.2 overflow already feeds it), never from inflation. Bond is slashable
-for provable misbehavior (double-notarization, forged verdicts).
+Economics: paid from the **consensus prize fund** (third fund on the
+block index, fed by the jackpot-levy cap overflow, genesis-seeded —
+spendable ONLY by draw claims), never from inflation. No pool, website,
+or third party sits between a staker and their tickets.
 
-Why it's interesting: it entangles PoS security with *game integrity* — the
-dealers are bonded by the same stake that secures consensus. No chain does
-exactly this. [consensus?]: the **draw itself is consensus since doc 06
-rev 1.3 §6.7** (LuckyID-namespace registration, pre-committed epoch draw,
-directed coinbase claims — no pool required); on-chain notarization
-remains optional spectator evidence, not a gate.
+Still optional / sidecar (not consensus, not built): on-chain
+**notarization** of draw results as spectator evidence (draws are
+self-verifying from chain state), **attestation relay** (doc 03 §3.6),
+and **index service** for leaderboard/season state. These keep the P3
+exploration charter below — build them only if the game layer proves
+retention and needs decentralized trust.
 
 ### Direction B — Season stakes (governance-lite)
 
-Lock stake for a 4–8 week season → earn prize-fund share (for uptime, not
-for size alone) + one vote on **season presentation parameters** (prize
+Lock stake for a 4–8 week season → earn a season-reward share (for uptime, not
+for size alone — from an explicitly-funded season pot, NOT the consensus
+prize fund, which is spendable only by Luckynode Draw claims per doc 06
+§6.7) + one vote on **season presentation parameters** (prize
 splits within published bounds, event themes, schedule). No consensus
 parameters, no protocol governance — and say so loudly to avoid
 vote-buying theater.

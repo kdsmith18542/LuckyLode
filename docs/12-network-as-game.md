@@ -356,7 +356,8 @@ zombie mechanics.
   members (already catalogued); runs as event nights.
 - **Ghost replay matinees** — scheduled replays of the week's near-blocks
   and mythic hits as animated artifacts.
-- **Bingo season cards** — per-season cards, rows pay from prize fund.
+- **Bingo season cards** — per-season cards, rows paid from an explicitly-
+  funded event pot (never the consensus prize fund — draw-claims only).
 - **Stake-uptime draws** — weekly draw among stakers with uninterrupted
   attested uptime (doc 11 §11.6 Direction B tie-in; the mine→stake→play loop).
 - **Luckynode-notarized draws** — when luckynodes exist (doc 11 Direction A,

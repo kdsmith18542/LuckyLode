@@ -72,12 +72,15 @@ generous on purpose, retuned against measured LuckyHash rates
 ~15–21 kH/s; the old 10/60/500 MH/s bands assumed rates ~1000× above
 reality and made every real miner a "phone").
 
-Each division has its own seasonal leaderboard (shares + uptime + streaks),
-its own prize pool (sponsored from treasury/dev fund + pool fee slice), and
-its own heroes. A phone finishing #3 in the phone division gets celebrated
+Each division has its own seasonal leaderboard (shares + uptime + streaks)
+and its own heroes. A phone finishing #3 in the phone division gets celebrated
 like a pool finding a block. **Nobody cares they were 4,000th globally.**
 
-Prizes: jackpot multipliers on their shares for a week, badge NFTs/IDs,
+Future division prize pools — once prizes exist — come from explicitly-funded
+pots (sponsor, treasury, or dev-fund allocations), never from the consensus
+prize fund, which is spendable only by Luckynode Draw claims (doc 06 §6.7).
+
+Prizes: bonus share weighting for season placements, badge NFTs/IDs,
 fee rebates, merch for season winners. Keep cash prizes modest — status >
 money at these sums. **Prize splits are whale-blunted** (sqrt weights +
 25% cap once 5+ miners qualify — the same split rule as the jackpot,
