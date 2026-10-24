@@ -1976,7 +1976,10 @@ const USAGE: &str = "usage:
   (default 2592000 = 30 days); miners pass the pool's §4.7 URL key and
   their pool password/token as the V2 device id
   both modes accept [--tls-cert PATH --tls-key PATH] to serve TLS (stratum
-  over TLS on the bound port; miners connect with --tls)
+  over TLS on the bound port; miners connect with --tls). With
+  [--tls-bind HOST:PORT] the cert wraps a SECOND V1 bind instead, so the
+  main port stays plaintext for miners without TLS (flipping the public
+  port to TLS-only would strand them).
   both modes accept [--state-file PATH]: owed/paid ledger, worker names and
   block history persist across restarts (atomic save every 10 s); delete the
   file to intentionally clear. [--force-fresh] moves a present-or-corrupt
@@ -2028,6 +2031,32 @@ fn parse_target(s: &str, flag: &str) -> Result<[u8; 32], String> {
 /// an ephemeral authority is generated and its URL key printed (miners must
 /// re-pin after every restart). Flag errors exit the process, the same
 /// posture as the other bind paths.
+/// Optional second V1 bind serving the same pool over TLS (the main
+/// port stays plaintext). Shared by node and mock modes.
+fn maybe_spawn_tls<P: TemplateProvider + 'static>(
+    server: &RunningServer<P>,
+    tls_bind: &Option<String>,
+    tls: &Option<std::sync::Arc<rustls::ServerConfig>>,
+) {
+    let Some(tls_bind) = tls_bind else {
+        return;
+    };
+    let tls_cfg = match tls {
+        Some(c) => c.clone(),
+        None => {
+            eprintln!("error: --tls-bind needs --tls-cert and --tls-key");
+            std::process::exit(2);
+        }
+    };
+    match server.spawn_extra_listener(tls_bind, Some(tls_cfg)) {
+        Ok(a) => println!("tls stratum (V1) on {a}"),
+        Err(e) => {
+            eprintln!("error: cannot bind tls {tls_bind}: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
 fn maybe_spawn_v2<P: TemplateProvider + 'static>(
     server: &mut RunningServer<P>,
     v2_bind: &Option<String>,
@@ -2142,6 +2171,7 @@ fn main() -> std::process::ExitCode {
     let mut dev_fee_pp: u16 = 0;
     let mut tls_cert: Option<String> = None;
     let mut tls_key: Option<String> = None;
+    let mut tls_bind: Option<String> = None;
     let mut v2_bind: Option<String> = None;
     let mut v2_authority_key: Option<String> = None;
     let mut v2_cert_validity = 2592000u64; // 30 days
@@ -2490,6 +2520,12 @@ fn main() -> std::process::ExitCode {
                     std::process::exit(2);
                 }));
             }
+            "--tls-bind" => {
+                tls_bind = Some(next("tls-bind").unwrap_or_else(|e| {
+                    eprintln!("error: {e}");
+                    std::process::exit(2);
+                }));
+            }
             "--v2-bind" => {
                 v2_bind = Some(next("v2-bind").unwrap_or_else(|e| {
                     eprintln!("error: {e}");
@@ -2706,7 +2742,10 @@ fn main() -> std::process::ExitCode {
             &addr.to_string(),
             pool_password.clone(),
             worker_tokens,
-            tls.clone(),
+            // With --tls-bind the main port stays plaintext and the TLS
+            // config goes to the second bind below; without it the cert
+            // wraps the main port (legacy behavior, covered by tls_e2e).
+            if tls_bind.is_some() { None } else { tls.clone() },
         ) {
             Ok(s) => s,
             Err(e) => {
@@ -2714,6 +2753,7 @@ fn main() -> std::process::ExitCode {
                 return std::process::ExitCode::from(1);
             }
         };
+        maybe_spawn_tls(&server, &tls_bind, &tls);
         if claim_pot_tier != 10 || claim_pot_pity {
             println!("note: --claim-pot-tier/--claim-pot-pity are obsolete (draws are pre-committed; tiers and pity are automatic)");
         }
@@ -2886,7 +2926,7 @@ fn main() -> std::process::ExitCode {
             &addr.to_string(),
             pool_password.clone(),
             worker_tokens,
-            tls,
+            if tls_bind.is_some() { None } else { tls.clone() },
         ) {
             Ok(s) => s,
             Err(e) => {
@@ -2894,6 +2934,7 @@ fn main() -> std::process::ExitCode {
                 return std::process::ExitCode::from(1);
             }
         };
+        maybe_spawn_tls(&server, &tls_bind, &tls);
         println!(
             "pool on {} (reward={reward} fees={fees}); Ctrl-C to stop",
             server.addr()

@@ -716,14 +716,18 @@ fn apply_block_found<P: TemplateProvider + 'static>(
     }
 }
 
-fn handle_conn<P: TemplateProvider + 'static>(stream: TcpStream, shared: Arc<Shared<P>>) {
+fn handle_conn<P: TemplateProvider + 'static>(
+    stream: TcpStream,
+    shared: Arc<Shared<P>>,
+    tls_override: Option<&Arc<rustls::ServerConfig>>,
+) {
     let _ = stream.set_read_timeout(Some(Duration::from_millis(100)));
     let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
     // Kill Nagle: `writeln!` issues body and newline as two writes, and
     // Nagle + delayed ACK stretch the gap to ~100 ms — right at the read
     // tick, which is how half-submits got lost.
     let _ = stream.set_nodelay(true);
-    let io = match crate::tls::accept(stream, shared.tls.as_ref()) {
+    let io = match crate::tls::accept(stream, tls_override.or(shared.tls.as_ref())) {
         Ok(io) => io,
         Err(_) => return,
     };
@@ -1887,6 +1891,24 @@ impl<P: TemplateProvider + 'static> RunningServer<P> {
     /// Serve Stratum V2 (Noise NX + Lucky jobs) on `addr`, sharing this
     /// server's provider, ledger, broadcast, dedupe and balances — one
     /// money path for V1 and V2 miners. Behind the pool's `--v2-bind`
+    /// A second V1 listener on the SAME shared state (ledger, dedupe,
+    /// caps, broadcast) with its own TLS treatment — e.g. plaintext
+    /// :3346 plus TLS-only :3443. The accept loop is shared, so caps and
+    /// shutdown behave identically on both binds. Detached thread; dies
+    /// with the process (pool binaries never shut down one listener).
+    pub fn spawn_extra_listener(
+        &self,
+        addr: &str,
+        tls: Option<Arc<rustls::ServerConfig>>,
+    ) -> std::io::Result<SocketAddr> {
+        let listener = TcpListener::bind(addr)?;
+        listener.set_nonblocking(true)?;
+        let local = listener.local_addr()?;
+        let shared = self.shared.clone();
+        std::thread::spawn(move || accept_loop(listener, shared, tls));
+        Ok(local)
+    }
+
     /// flag; V1 stays the default wire.
     ///
     /// # Errors
@@ -1986,6 +2008,76 @@ impl RunningServer<crate::provider::MockProvider> {
 }
 
 /// Bind on `addr` (use `127.0.0.1:0` for an ephemeral test port) and serve.
+/// V1 accept loop shared by the main listener and any extra binds.
+/// `tls_override`: the extra listener's own TLS treatment (`Some` =
+/// TLS with this config); `None` means "use the shared config", which
+/// is what the main listener (and all pre-TLS-bind behavior) does.
+/// Connection caps and per-connection threads are shared across every
+/// listener — one budget for the whole pool, whichever port they came in
+/// on (audit finding: uncapped listeners are a slowloris well).
+fn accept_loop<P: TemplateProvider + 'static>(
+    listener: TcpListener,
+    accept_shared: Arc<Shared<P>>,
+    tls_override: Option<Arc<rustls::ServerConfig>>,
+) {
+    use std::sync::atomic::Ordering as AtomicOrdering;
+    while !accept_shared.shutdown.load(AtomicOrdering::Relaxed) {
+        match listener.accept() {
+            Ok((stream, peer)) => {
+                // Caps: bounded threads per
+                // pool, bounded share per IP. Over-cap connections are
+                // dropped at accept — no thread, no TLS, no state.
+                let ip = peer.ip();
+                let total = accept_shared.conn_total.load(AtomicOrdering::SeqCst);
+                let per_ip = accept_shared
+                    .conn_per_ip
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .get(&ip)
+                    .copied()
+                    .unwrap_or(0);
+                if total >= MAX_CONNS || per_ip >= MAX_CONNS_PER_IP {
+                    drop(stream);
+                    continue;
+                }
+                accept_shared
+                    .conn_total
+                    .fetch_add(1, AtomicOrdering::SeqCst);
+                {
+                    let mut m = accept_shared
+                        .conn_per_ip
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    *m.entry(ip).or_insert(0) += 1;
+                }
+                let s = accept_shared.clone();
+                let tls = tls_override.clone();
+                std::thread::spawn(move || {
+                    let _guard = ConnGuard {
+                        shared: s.clone(),
+                        ip,
+                    };
+                    handle_conn(stream, s, tls.as_ref());
+                });
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            Err(e) => {
+                // A transient accept error (EMFILE, ECONNABORTED, ...)
+                // must not deafen the pool: the kernel completes
+                // handshakes into the listen backlog without the
+                // application, so exiting this loop would turn every
+                // later connect into a silent hang — the client
+                // connects, then times out with no server thread ever
+                // spawned. Log it and keep serving instead.
+                eprintln!("pool: accept error (continuing): {e}");
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        }
+    }
+}
+
 pub fn spawn_server<P: TemplateProvider + 'static>(
     provider: P,
     addr: &str,
@@ -2050,61 +2142,7 @@ pub fn spawn_server<P: TemplateProvider + 'static>(
     }
     let accept_shared = shared.clone();
     let accept = std::thread::spawn(move || {
-        use std::sync::atomic::Ordering as AtomicOrdering;
-        while !accept_shared.shutdown.load(Ordering::Relaxed) {
-            match listener.accept() {
-                Ok((stream, peer)) => {
-                    // Caps: bounded threads per
-                    // pool, bounded share per IP. Over-cap connections are
-                    // dropped at accept — no thread, no TLS, no state.
-                    let ip = peer.ip();
-                    let total = accept_shared.conn_total.load(AtomicOrdering::SeqCst);
-                    let per_ip = accept_shared
-                        .conn_per_ip
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .get(&ip)
-                        .copied()
-                        .unwrap_or(0);
-                    if total >= MAX_CONNS || per_ip >= MAX_CONNS_PER_IP {
-                        drop(stream);
-                        continue;
-                    }
-                    accept_shared
-                        .conn_total
-                        .fetch_add(1, AtomicOrdering::SeqCst);
-                    {
-                        let mut m = accept_shared
-                            .conn_per_ip
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner);
-                        *m.entry(ip).or_insert(0) += 1;
-                    }
-                    let s = accept_shared.clone();
-                    std::thread::spawn(move || {
-                        let _guard = ConnGuard {
-                            shared: s.clone(),
-                            ip,
-                        };
-                        handle_conn(stream, s);
-                    });
-                }
-                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                    std::thread::sleep(Duration::from_millis(20));
-                }
-                Err(e) => {
-                    // A transient accept error (EMFILE, ECONNABORTED, ...)
-                    // must not deafen the pool: the kernel completes
-                    // handshakes into the listen backlog without the
-                    // application, so exiting this loop would turn every
-                    // later connect into a silent hang — the client
-                    // connects, then times out with no server thread ever
-                    // spawned. Log it and keep serving instead.
-                    eprintln!("pool: accept error (continuing): {e}");
-                    std::thread::sleep(Duration::from_millis(20));
-                }
-            }
-        }
+        accept_loop(listener, accept_shared, None);
     });
     let refresh_shared = shared.clone();
     let refresh = std::thread::spawn(move || refresh_loop(refresh_shared));
@@ -2878,6 +2916,26 @@ mod division_tests {
         // Restore path (state-file load) replaces the log wholesale.
         server.restore_prize_credits(&[(290, 1_841_270)]);
         assert_eq!(server.prize_credits(), vec![(290, 1_841_270)]);
+        server.stop();
+    }
+    #[test]
+    fn extra_listener_shares_state_with_main() {
+        // A second V1 bind (e.g. TLS-only :3443 next to plaintext :3346)
+        // serves the SAME pool: authorizing through it registers the
+        // worker on the shared ledger, and caps still apply pool-wide.
+        let provider = crate::provider::MockProvider::new([0xffu8; 32], [0xffu8; 32], 1_000_000, 0);
+        let server = spawn_server(provider, "127.0.0.1:0", None, None, None).expect("spawn");
+        let extra = server
+            .spawn_extra_listener("127.0.0.1:0", None)
+            .expect("extra bind");
+        assert_ne!(extra, server.addr());
+        let mut c = crate::client::PoolClient::connect(extra).expect("connect extra");
+        assert!(c.subscribe("probe/0.1").expect("subscribe"));
+        assert!(c.authorize("extra-w").expect("authorize"));
+        assert!(server
+            .names()
+            .into_iter()
+            .any(|(m, _)| m == "extra-w"));
         server.stop();
     }
 
