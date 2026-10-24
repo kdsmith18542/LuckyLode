@@ -52,6 +52,9 @@ lm-mobile/android/app/build/
 lm-mobile/android/.gradle/
 lm-mobile/android/build/
 lm-mobile/android/app/src/main/jniLibs/*/
+# Packaged artifacts (built for distribution, never tracked)
+*.AppImage
+*.apk
 wiki/dist/
 
 # Local-only reset/test backups (never commit wallet material)
