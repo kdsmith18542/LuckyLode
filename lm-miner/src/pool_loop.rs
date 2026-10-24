@@ -39,6 +39,10 @@ pub struct TlsCfg {
 #[derive(Debug, Clone)]
 pub struct PoolConfig {
     pub pool: String,
+    /// Ordered fallback pools (HOST:PORT): tried in order when the
+    /// primary (and earlier fallbacks) refuse or drop the connection.
+    /// Empty = single-pool behavior, unchanged.
+    pub fallbacks: Vec<String>,
     pub worker: String,
     pub agent: Option<String>,
     pub password: String,
@@ -70,6 +74,7 @@ impl PoolConfig {
     pub fn new(pool: String, worker: String) -> Self {
         Self {
             pool,
+            fallbacks: Vec::new(),
             worker,
             agent: None,
             password: "x".to_string(),
@@ -97,6 +102,9 @@ impl PoolConfig {
         if self.pool.is_empty() {
             return Err("pool address is required (HOST:PORT)".to_string());
         }
+        if self.fallbacks.iter().any(|p| p.is_empty()) {
+            return Err("fallback pool address must not be empty".to_string());
+        }
         if self.worker.is_empty() {
             return Err("worker must not be empty".to_string());
         }
@@ -119,6 +127,9 @@ pub enum Event {
         v2: bool,
         worker: String,
         detail: String,
+        /// The endpoint actually dialed (differs from the configured
+        /// primary while on a fallback).
+        pool: String,
     },
     /// The dev-fee rotation is mining as a different worker.
     DevFee {
@@ -349,15 +360,44 @@ pub fn run(
     if let Err(e) = cfg.validate() {
         return Outcome::Failed { error: e };
     }
-    let (pool_host, addr) = match resolve_pool(&cfg.pool) {
-        Ok(v) => v,
-        Err(e) => return Outcome::Failed { error: e },
-    };
     let agent = agent_of(cfg, backend);
+    // Resolve the primary (fatal if broken, as before) plus every
+    // fallback (a bad fallback is skipped with a loud log, never fatal:
+    // one typo must not kill a healthy primary).
+    let mut endpoints = Vec::new();
+    match resolve_pool(&cfg.pool) {
+        Ok((host, addr)) => endpoints.push(Endpoint {
+            arg: cfg.pool.clone(),
+            host,
+            addr,
+        }),
+        Err(e) => {
+            return Outcome::Failed {
+                error: format!("cannot reach pool: {e}"),
+            }
+        }
+    }
+    for fb in &cfg.fallbacks {
+        match resolve_pool(fb) {
+            Ok((host, addr)) => endpoints.push(Endpoint {
+                arg: fb.clone(),
+                host,
+                addr,
+            }),
+            Err(e) => sink(Event::Reconnect {
+                reason: format!("fallback pool {fb} skipped: {e}"),
+                wait_secs: 0,
+            }),
+        }
+    }
+    let mut endpoints = Endpoints {
+        list: endpoints,
+        idx: 0,
+    };
     if cfg.v2 {
-        run_v2(cfg, backend, policy, stop, sink, agent, pool_host, addr)
+        run_v2(cfg, backend, policy, stop, sink, agent, &mut endpoints)
     } else {
-        run_v1(cfg, backend, policy, stop, sink, agent, addr)
+        run_v1(cfg, backend, policy, stop, sink, agent, &mut endpoints)
     }
 }
 
@@ -468,26 +508,37 @@ fn run_v1(
     stop: &AtomicBool,
     sink: &mut dyn FnMut(Event),
     agent: String,
-    addr: SocketAddr,
+    endpoints: &mut Endpoints,
 ) -> Outcome {
-    let pool = cfg.pool.clone();
     let password = cfg.password.clone();
     let tls = cfg.tls.clone();
-    let mut connect = |worker: &str| -> Result<Box<dyn Wire>, String> {
+    let mut connect = |worker: &str| -> Result<(Box<dyn Wire>, String), String> {
+        // One endpoint per call, sticky on success: the session loop
+        // retries with backoff, so the NEXT call after a failure lands
+        // on the next pool in order.
+        let ep = endpoints.current().clone();
         let tls_name = tls
             .as_ref()
             .and_then(|t| t.server_name.clone())
-            .or_else(|| pool.rsplit_once(':').map(|(h, _)| h.to_string()));
+            .unwrap_or_else(|| ep.host.clone());
         let tls_cfg = tls.as_ref().map(|t| TlsCfg {
-            server_name: Some(tls_name.unwrap_or_default()),
+            server_name: Some(tls_name),
             ca_pem: t.ca_pem.clone(),
             insecure: t.insecure,
         });
-        let client = connect_session(addr, &agent, worker, &password, tls_cfg.as_ref())?;
-        Ok(Box::new(V1Wire {
-            client,
-            worker: worker.to_string(),
-        }))
+        match connect_session(ep.addr, &agent, worker, &password, tls_cfg.as_ref()) {
+            Ok(client) => Ok((
+                Box::new(V1Wire {
+                    client,
+                    worker: worker.to_string(),
+                }),
+                ep.arg.clone(),
+            )),
+            Err(e) => {
+                endpoints.advance();
+                Err(format!("{}: {e}", ep.arg))
+            }
+        }
     };
     run_session(cfg, backend, policy, stop, sink, &mut connect)
 }
@@ -502,18 +553,17 @@ fn run_v2(
     stop: &AtomicBool,
     sink: &mut dyn FnMut(Event),
     agent: String,
-    pool_host: String,
-    addr: SocketAddr,
+    endpoints: &mut Endpoints,
 ) -> Outcome {
     use lm_stratum::v2::{SetupConnection, PROTOCOL_MINING};
     use lm_stratum::v2_client::V2Client;
-    let setup = SetupConnection {
+    let base_setup = SetupConnection {
         protocol: PROTOCOL_MINING,
         min_version: 2,
         max_version: 2,
         flags: 0,
-        endpoint_host: pool_host,
-        endpoint_port: addr.port(),
+        endpoint_host: String::new(),
+        endpoint_port: 0,
         // Vendor carries the configured agent verbatim (identity + device
         // family), so the pool labels the same worker on both wires.
         vendor: agent.clone(),
@@ -524,23 +574,69 @@ fn run_v2(
         device_id: cfg.password.clone(),
     };
     let authority = cfg.v2_authority;
-    let mut connect = |worker: &str| -> Result<Box<dyn Wire>, String> {
-        let mut client =
-            V2Client::connect(addr, authority, &setup).map_err(|e| format!("v2: {e}"))?;
-        let opened = client
-            .open_channel(1, worker, 0.0, [0xffu8; 32])
-            .map_err(|e| format!("v2 channel refused: {e}"))?;
-        Ok(Box::new(V2Wire {
-            client,
-            channel_id: opened.channel_id,
-        }))
+    let mut connect = |worker: &str| -> Result<(Box<dyn Wire>, String), String> {
+        let ep = endpoints.current().clone();
+        let mut setup = base_setup.clone();
+        setup.endpoint_host = ep.host.clone();
+        setup.endpoint_port = ep.addr.port();
+        let opened = (|| {
+            let mut client =
+                V2Client::connect(ep.addr, authority, &setup).map_err(|e| format!("v2: {e}"))?;
+            client
+                .open_channel(1, worker, 0.0, [0xffu8; 32])
+                .map_err(|e| format!("v2 channel refused: {e}"))
+                .map(|opened| (client, opened.channel_id))
+        })();
+        match opened {
+            Ok((client, channel_id)) => Ok((
+                Box::new(V2Wire {
+                    client,
+                    channel_id,
+                }),
+                ep.arg.clone(),
+            )),
+            Err(e) => {
+                endpoints.advance();
+                Err(format!("{}: {e}", ep.arg))
+            }
+        }
     };
     run_session(cfg, backend, policy, stop, sink, &mut connect)
 }
 
 /// The one session loop both wires run. Wire differences are confined to
 /// [`Wire`]: connect (via the closure), job acquisition and submit.
-type WireConnect<'a> = &'a mut dyn FnMut(&str) -> Result<Box<dyn Wire>, String>;
+/// One dialable pool: the original `HOST:PORT` arg, its host part (TLS
+/// server-name default, V2 SetupConnection), and the resolved socket
+/// address. Failover rotates these; the session loop's backoff already
+/// paces retries, so the connect closure tries one endpoint per call.
+#[derive(Debug, Clone)]
+pub struct Endpoint {
+    pub arg: String,
+    pub host: String,
+    pub addr: SocketAddr,
+}
+
+/// Ordered pool endpoints, primary first. Sticky on success: the same
+/// pool serves until a connect fails, then the next one takes over.
+/// Wraps around, so a recovered primary is reused after the others fail.
+#[derive(Debug)]
+struct Endpoints {
+    list: Vec<Endpoint>,
+    idx: usize,
+}
+
+impl Endpoints {
+    fn current(&self) -> &Endpoint {
+        &self.list[self.idx % self.list.len()]
+    }
+
+    fn advance(&mut self) {
+        self.idx = (self.idx + 1) % self.list.len();
+    }
+}
+
+type WireConnect<'a> = &'a mut dyn FnMut(&str) -> Result<(Box<dyn Wire>, String), String>;
 
 fn run_session(
     cfg: &PoolConfig,
@@ -577,8 +673,8 @@ fn run_session(
                 worker: session_worker.clone(),
             });
         }
-        let mut wire = match connect(&session_worker) {
-            Ok(w) => w,
+        let wire = match connect(&session_worker) {
+            Ok((w, pool)) => (w, pool),
             Err(e) => {
                 if cfg.fail_fast {
                     return Outcome::Failed {
@@ -597,10 +693,12 @@ fn run_session(
             }
         };
         backoff = Duration::from_secs(1);
+        let (mut wire, pool) = wire;
         sink(Event::Connected {
             v2: wire.v2(),
             worker: session_worker.clone(),
             detail: backend.detail(),
+            pool,
         });
         let mut current: Option<WireJob> = None;
         let mut pos = cfg.start;
@@ -986,6 +1084,31 @@ mod tests {
             None,
         )
         .expect("bind mock pool")
+    }
+
+    /// Failover stays sticky: the same endpoint serves until it fails,
+    /// then the next one takes over, wrapping back to a recovered
+    /// primary once the others have failed too.
+    #[test]
+    fn endpoints_rotate_sticky_then_advance() {
+        use std::net::{IpAddr, Ipv4Addr};
+        let mk = |p: u16| Endpoint {
+            arg: format!("127.0.0.1:{p}"),
+            host: "127.0.0.1".to_string(),
+            addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), p),
+        };
+        let mut eps = Endpoints {
+            list: vec![mk(1), mk(2), mk(3)],
+            idx: 0,
+        };
+        assert_eq!(eps.current().addr.port(), 1);
+        assert_eq!(eps.current().addr.port(), 1, "success does not rotate");
+        eps.advance();
+        assert_eq!(eps.current().addr.port(), 2);
+        eps.advance();
+        assert_eq!(eps.current().addr.port(), 3);
+        eps.advance();
+        assert_eq!(eps.current().addr.port(), 1, "wraps to the primary");
     }
 
     /// The embedded loop mines real shares through the same wire the CLI

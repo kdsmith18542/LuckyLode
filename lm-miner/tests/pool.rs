@@ -92,6 +92,66 @@ fn pool_connection_and_usage_failures_are_typed() {
     assert_eq!(out.status.code(), Some(1));
 }
 
+#[test]
+fn binary_fails_over_to_fallback_pool() {
+    // Primary is a closed port; the fallback is a live mock pool. The
+    // miner must land its shares on the fallback without manual help.
+    let server = spawn_server(
+        MockProvider::instant(1_000_000),
+        "127.0.0.1:0",
+        None,
+        None,
+        None,
+    )
+    .expect("bind");
+    let live = server.addr().to_string();
+    let dead = {
+        let probe = spawn_server(
+            MockProvider::instant(1_000_000),
+            "127.0.0.1:0",
+            None,
+            None,
+            None,
+        )
+        .expect("bind");
+        let addr = probe.addr().to_string();
+        probe.stop();
+        addr
+    };
+    let out = Command::new(env!("CARGO_BIN_EXE_lm-miner"))
+        .args([
+            "pool",
+            "--pool",
+            &dead,
+            "--fallback-pool",
+            &live,
+            "--worker",
+            "e2e-failover",
+            "--threads",
+            "1",
+            "--max-shares",
+            "2",
+            "--job-timeout",
+            "10",
+        ])
+        .output()
+        .expect("run pool miner");
+    assert!(
+        out.status.success(),
+        "exit {:?} stderr: {}",
+        out.status.code(),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8(out.stdout).expect("utf8");
+    assert!(stdout.contains("share accepted"), "{stdout}");
+    // The Connected line names the endpoint actually served — the
+    // fallback, not the dead primary.
+    assert!(stdout.contains(&live), "{stdout}");
+    let stats = server.stats();
+    assert_eq!((stats.shares, stats.blocks), (2, 2));
+    server.stop();
+}
+
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }

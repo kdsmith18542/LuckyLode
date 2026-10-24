@@ -4,7 +4,7 @@
 //! lm-miner bench [--threads N] [--hashes N] [--height H] [--header HEX] [--json]
 //! lm-miner mine --header HEX --height H --target (HEX64 | nbits:XXXXXXXX | max)
 //!                [--threads N] [--start N] [--count N]
-//! lm-miner pool --pool HOST:PORT --worker NAME [--agent STR] [--threads N]
+//! lm-miner pool --pool HOST:PORT [--fallback-pool HOST:PORT]... --worker NAME [--agent STR] [--threads N]
 //!                [--start N] [--count N] [--max-shares N] [--job-timeout SECS]
 //! ```
 //!
@@ -35,7 +35,7 @@ const USAGE: &str = concat!(
     "usage:
   lm-miner bench [--threads N] [--hashes N] [--height H] [--header HEX] [--json] [--device auto|cpu|opencl] [--gpu-platform N] [--gpu-device N] [--gpu-batch N]
   lm-miner mine --header HEX --height H --target (HEX64 | nbits:XXXXXXXX | max) [--threads N] [--start N] [--count N] [--max-temp C] [--duty N] [--device auto|cpu|opencl] [--gpu-platform N] [--gpu-device N] [--gpu-batch N]
-  lm-miner pool --pool HOST:PORT --worker NAME [--agent STR] [--threads N] [--start N] [--count N] [--max-shares N] [--job-timeout SECS] [--max-temp C] [--duty N] [--device auto|cpu|opencl] [--gpu-platform N] [--gpu-device N] [--gpu-batch N] [--password PASS] [--dev-fee-pct N] [--dev-address ADDR] [--tls [--tls-ca PEM] [--tls-server-name NAME] | --tls-insecure] [--v2 [--v2-authority URLKEY|HEX]]
+  lm-miner pool --pool HOST:PORT [--fallback-pool HOST:PORT]... --worker NAME [--agent STR] [--threads N] [--start N] [--count N] [--max-shares N] [--job-timeout SECS] [--max-temp C] [--duty N] [--device auto|cpu|opencl] [--gpu-platform N] [--gpu-device N] [--gpu-batch N] [--password PASS] [--dev-fee-pct N] [--dev-address ADDR] [--tls [--tls-ca PEM] [--tls-server-name NAME] | --tls-insecure] [--v2 [--v2-authority URLKEY|HEX]]
   lm-miner gpu-test [--gpu-platform N] [--gpu-device N]   (legacy --platform/--device accepted)
 
 bench defaults: threads=auto, hashes=3/thread, height=1, 80-byte 0x00..0x4F header.
@@ -550,6 +550,9 @@ fn run_mine(o: &MineOpts) -> ExitCode {
 
 struct PoolOpts {
     pool: String,
+    /// Ordered fallbacks, tried in order whenever the primary (and any
+    /// earlier pool) refuses or drops the connection. Empty = single pool.
+    fallback_pools: Vec<String>,
     worker: String,
     agent: String,
     /// True when the user passed --agent (default agents get the device
@@ -590,6 +593,7 @@ struct PoolOpts {
 
 fn parse_pool(args: &[String]) -> Result<PoolOpts, String> {
     let mut pool: Option<String> = None;
+    let mut fallback_pools: Vec<String> = Vec::new();
     let mut worker: Option<String> = None;
     let mut agent = AGENT.to_string();
     let mut agent_set = false;
@@ -638,6 +642,10 @@ fn parse_pool(args: &[String]) -> Result<PoolOpts, String> {
             "--pool" => {
                 i += 1;
                 pool = Some(args.get(i).ok_or("--pool needs a value")?.to_string());
+            }
+            "--fallback-pool" => {
+                i += 1;
+                fallback_pools.push(args.get(i).ok_or("--fallback-pool needs a value")?.to_string());
             }
             "--worker" => {
                 i += 1;
@@ -750,6 +758,7 @@ fn parse_pool(args: &[String]) -> Result<PoolOpts, String> {
     }
     Ok(PoolOpts {
         pool,
+        fallback_pools,
         worker,
         agent,
         agent_set,
@@ -850,6 +859,7 @@ fn run_pool(o: &PoolOpts) -> ExitCode {
     };
     let cfg = PoolConfig {
         pool: o.pool.clone(),
+        fallbacks: o.fallback_pools.clone(),
         worker: o.worker.clone(),
         agent: o.agent_set.then(|| o.agent.clone()),
         password: o.password.clone(),
@@ -874,14 +884,15 @@ fn run_pool(o: &PoolOpts) -> ExitCode {
         report_secs: 30,
     };
     // The CLI is a foreground service: no stop flag, console as the sink.
+    // The actual endpoint served is reported per connection (failovers
+    // land on whichever pool answers), so no pool name is fixed here.
     let stop = AtomicBool::new(false);
-    let pool = o.pool.clone();
     #[cfg(feature = "opencl")]
     let gpu_backend = matches!(backend, Backend::Gpu(_));
     #[cfg(not(feature = "opencl"))]
     let gpu_backend = false;
     let mut sink = |ev: Event| match ev {
-        Event::Connected { v2, worker, detail } => {
+        Event::Connected { v2, worker, detail, pool } => {
             let wire = if v2 { "pool(v2)" } else { "pool" };
             println!("{wire} {pool} as '{worker}' ({detail})");
         }

@@ -23,6 +23,11 @@ cargo run -p lm-miner -- pool --pool 127.0.0.1:3333 --worker rig1 \
   --threads 4 --max-shares 10
 ```
 
+Failover: repeat `--fallback-pool HOST:PORT` for ordered backups — the
+miner stays on the primary until a connect fails, then moves to the next
+pool (wrapping back to a recovered primary). The `pool <endpoint> as
+...` line always names the endpoint actually serving.
+
 `--target` accepts 64-hex-char big-endian, `nbits:XXXXXXXX`
 (Bitcoin compact, e.g. the doc 05 §5.3 `POW_LIMIT`), or `max`.
 Exit codes: 0 = bench done / solution found, 1 = budget exhausted,
