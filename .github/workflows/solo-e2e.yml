@@ -1,0 +1,71 @@
+# Solo-mining end-to-end (weekly + manual only — NOT per-push).
+#
+# Runs the wallet's ignored `solo_mines_claim_aware_blocks_to_app_wallet`
+# test against a real `luckyd` built from the node fork: the wallet
+# grinds its own GBT templates and must land blocks paying the app
+# wallet, with no pool anywhere in the loop.
+#
+# Why not per-push: this builds the full node (depends tree + autotools,
+# 30-60 min cold). The per-push gates stay fast; this is the deep
+# integration net. NOTE: it tracks the REMOTE luckyhash branch — local
+# node commits that are not yet pushed are NOT covered here.
+
+name: solo-e2e
+
+on:
+  schedule:
+    - cron: "0 3 * * 0"
+  workflow_dispatch:
+
+jobs:
+  solo:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check out node fork (provides luckyd)
+        uses: actions/checkout@v4
+        with:
+          repository: kdsmith18542/LuckyLode-node
+          ref: luckyhash
+          path: node
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Node build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq build-essential libtool autotools-dev automake \
+            pkg-config bsdmainutils python3 libssl-dev libevent-dev libboost-all-dev \
+            libminiupnpc-dev libzmq3-dev libprotobuf-dev protobuf-compiler \
+            libsodium-dev ccache curl git
+
+      - name: ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.ccache
+          key: ccache-soloe2e-${{ github.run_id }}
+          restore-keys: |
+            ccache-soloe2e-
+
+      - name: Proving params (regtest node refuses to start without them)
+        working-directory: node
+        run: ./zcutil/fetch-params.sh
+
+      - name: Build luckyd (depends tree + autotools)
+        working-directory: node
+        run: |
+          export CC="ccache gcc" CXX="ccache g++"
+          HOST=$(./depends/config.guess)
+          make -j"$(nproc)" -C ./depends/ V=1 BUILD="$HOST" HOST="$HOST"
+          ./autogen.sh
+          CONFIG_SITE="$PWD/depends/$HOST/share/config.site" ./configure --disable-tests
+          make -j"$(nproc)"
+          ccache -s || true
+
+      - name: Solo e2e (wallet grinds its own templates, no pool)
+        working-directory: lm-wallet/src-tauri
+        env:
+          LUCKYD_BIN: ${{ github.workspace }}/node/src/luckyd
+        run: cargo test --locked solo_mines_claim_aware_blocks_to_app_wallet -- --ignored --nocapture

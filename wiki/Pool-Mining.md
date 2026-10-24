@@ -8,7 +8,9 @@ chain pays the same whoever builds the block).
 ## Connect
 
 - Stratum V1: `luckylode.cc:3346` (**plaintext** — the reference
-  pool does not serve TLS on V1)
+  pool does not serve TLS on V1) — or V1-over-TLS on `luckylode.cc:3443`
+  (`lm-miner pool --pool luckylode.cc:3443 --tls`; the wallet app stays
+  plaintext-only for now)
 - Stratum V2 (Noise-encrypted): `luckylode.cc:3347`
 - CLI: `lm-miner pool --pool luckylode.cc:3346 --worker YOUR_ADDRESS`
   (`--device auto|cpu|opencl`; `--v2` for the V2 wire)
