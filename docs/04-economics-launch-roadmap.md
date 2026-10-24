@@ -60,6 +60,19 @@ moment funding looks sneaky, the fair-launch story dies and so does the
 coin. None of this touches the emission schedule (§4.1) or the game-fund
 seed.
 
+**Infrastructure neutrality (mainnet policy, LOCKED 2026-10-23):**
+seed/bootstrap nodes and official-service hosts (pool, explorer, faucet)
+do not participate in the game layer or staking on mainnet — no `ln-*`
+identities registered from infra keys, no PoS minting from infra wallets
+(`setgenerate` off, no stake UTXOs). They relay, serve, and publish; they
+never win. Rationale: infrastructure winning draws or stake rewards
+reads as insider dealing and no consensus rule can distinguish "the
+team's node" from anyone else's, so this is enforced operationally at
+launch (daemon off, keys never funded/registered) and verified by the
+absence of identities and stake activity from infra addresses. Testnet
+is exempt — the VPS luckynode there proved the full draw loop before
+anyone else could play.
+
 ## 4.3 Launch sequence (fairness is the marketing)
 
 1. **Public testnet** (4–8 weeks):/resettable, faucet, competitions to
