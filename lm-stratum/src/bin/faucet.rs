@@ -1,7 +1,11 @@
 //! Testnet faucet: drip small amounts to miners' addresses (runbook §5).
 //!
-//! Serves a branded form at `/` and `GET /api/drip?address=ADDR`. Each
-//! address may drip once per `--per-address-secs` (default 24 h). Amounts
+//! Serves a branded form at `/` and `POST /api/drip {"address": ADDR}`
+//! (GET `?address=` kept as a compatible alias). Each address may drip
+//! once per `--per-address-secs` (default 24 h) AND each client IP once
+//! per the same window, so a keypair-per-address keygen spray still
+//! throttles at the IP layer. There is deliberately no CAPTCHA: it needs
+//! a provider account/keys the project has not chosen. Amounts
 //! come from the node wallet via `sendtoaddress`, so run it against a
 //! funded testnet wallet — never mainnet, never with real value.
 //!
@@ -71,7 +75,7 @@ footer{color:var(--dim);font-size:12px;margin-top:22px;line-height:1.7}
 </div>
 <div class="card">
   <label for="a">your testnet address</label>
-  <form id="f" action="api/drip" method="get">
+  <form id="f" action="api/drip" method="post">
     <input id="a" name="address" placeholder="m… — from the wallet app or `luckyd getnewaddress`" spellcheck="false" autocomplete="off">
     <button id="go" type="submit">Drip</button>
   </form>
@@ -79,7 +83,7 @@ footer{color:var(--dim);font-size:12px;margin-top:22px;line-height:1.7}
 </div>
 <footer>
   A pool worker address works too — drip to the same address you mine with.<br>
-  API: <code>GET api/drip?address=ADDR</code> &rarr; JSON <code>{ok,amount,txid}</code>; 429 while rate-limited.<br>
+  API: <code>POST api/drip {"address": "ADDR"}</code> &rarr; JSON <code>{ok,amount,txid}</code>; 429 while rate-limited (per-address <em>and</em> per-IP windows).<br>
   Lucky Lode &middot; <a href="https://luckylode.cc/">luckylode.cc</a> &middot; <a href="https://github.com/kdsmith18542/LuckyLode">github</a>
 </footer>
 <script>
@@ -90,7 +94,7 @@ f.addEventListener('submit',async e=>{
   if(!a){out.innerHTML='<span class="err">enter an address</span>';return;}
   go.disabled=true;out.innerHTML='<span class="dim">dripping…</span>';
   try{
-    const r=await fetch('api/drip?address='+encodeURIComponent(a),{cache:'no-store'});
+    const r=await fetch('api/drip',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({address:a})});
     const j=await r.json();
     if(j.ok){
       out.innerHTML='<span class="ok">sent '+j.amount+' tLKYL</span> · tx <a href="../explorer/tx/'+j.txid+'">'+j.txid.slice(0,24)+'…</a>';
@@ -117,6 +121,10 @@ fn now() -> u64 {
 struct Limits {
     /// address -> last drip unix time
     last: HashMap<String, u64>,
+    /// client IP -> last drip unix time (key-spray defense: one keypair
+    /// per address is free, so the per-address window alone bounds a
+    /// single identity, not a sprayer).
+    ips: HashMap<String, u64>,
 }
 
 impl Limits {
@@ -129,8 +137,39 @@ impl Limits {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Self::default()),
             Err(e) => return Err(format!("cannot read state file {}: {e}", path.display())),
         };
+        // Current shape is an object; pre-IP-limit files were a bare
+        // address->time map — still load those (no silent reset).
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
+            if v.get("addresses").is_some() || v.get("ips").is_some() {
+                let addresses = v
+                    .get("addresses")
+                    .and_then(|a| a.as_object())
+                    .map(|o| {
+                        o.iter()
+                            .filter_map(|(k, v)| v.as_u64().map(|t| (k.clone(), t)))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let ips = v
+                    .get("ips")
+                    .and_then(|a| a.as_object())
+                    .map(|o| {
+                        o.iter()
+                            .filter_map(|(k, v)| v.as_u64().map(|t| (k.clone(), t)))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                return Ok(Self {
+                    last: addresses,
+                    ips,
+                });
+            }
+        }
         serde_json::from_str::<HashMap<String, u64>>(&text)
-            .map(|m| Self { last: m })
+            .map(|m| Self {
+                last: m,
+                ips: HashMap::new(),
+            })
             .map_err(|e| {
                 format!(
                     "corrupt state file {}: {e} (rate limits would silently reset — move it aside or delete it)",
@@ -141,7 +180,8 @@ impl Limits {
 
     fn save(&self, path: &Path) {
         let tmp = path.with_extension("tmp");
-        let result = serde_json::to_string(&self.last)
+        let body = serde_json::json!({"addresses": self.last, "ips": self.ips});
+        let result = serde_json::to_vec(&body)
             .map_err(|e| e.to_string())
             .and_then(|text| {
                 std::fs::write(&tmp, text)
@@ -160,6 +200,19 @@ impl Limits {
     /// Seconds until `address` may drip again (0 = now).
     fn wait(&self, address: &str, period: u64, t: u64) -> u64 {
         match self.last.get(address) {
+            Some(last) => (last + period).saturating_sub(t),
+            None => 0,
+        }
+    }
+
+    /// Seconds until `ip` may drip again (0 = now). Unknown/empty IPs
+    /// are not limited here (the address window still applies) — the
+    /// production path always knows the peer or an X-Forwarded-For.
+    fn wait_ip(&self, ip: &str, period: u64, t: u64) -> u64 {
+        if ip.is_empty() {
+            return 0;
+        }
+        match self.ips.get(ip) {
             Some(last) => (last + period).saturating_sub(t),
             None => 0,
         }
@@ -218,7 +271,8 @@ fn url_decode(s: &str) -> String {
 fn handle(mut stream: TcpStream, ctx: &Ctx) {
     // Bounded request read: read until the header terminator (or a cap),
     // with a deadline — the old single 4 KiB read lost split requests and
-    // a connected-and-silent peer parked its thread forever.
+    // a connected-and-silent peer parked its thread forever. POST bodies
+    // are read after the headers, up to a small cap.
     let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(10)));
     let _ = stream.set_write_timeout(Some(std::time::Duration::from_secs(10)));
     let mut raw: Vec<u8> = Vec::with_capacity(2048);
@@ -238,8 +292,72 @@ fn handle(mut stream: TcpStream, ctx: &Ctx) {
         }
     }
     let req = String::from_utf8_lossy(&raw);
-    let line = req.lines().next().unwrap_or("");
-    let path = line.split_whitespace().nth(1).unwrap_or("/");
+    let mut lines = req.lines();
+    let first = lines.next().unwrap_or("");
+    let mut parts = first.split_whitespace();
+    let method = parts.next().unwrap_or("GET").to_uppercase();
+    let path = parts.next().unwrap_or("/");
+    // POST bodies (Content-Length only; chunked is refused): read at most
+    // 4 KiB past the headers — a JSON address object is tiny.
+    let mut body = String::new();
+    if method == "POST" {
+        let mut len: usize = 0;
+        for line in req.lines().skip(1) {
+            let line = line.trim_end_matches('\r');
+            if line.is_empty() {
+                break;
+            }
+            if let Some(v) = line.strip_prefix("Content-Length:") {
+                len = v.trim().parse().unwrap_or(0);
+            } else if let Some(v) = line.strip_prefix("content-length:") {
+                len = v.trim().parse().unwrap_or(0);
+            }
+        }
+        if len > 0 && len <= 4096 {
+            if let Some(hdr_end) = req.find("\r\n\r\n") {
+                let mut taken = raw[hdr_end + 4..].to_vec();
+                while taken.len() < len.min(4096) {
+                    let n = stream.read(&mut b).unwrap_or(0);
+                    if n == 0 {
+                        break;
+                    }
+                    taken.extend_from_slice(&b[..n]);
+                }
+                body = String::from_utf8_lossy(&taken[..taken.len().min(len)]).into_owned();
+            }
+        }
+    }
+    // Client IP for the per-IP window: X-Forwarded-For when present
+    // (production nginx sets it — see the runbook), else the peer.
+    // Direct spoofed XFF is accepted only because the loopback/no-proxy
+    // path is operator-only; the public path always comes via nginx.
+    let mut ip = stream
+        .peer_addr()
+        .map(|a| a.ip().to_string())
+        .unwrap_or_default();
+    for line in req.lines().skip(1) {
+        let line = line.trim_end_matches('\r');
+        if line.is_empty() {
+            break;
+        }
+        if let Some(v) = line.strip_prefix("X-Forwarded-For:") {
+            if let Some(first) = v.split(',').next() {
+                let f = first.trim().to_string();
+                if !f.is_empty() {
+                    ip = f;
+                }
+            }
+            break;
+        } else if let Some(v) = line.strip_prefix("x-forwarded-for:") {
+            if let Some(first) = v.split(',').next() {
+                let f = first.trim().to_string();
+                if !f.is_empty() {
+                    ip = f;
+                }
+            }
+            break;
+        }
+    }
 
     if path == "/" || path.starts_with("/?") {
         let amount = if ctx.amount.fract() == 0.0 {
@@ -269,14 +387,23 @@ fn handle(mut stream: TcpStream, ctx: &Ctx) {
         return;
     }
 
-    // GET with side effects, deliberately: the public page, docs, and API
-    // consumers all use GET api/drip?address=. The prefetch risk is
-    // accepted because nothing links to the endpoint (the page submits a
-    // form/fetch with a user-typed address; crawlers don't follow those)
-    // and the per-address window bounds any accidental hit to one drip.
+    // Drips are state-changing: POST with a JSON body is the real API
+    // (`{"address": "..."}`); GET `api/drip?address=` stays as a
+    // compatible alias for the page/docs (never linked anywhere, so
+    // prefetch risk stays theoretical; the per-address window bounds any
+    // accidental hit to one drip). CAPTCHA is deliberately absent: it
+    // needs a provider account/keys the project has not chosen — per-IP
+    // windows are the anti-spray layer until then.
     if let Some(rest) = path.strip_prefix("/api/drip") {
-        let raw = query_param(rest, "address").unwrap_or_default();
-        let address = url_decode(&raw).trim().to_string();
+        let mut address = query_param(rest, "address").unwrap_or_default();
+        if method == "POST" && !body.trim().is_empty() {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&body) {
+                if let Some(a) = v.get("address").and_then(|a| a.as_str()) {
+                    address = a.to_string();
+                }
+            }
+        }
+        let address = url_decode(&address).trim().to_string();
         if address.is_empty() || address.len() > 64 {
             respond(
                 &mut stream,
@@ -307,7 +434,9 @@ fn handle(mut stream: TcpStream, ctx: &Ctx) {
             .limits
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let wait = limits.wait(&address, ctx.period, t);
+        let wait_addr = limits.wait(&address, ctx.period, t);
+        let wait_ip = limits.wait_ip(&ip, ctx.period, t);
+        let wait = wait_addr.max(wait_ip);
         if wait > 0 {
             let body = format!(r#"{{"ok":false,"error":"rate-limited","retry_in_secs":{wait}}}"#);
             respond(
@@ -324,6 +453,9 @@ fn handle(mut stream: TcpStream, ctx: &Ctx) {
         {
             Ok(txid) => {
                 limits.last.insert(address.clone(), t);
+                if !ip.is_empty() {
+                    limits.ips.insert(ip, t);
+                }
                 if let Some(path) = &ctx.state_file {
                     limits.save(path);
                 }
@@ -511,12 +643,31 @@ mod tests {
         let _ = std::fs::remove_file(&dir);
         let mut l = Limits::default();
         assert_eq!(l.wait("m1", 86_400, 1_000), 0, "first drip is immediate");
+        assert_eq!(l.wait_ip("1.2.3.4", 86_400, 1_000), 0, "first IP is immediate");
+        assert_eq!(l.wait_ip("", 86_400, 1_000), 0, "unknown IP never blocks");
         l.last.insert("m1".to_string(), 1_000);
+        l.ips.insert("1.2.3.4".to_string(), 2_000);
         assert_eq!(l.wait("m1", 86_400, 1_000), 86_400);
         assert_eq!(l.wait("m1", 86_400, 87_400), 0);
+        assert_eq!(l.wait_ip("1.2.3.4", 86_400, 2_000), 86_400);
+        assert_eq!(l.wait_ip("5.6.7.8", 86_400, 2_000), 0);
         l.save(&dir);
         let back = Limits::load(&dir).expect("load");
         assert_eq!(back.wait("m1", 86_400, 1_000), 86_400);
+        assert_eq!(back.wait_ip("1.2.3.4", 86_400, 2_000), 86_400);
+        let _ = std::fs::remove_file(&dir);
+    }
+
+    #[test]
+    fn legacy_bare_map_state_still_loads() {
+        // Pre-IP-limit state files were a bare address->time map: they
+        // must load with empty IP limits, never as a silent reset.
+        let dir = std::env::temp_dir().join("faucet-legacy-state.json");
+        let _ = std::fs::remove_file(&dir);
+        std::fs::write(&dir, r#"{"m9":12345}"#).expect("write");
+        let back = Limits::load(&dir).expect("load");
+        assert_eq!(back.wait("m9", 86_400, 12_345), 86_400);
+        assert!(back.ips.is_empty());
         let _ = std::fs::remove_file(&dir);
     }
 
