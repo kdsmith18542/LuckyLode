@@ -72,7 +72,13 @@ the password is recorded in `internal/keystores/README.md`).
 was never recorded and is unrecoverable; the current keystore (SHA-256
 `BD:6F:FA:73…`) replaces it. Installs signed with the old key must be
 uninstalled before installing the new APK. Current release artifact:
-`~/lucky-lode-miner-0.2.0.apk` (V2 wire, rank tile, attestation).
+`~/lucky-lode-miner-0.3.0.apk` (divisions boards, rotated V2 authority pin;
+0.2.0 deleted). Live-verified on the KVM emulator vs the public testnet
+pool: V1 worker `android-030` (4 shares, `phone` division) and V2 worker
+`android-v2c` with the rotated pin (4 shares, `phone` division). The
+0.1.0-era rows still visible in pool history (`v2 lm-miner cpu`) are the
+pre-vendor-fix build — that install predated the re-key and could not
+update in place (signature changed), it had to be uninstalled first.
 
 ## Test on the emulator
 
