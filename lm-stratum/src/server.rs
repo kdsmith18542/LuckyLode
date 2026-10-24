@@ -1443,6 +1443,18 @@ impl<P: TemplateProvider + 'static> RunningServer<P> {
             .collect()
     }
 
+    /// Newest `n` block records (dashboard windows only ever show the
+    /// tail). Clones O(n), not O(history) — `/api/stats` used to clone
+    /// all 1000 records per poll to display 10.
+    pub fn recent_blocks(&self, n: usize) -> Vec<BlockRecord> {
+        let guard = self
+            .shared
+            .blocks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        guard.iter().rev().take(n).rev().cloned().collect()
+    }
+
     /// Ledger snapshot for `--state-file` persistence.
     pub fn ledger_snapshot(&self) -> PayoutLedger {
         self.shared
@@ -1472,7 +1484,11 @@ impl<P: TemplateProvider + 'static> RunningServer<P> {
     }
 
     /// Restore persisted shares (replaces the fresh share ledger).
-    pub fn restore_shares(&self, ledger: Ledger) {
+    pub fn restore_shares(&self, mut ledger: Ledger) {
+        // Pre-rollup state files carry full raw history but empty tables:
+        // rebuild once so the boards keep working across the upgrade.
+        // (New files already carry the tables; the rebuild then no-ops.)
+        ledger.rebuild_rollups();
         *self
             .shared
             .ledger

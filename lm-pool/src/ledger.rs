@@ -52,6 +52,16 @@ pub const SEASON_WINDOW_SECS: u64 = 30 * DAY_SECS;
 /// stays bounded at any share rate. Queries must not use windows longer
 /// than this; the reference pool's real windows are 1–3 days.
 pub const SHARE_RETENTION_SECS: u64 = 32 * DAY_SECS;
+/// Raw-share count cap. Money paths (PPLNS, payout splits) read the deque
+/// tail (last [`PPLNS_WINDOW_SHARES`]); display boards read the rollups
+/// below (`day_work`/`hour_work`). The cap keeps RAM and the 10 s
+/// state-file save bounded at any share rate; the time-based
+/// [`SHARE_RETENTION_SECS`] prune stays as a backstop for quiet chains.
+pub const RAW_SHARE_CAP: usize = 8_192;
+/// Trailing-rate input for board policing: per-miner per-hour raw work,
+/// pruned to this many trailing hours on hour rollover. Bounded by
+/// construction — the old code scanned 24 h of raw shares per rebuild.
+pub const HOUR_WORK_RETAIN_HOURS: u64 = 49;
 
 /// One verified share as the pool recorded it.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -131,12 +141,15 @@ pub fn rank_by_division(board: Vec<BoardEntry>) -> Vec<(DeviceFamily, Vec<(u32, 
 /// prize-inflow credits live in the pool server's `prize_credit_log`,
 /// not here.
 ///
-/// Bounded by construction (review finding G): raw shares live for
-/// [`SHARE_RETENTION_SECS`]; per-miner UTC active days and comeback state
-/// are kept for the full history (O(1) each per miner), so streaks and
-/// comeback weights survive pruning. The comeback weight of each raw
-/// share is resolved once at submit, which is what lets old records go
-/// without changing what queries compute.
+/// Bounded two ways: raw shares are capped at [`RAW_SHARE_CAP`] entries
+/// (PPLNS + payout splits read the tail; display boards read the
+/// `day_work`/`hour_work` rollups, never raw scans), and anything older
+/// than [`SHARE_RETENTION_SECS`] is pruned as a backstop. Per-miner day
+/// and hour rollups are O(miners) and pruned to their windows, so the
+/// 10 s state-file save stays small at any share rate. Streaks, comeback
+/// state and board history survive pruning; the per-share comeback weight
+/// is resolved once at submit, so old records can go without changing
+/// what queries compute.
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct Ledger {
     shares: VecDeque<StoredShare>,
@@ -146,6 +159,26 @@ pub struct Ledger {
     last_seen: HashMap<String, u64>,
     /// Per-miner comeback state machine, advanced at submit time.
     comeback: HashMap<String, Comeback>,
+    /// Per-miner per-day (raw work, comeback-weighted effective work) —
+    /// the display boards aggregate this instead of scanning raw shares.
+    /// Sealed days older than the season window prune on day rollover;
+    /// per-day granularity means a window edge can include a partial
+    /// boundary day the exact-timestamp scan would slice — display-only
+    /// fuzz, never money (payouts use the PPLNS tail, not this).
+    /// Survives retention pruning AND restarts (serialized); old state
+    /// files load it empty and it rebuilds from retained raws on load.
+    #[serde(default)]
+    day_work: HashMap<String, HashMap<u64, (u64, u64)>>,
+    /// Per-miner per-hour raw work (trailing-24h policing rate without a
+    /// raw scan). Pruned to [`HOUR_WORK_RETAIN_HOURS`] trailing hours.
+    #[serde(default)]
+    hour_work: HashMap<String, HashMap<u64, u64>>,
+    /// Last (day, hour) a rollup prune ran. Pruning scans the rollup maps,
+    /// so it runs on day/hour rollover — never per submit.
+    #[serde(default)]
+    last_prune_day: u64,
+    #[serde(default)]
+    last_prune_hour: u64,
 }
 
 /// One retained share plus its submit-time comeback weight (per-mille).
@@ -162,17 +195,30 @@ impl Ledger {
 
     /// Record one verified share. Resolves the comeback weight now (so
     /// queries never need pre-retention records), rolls the share's day
-    /// into the miner's activity list, and prunes raw shares older than
+    /// into the miner's activity list, feeds the display rollups
+    /// (`day_work`/`hour_work`), and prunes raw shares older than
     /// [`SHARE_RETENTION_SECS`] relative to the newest submission.
     pub fn submit(&mut self, rec: ShareRec) {
-        let miner = rec.miner.clone();
-        let cb = self
-            .comeback
-            .entry(miner.clone())
-            .or_default()
-            .weight_for(rec.ts);
+        // Index-keyed: clone the miner id only when a map first sees it,
+        // not on every share (three per-submit clones used to be the
+        // hottest allocator here once the leaderboard stopped scanning).
+        let cb = match self.comeback.get_mut(&rec.miner) {
+            Some(c) => c.weight_for(rec.ts),
+            None => {
+                let mut c = Comeback::default();
+                let w = c.weight_for(rec.ts);
+                self.comeback.insert(rec.miner.clone(), c);
+                w
+            }
+        };
         let day = day_index(rec.ts);
-        let days = self.days.entry(miner.clone()).or_default();
+        let days = match self.days.get_mut(&rec.miner) {
+            Some(d) => d,
+            None => {
+                self.days.insert(rec.miner.clone(), Vec::new());
+                self.days.get_mut(&rec.miner).expect("just inserted")
+            }
+        };
         match days.last().copied() {
             Some(last) if last == day => {}
             Some(last) if last < day => days.push(day),
@@ -182,10 +228,36 @@ impl Ledger {
                 }
             }
         }
-        let seen = self.last_seen.entry(miner).or_default();
+        let seen = match self.last_seen.get_mut(&rec.miner) {
+            Some(s) => s,
+            None => {
+                self.last_seen.insert(rec.miner.clone(), 0);
+                self.last_seen.get_mut(&rec.miner).expect("just inserted")
+            }
+        };
         if rec.ts > *seen {
             *seen = rec.ts;
         }
+        // Display rollups (leaderboard + policing rate without a raw
+        // scan): per-share effective work uses the exact aggregate
+        // formula, with the comeback weight resolved above.
+        let ov = if rec.overnight { OVERNIGHT_PERMILLE } else { 0 };
+        let eff = (rec.work as u128 * (1000 + ov) as u128 * (1000 + cb) as u128
+            / 1_000_000)
+            .min(u64::MAX as u128) as u64;
+        {
+            let per_day = self.day_work.entry(rec.miner.clone()).or_default();
+            let e = per_day.entry(day).or_insert((0, 0));
+            e.0 = e.0.saturating_add(rec.work);
+            e.1 = e.1.saturating_add(eff);
+        }
+        {
+            let hour = rec.ts / 3600;
+            let per_hour = self.hour_work.entry(rec.miner.clone()).or_default();
+            let h = per_hour.entry(hour).or_insert(0);
+            *h = h.saturating_add(rec.work);
+        }
+        self.prune_rollups(rec.ts);
         let cutoff = rec.ts.saturating_sub(SHARE_RETENTION_SECS);
         self.shares.push_back(StoredShare {
             rec,
@@ -199,6 +271,85 @@ impl Ledger {
             } else {
                 break;
             }
+        }
+        // Count cap: PPLNS + payout splits read the deque tail
+        // (last [`PPLNS_WINDOW_SHARES`]), display reads the rollups —
+        // nothing needs more than a short tail of raw shares.
+        while self.shares.len() > RAW_SHARE_CAP {
+            self.shares.pop_front();
+        }
+    }
+
+    /// Drop rollup buckets that can never overlap a future query window.
+    /// Runs on day/hour rollover only, so submit stays amortized O(1).
+    fn prune_rollups(&mut self, now_ts: u64) {
+        let day = day_index(now_ts);
+        if day != self.last_prune_day {
+            self.last_prune_day = day;
+            self.day_work.retain(|_, days| {
+                days.retain(|d, _| {
+                    d.saturating_add(1).saturating_mul(DAY_SECS)
+                        > now_ts.saturating_sub(SEASON_WINDOW_SECS)
+                });
+                !days.is_empty()
+            });
+        }
+        let hour = now_ts / 3600;
+        if hour != self.last_prune_hour {
+            self.last_prune_hour = hour;
+            self.hour_work.retain(|_, hours| {
+                hours.retain(|h, _| {
+                    h.saturating_add(HOUR_WORK_RETAIN_HOURS) >= hour
+                });
+                !hours.is_empty()
+            });
+        }
+    }
+
+    /// Rebuild the display rollups from retained raw shares. Runs on state
+    /// load when the file predates the rollups (serde defaults leave them
+    /// empty): those files were written before raw pruning, so the retained
+    /// raws still cover the full window and nothing is lost. New files
+    /// already carry the tables and skip the rebuild (re-adding would
+    /// double-count). Uses each record's STORED comeback weight — never
+    /// replays through the (already-restored) live comeback machines.
+    pub fn rebuild_rollups(&mut self) {
+        if !self.day_work.is_empty() || !self.hour_work.is_empty() {
+            return;
+        }
+        if self.shares.is_empty() {
+            return;
+        }
+        for s in self.shares.iter() {
+            let r = &s.rec;
+            let ov = if r.overnight { OVERNIGHT_PERMILLE } else { 0 };
+            let eff = (r.work as u128 * (1000 + ov) as u128
+                * (1000 + s.comeback_pm) as u128
+                / 1_000_000)
+                .min(u64::MAX as u128) as u64;
+            let day = day_index(r.ts);
+            let e = self
+                .day_work
+                .entry(r.miner.clone())
+                .or_default()
+                .entry(day)
+                .or_insert((0, 0));
+            e.0 = e.0.saturating_add(r.work);
+            e.1 = e.1.saturating_add(eff);
+            let hour = r.ts / 3600;
+            let h = self
+                .hour_work
+                .entry(r.miner.clone())
+                .or_default()
+                .entry(hour)
+                .or_insert(0);
+            *h = h.saturating_add(r.work);
+        }
+        // Legacy loads predate the prune markers; set them from the
+        // newest share so the first live submit prunes correctly.
+        if let Some(back) = self.shares.back() {
+            self.last_prune_day = day_index(back.rec.ts);
+            self.last_prune_hour = back.rec.ts / 3600;
         }
     }
 
@@ -248,12 +399,22 @@ impl Ledger {
         let mut acc: HashMap<String, Acc> = HashMap::new();
         for stored in iter {
             let r = &stored.rec;
-            let e = acc.entry(r.miner.clone()).or_insert_with(|| Acc {
-                raw_work: 0,
-                eff_sum: 0,
-                window_days: Vec::new(),
-                class_work: 0,
-            });
+            // Index-keyed: clone the miner id only on first sight, not
+            // on every share (the old `entry(key.clone())` allocated per
+            // share; at mainnet share rates that is the hottest alloc in
+            // the pool).
+            if !acc.contains_key(&r.miner) {
+                acc.insert(
+                    r.miner.clone(),
+                    Acc {
+                        raw_work: 0,
+                        eff_sum: 0,
+                        window_days: Vec::new(),
+                        class_work: 0,
+                    },
+                );
+            }
+            let e = acc.get_mut(&r.miner).expect("just inserted");
             e.raw_work = e.raw_work.saturating_add(r.work);
             e.window_days.push(day_index(r.ts));
             if Self::in_window(r.ts, now_ts, CLASS_WINDOW_SECS) {
@@ -327,22 +488,65 @@ impl Ledger {
     }
 
     /// Seasonal board over a window: effective work desc, miner id asc.
-    /// Farm-class rows are included but flagged via [`DeviceFamily`] —
-    /// the pool server re-resolves each row's division with the miner's
-    /// declared agent before display.
+    /// Aggregates the per-miner per-day rollup (`day_work`), NOT the raw
+    /// share log — same totals the raw scan produced (day buckets that
+    /// overlap the window; a window edge can include a partial boundary
+    /// day the exact-timestamp scan would slice — display-only fuzz,
+    /// never money). Hour-granularity hps comes from the per-miner
+    /// per-hour rollup; streaks from the day list as before.
     pub fn leaderboard(&self, window_secs: u64, now_ts: u64) -> Vec<BoardEntry> {
-        let mut rows: Vec<BoardEntry> = self
-            .aggregate(window_secs, now_ts)
-            .into_iter()
-            .map(|a| BoardEntry {
-                miner: a.miner,
-                class: a.class,
-                eff_work: a.eff_work,
-                days_active: a.days_active,
-                streak_days: a.streak_days,
-                hps: a.hps,
-            })
-            .collect();
+        let start = now_ts.saturating_sub(window_secs);
+        // O(miners × days), never O(raw shares).
+        let mut agg: HashMap<&str, (u128, u32)> = HashMap::new();
+        for (miner, days) in &self.day_work {
+            let mut eff = 0u128;
+            let mut ndays = 0u32;
+            for (d, (_, e)) in days {
+                if d.saturating_add(1).saturating_mul(DAY_SECS) > start
+                    && d.saturating_mul(DAY_SECS) <= now_ts
+                {
+                    eff = eff.saturating_add(*e as u128);
+                    ndays += 1;
+                }
+            }
+            if ndays > 0 {
+                agg.insert(miner.as_str(), (eff, ndays));
+            }
+        }
+        // Trailing-24h policing rate from the hourly rollup (order-of-
+        // magnitude bands only — decay-vs-window differences at the
+        // boundary are invisible to the bands).
+        let hcut = now_ts.saturating_sub(CLASS_WINDOW_SECS);
+        let mut hps_map: HashMap<&str, u64> = HashMap::new();
+        for (miner, hours) in &self.hour_work {
+            let mut w = 0u64;
+            for (h, v) in hours {
+                if h.saturating_mul(3600).saturating_add(3600) > hcut {
+                    w = w.saturating_add(*v);
+                }
+            }
+            if w > 0 {
+                hps_map.insert(miner.as_str(), w / CLASS_WINDOW_SECS.max(1));
+            }
+        }
+        let empty: Vec<u64> = Vec::new();
+        let mut rows: Vec<BoardEntry> = Vec::with_capacity(agg.len());
+        for (miner, (eff, days_active)) in agg {
+            let all_days = self.days.get(miner).unwrap_or(&empty);
+            let last_ts = self.last_seen.get(miner).copied().unwrap_or(0);
+            let streak_days = current_streak(all_days, last_ts, now_ts);
+            let streak_pm = streak_bonus_per_mille(streak_days);
+            let eff_work =
+                (eff * (1000 + streak_pm) as u128 / 1000).min(u64::MAX as u128) as u64;
+            rows.push(BoardEntry {
+                miner: miner.to_string(),
+                class: division_for(None, hps_map.get(miner).copied().unwrap_or(0)),
+                eff_work,
+                days_active,
+                streak_days,
+                hps: hps_map.get(miner).copied().unwrap_or(0),
+            });
+        }
         rows.sort_by(|a, b| b.eff_work.cmp(&a.eff_work).then(a.miner.cmp(&b.miner)));
         rows
     }
@@ -466,8 +670,123 @@ mod tests {
     }
 
     #[test]
-    fn farms_are_ranked_but_flagged() {
+    fn leaderboard_reads_the_day_rollup_not_raw_scans() {
         let mut l = Ledger::new();
+        // m1 works days 1-2, m2 only day 2 (all inside one 2-day window).
+        for d in 1..=2u64 {
+            l.submit(rec("m1", d, 1000));
+        }
+        l.submit(rec("m2", 2, 3000));
+        let now = 2 * D + 200;
+        let board = l.leaderboard(2 * D, now);
+        assert_eq!(board.len(), 2);
+        // m2 outworks m1 (3000×1.01 vs 2×1000×1.02): order by eff desc.
+        assert_eq!(board[0].miner, "m2");
+        assert_eq!(board[0].eff_work, 3030);
+        assert_eq!(board[0].days_active, 1);
+        assert_eq!(board[1].miner, "m1");
+        assert_eq!(board[1].eff_work, 2040);
+        assert_eq!(board[1].days_active, 2);
+        // Day-aligned window: identical to the raw scan order.
+        let mut raw: Vec<(String, u64)> = Vec::new();
+        for s in l.shares.iter().filter(|s| s.rec.ts <= now && s.rec.ts > now - 2 * D) {
+            match raw.iter_mut().find(|(m, _)| m == &s.rec.miner) {
+                Some((_, w)) => *w += s.rec.work,
+                None => raw.push((s.rec.miner.clone(), s.rec.work)),
+            }
+        }
+        raw.sort_by_key(|a| std::cmp::Reverse(a.1));
+        assert_eq!(raw[0].0, "m2");
+        assert_eq!(raw[1].0, "m1");
+    }
+
+    #[test]
+    fn raw_shares_capped_but_pplns_tail_intact() {
+        let mut l = Ledger::new();
+        // 13192 shares inside a single day (stays one streak, bonus 10).
+        for i in 0..(RAW_SHARE_CAP as u64 + 5000) {
+            l.submit(ShareRec {
+                miner: "m1".to_string(),
+                ts: 10 * D + (i % 80_000),
+                work: 1,
+                overnight: false,
+            });
+        }
+        assert!(
+            l.raw_share_count() <= RAW_SHARE_CAP,
+            "raw log bounded: {}",
+            l.raw_share_count()
+        );
+        // The PPLNS tail (last 2000) is untouched by the cap.
+        let agg = l.aggregate_shares(2000, 10 * D + 80_000);
+        assert_eq!(agg.len(), 1);
+        assert_eq!(agg[0].eff_work, 2020, "2000 x 1.0 x 1.01 streak");
+        // ...and the board still sees the miner via the rollup.
+        let board = l.leaderboard(30 * D, 10 * D + 80_000);
+        assert_eq!(board.len(), 1);
+        assert_eq!(board[0].miner, "m1");
+        assert_eq!(board[0].days_active, 1);
+    }
+
+    #[test]
+    fn sealed_days_and_old_hours_prune_on_rollover() {
+        let mut l = Ledger::new();
+        l.submit(rec("m1", 1, 100));
+        // A share 99 days later rolls the day over: day 1 is outside any
+        // future 30-day window, so it leaves the rollup (streak days list
+        // is separate and keeps the history).
+        l.submit(rec("m1", 100, 100));
+        let days = l.day_work.get("m1").expect("miner present");
+        assert!(!days.contains_key(&1), "sealed day pruned");
+        assert!(days.contains_key(&100), "current day kept");
+        // Hours older than the 49 h tail go the same way.
+        let hours = l.hour_work.get("m1").expect("miner present");
+        assert!(
+            hours.keys().all(|h| h + HOUR_WORK_RETAIN_HOURS >= 100 * D / 3600),
+            "only the trailing hours remain"
+        );
+    }
+
+    #[test]
+    fn rollups_survive_a_state_save_load_cycle() {
+        let mut l = Ledger::new();
+        l.submit(rec("m1", 1, 1000));
+        l.submit(rec("m1", 2, 2000));
+        l.submit(rec("m2", 2, 5000));
+        let json = serde_json::to_string(&l).expect("serialize");
+        assert!(json.contains("day_work"), "tables persist");
+        assert!(json.contains("hour_work"), "tables persist");
+        let back: Ledger = serde_json::from_str(&json).expect("reload");
+        let now = 2 * D + 200;
+        let (a, b) = (l.leaderboard(30 * D, now), back.leaderboard(30 * D, now));
+        assert_eq!(a.len(), b.len());
+        for (x, y) in a.iter().zip(b.iter()) {
+            assert_eq!(x.miner, y.miner);
+            assert_eq!(x.eff_work, y.eff_work);
+            assert_eq!(x.days_active, y.days_active);
+            assert_eq!(x.hps, y.hps);
+        }
+    }
+
+    #[test]
+    fn legacy_state_without_tables_rebuilds_from_retained_raw() {
+        // Simulate a pre-rollup state file: full raws, empty tables.
+        let mut l = Ledger::new();
+        l.submit(rec("m1", 1, 1000));
+        l.submit(rec("m2", 1, 3000));
+        l.day_work.clear();
+        l.hour_work.clear();
+        l.rebuild_rollups();
+        let now = D + 200;
+        let board = l.leaderboard(3 * D, now);
+        assert_eq!(board.len(), 2);
+        assert_eq!(board[0].miner, "m2");
+        assert_eq!(board[0].eff_work, 3030);
+        assert_eq!(board[1].miner, "m1");
+    }
+
+    #[test]
+    fn farms_are_ranked_but_flagged() {        let mut l = Ledger::new();
         // 600 MH/s sustained over the class window: farm territory.
         l.submit(ShareRec {
             miner: "m9".to_string(),

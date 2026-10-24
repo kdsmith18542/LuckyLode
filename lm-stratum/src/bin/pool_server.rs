@@ -402,9 +402,11 @@ tick(); setInterval(tick,5000);
 
 fn stats_json<P: TemplateProvider + 'static>(
     server: &RunningServer<P>,
-    node: Option<&(String, String, String)>,
+    node_jackpot: Option<&serde_json::Value>,
+    node_mining: Option<&serde_json::Value>,
     mode: &str,
     ctx: &HttpCtx,
+    boards_input: Vec<lm_pool::ledger::BoardEntry>,
 ) -> String {
     let s = server.stats();
     let now = now_secs();
@@ -430,10 +432,7 @@ fn stats_json<P: TemplateProvider + 'static>(
         .iter()
         .map(|(m, a)| (m.as_str(), a.as_str()))
         .collect();
-    let boards = lm_pool::ledger::rank_by_division(resolve_divisions(
-        server.leaderboard(lm_pool::ledger::SEASON_WINDOW_SECS, now),
-        &agent_map,
-    ));
+    let boards = lm_pool::ledger::rank_by_division(resolve_divisions(boards_input, &agent_map));
     let mut rank_map: HashMap<String, (String, u32, u32)> = HashMap::new();
     for (class, rows) in &boards {
         let class_size = rows.len() as u32;
@@ -517,10 +516,9 @@ fn stats_json<P: TemplateProvider + 'static>(
         })
         .collect();
     let last: Vec<serde_json::Value> = server
-        .blocks()
+        .recent_blocks(10)
         .iter()
         .rev()
-        .take(10)
         .map(|b| {
             let total: u64 = b.payouts.iter().map(|(_, p)| *p).sum();
             let finder_name = names_map
@@ -602,14 +600,9 @@ fn stats_json<P: TemplateProvider + 'static>(
         // Epoch 0 = no advisory (mock provider or pre-draw node).
         "draw": draw_json,
     });
-    if let Some((addr, user, pass)) = node {
-        let rpc = RpcClient::new(addr, user, pass);
-        if let Ok(v) = rpc.call("getjackpotinfo", serde_json::json!([])) {
-            obj["jackpot"] = v;
-        }
-        if let Ok(v) = rpc.call("getmininginfo", serde_json::json!([])) {
-            obj["mining"] = v;
-        }
+    if let (Some(jackpot), Some(mining)) = (node_jackpot, node_mining) {
+        obj["jackpot"] = jackpot.clone();
+        obj["mining"] = mining.clone();
         // Node-side staking state (the pool mines PoW; staking lives in
         // the node's wallet). PUBLIC surface: on/off + chain supply only.
         // Operator-wallet shape (eligible outputs/balance, unlock time) is
@@ -625,6 +618,90 @@ fn stats_json<P: TemplateProvider + 'static>(
         }
     }
     obj.to_string()
+}
+
+/// Season-window leaderboard, shared across the endpoints that need it
+/// (`/api/stats` embeds the capped boards, `/api/divisions` serves the
+/// full ones). Rebuilding it scans the raw share log, so it is cached
+/// for a few seconds — a 30-day window does not move within one poll.
+fn cached_boards<P: TemplateProvider + 'static>(
+    server: &RunningServer<P>,
+    ctx: &HttpCtx,
+) -> Vec<lm_pool::ledger::BoardEntry> {
+    let now = now_secs();
+    {
+        let cache = ctx
+            .stats_cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if cache.boards_fresh(now) {
+            return cache.boards.clone();
+        }
+    }
+    let boards = server.leaderboard(lm_pool::ledger::SEASON_WINDOW_SECS, now);
+    ctx.stats_cache
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .boards = boards.clone();
+    ctx.stats_cache
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .boards_at = now;
+    boards
+}
+
+/// `/api/stats` with a short shared body cache: concurrent dashboard
+/// polls inside the TTL cost one serialization, not N rebuilds, and the
+/// node RPCs happen at most once per node TTL no matter how many
+/// clients poll.
+fn cached_stats_json<P: TemplateProvider + 'static>(
+    server: &RunningServer<P>,
+    node: Option<&(String, String, String)>,
+    mode: &str,
+    ctx: &HttpCtx,
+) -> String {
+    let now = now_secs();
+    {
+        let cache = ctx
+            .stats_cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if cache.body_fresh(now) {
+            return cache.body.clone();
+        }
+    }
+    // Node fields refresh on their own (slower) TTL: a burst of polls
+    // reuses one getjackpotinfo/getmininginfo pair.
+    let (jackpot, mining) = {
+        let mut cache = ctx
+            .stats_cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !cache.node_fresh(now) {
+            cache.jackpot = None;
+            cache.mining = None;
+            if let Some((addr, user, pass)) = node {
+                let rpc = RpcClient::new(addr, user, pass);
+                if let Ok(v) = rpc.call("getjackpotinfo", serde_json::json!([])) {
+                    cache.jackpot = Some(v);
+                }
+                if let Ok(v) = rpc.call("getmininginfo", serde_json::json!([])) {
+                    cache.mining = Some(v);
+                }
+            }
+            cache.node_at = now;
+        }
+        (cache.jackpot.clone(), cache.mining.clone())
+    };
+    let boards = cached_boards(server, ctx);
+    let body = stats_json(server, jackpot.as_ref(), mining.as_ref(), mode, ctx, boards);
+    let mut cache = ctx
+        .stats_cache
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    cache.body = body.clone();
+    cache.body_at = now;
+    body
 }
 
 /// Resolve display divisions: the miner's declared device family from its
@@ -695,7 +772,10 @@ fn division_boards_json(
 /// `GET /api/divisions` — the full seasonal division boards (all families, up
 /// to 100 entries each), same shape as the `divisions` object on
 /// `/api/stats`.
-fn divisions_json<P: TemplateProvider + 'static>(server: &RunningServer<P>) -> String {
+fn divisions_json<P: TemplateProvider + 'static>(
+    server: &RunningServer<P>,
+    boards_input: Vec<lm_pool::ledger::BoardEntry>,
+) -> String {
     let now = now_secs();
     // Live + restored agents: idle miners keep their declared family.
     let stored_agents = server.agents();
@@ -703,10 +783,7 @@ fn divisions_json<P: TemplateProvider + 'static>(server: &RunningServer<P>) -> S
         .iter()
         .map(|(m, a)| (m.as_str(), a.as_str()))
         .collect();
-    let boards = lm_pool::ledger::rank_by_division(resolve_divisions(
-        server.leaderboard(lm_pool::ledger::SEASON_WINDOW_SECS, now),
-        &agent_map,
-    ));
+    let boards = lm_pool::ledger::rank_by_division(resolve_divisions(boards_input, &agent_map));
     let names_map: HashMap<String, String> = server.names().into_iter().collect();
     let attestations = server.attestations();
     serde_json::json!({
@@ -792,6 +869,7 @@ fn worker_api<P: TemplateProvider + 'static>(
     server: &RunningServer<P>,
     miner_seg: &str,
     authorization: Option<&str>,
+    boards_input: Vec<lm_pool::ledger::BoardEntry>,
 ) -> (&'static str, String) {
     let miner: String = pct_decode(miner_seg).chars().take(128).collect();
     if miner.is_empty() || miner.contains('/') {
@@ -838,10 +916,7 @@ fn worker_api<P: TemplateProvider + 'static>(
         .iter()
         .map(|(m, a)| (m.as_str(), a.as_str()))
         .collect();
-    let boards = lm_pool::ledger::rank_by_division(resolve_divisions(
-        server.leaderboard(lm_pool::ledger::SEASON_WINDOW_SECS, now),
-        &agent_map,
-    ));
+    let boards = lm_pool::ledger::rank_by_division(resolve_divisions(boards_input, &agent_map));
     let mut ranks: HashMap<String, (String, u32, u32)> = HashMap::new();
     for (class, rows) in &boards {
         let size = rows.len() as u32;
@@ -1092,9 +1167,13 @@ fn http_reply<P: TemplateProvider + 'static>(
         ("GET", "/api/stats") => (
             "200 OK",
             "application/json",
-            stats_json(server, node, &ctx.mode, ctx),
+            cached_stats_json(server, node, &ctx.mode, ctx),
         ),
-        ("GET", "/api/divisions") => ("200 OK", "application/json", divisions_json(server)),
+        ("GET", "/api/divisions") => (
+            "200 OK",
+            "application/json",
+            divisions_json(server, cached_boards(server, ctx)),
+        ),
         ("GET", "/api/miner") => {
             let (status, json) = miner_api(server, ctx, Some(&authorization));
             (status, "application/json", json)
@@ -1112,10 +1191,12 @@ fn http_reply<P: TemplateProvider + 'static>(
             (status, "application/json", json)
         }
         ("GET", p) if p.starts_with("/api/worker/") => {
+            let boards = cached_boards(server, ctx);
             let (status, json) = worker_api(
                 server,
                 &p["/api/worker/".len()..],
                 Some(authorization.as_str()),
+                boards,
             );
             (status, "application/json", json)
         }
@@ -1356,6 +1437,45 @@ struct HttpCtx {
     history: Arc<Mutex<VecDeque<PayoutRecord>>>,
     /// Chain label for the dashboard.
     network: String,
+    /// Shared response cache: `/api/stats` is polled every few seconds
+    /// by every dashboard, and without this each poll rebuilt the
+    /// 30-day leaderboard over the raw share log plus two node RPCs.
+    stats_cache: Arc<Mutex<StatsCache>>,
+}
+
+/// What the shared `/api/stats` cache holds. TTLs are short on purpose:
+/// dashboards poll every ~5 s and blocks land ~60 s apart, so a few
+/// seconds of staleness is invisible while concurrent polls cost zero.
+const STATS_BODY_TTL_SECS: u64 = 2;
+const STATS_BOARDS_TTL_SECS: u64 = 10;
+const STATS_NODE_TTL_SECS: u64 = 10;
+
+#[derive(Debug, Default)]
+struct StatsCache {
+    /// Serialized `/api/stats` body.
+    body: String,
+    body_at: u64,
+    /// Season-window leaderboard input (boards are derived per request).
+    boards: Vec<lm_pool::ledger::BoardEntry>,
+    boards_at: u64,
+    /// Last `getjackpotinfo` / `getmininginfo` responses.
+    jackpot: Option<serde_json::Value>,
+    mining: Option<serde_json::Value>,
+    node_at: u64,
+}
+
+impl StatsCache {
+    fn body_fresh(&self, now: u64) -> bool {
+        !self.body.is_empty() && now.saturating_sub(self.body_at) < STATS_BODY_TTL_SECS
+    }
+
+    fn boards_fresh(&self, now: u64) -> bool {
+        now.saturating_sub(self.boards_at) < STATS_BOARDS_TTL_SECS
+    }
+
+    fn node_fresh(&self, now: u64) -> bool {
+        self.jackpot.is_some() && now.saturating_sub(self.node_at) < STATS_NODE_TTL_SECS
+    }
 }
 
 fn now_secs() -> u64 {
@@ -2691,6 +2811,7 @@ fn main() -> std::process::ExitCode {
                 threshold: payout_threshold,
                 history: Arc::clone(&history),
                 network: display_network.clone(),
+                stats_cache: Arc::new(Mutex::new(StatsCache::default())),
             };
             std::thread::spawn(move || http_serve(a, srv, ctx));
         }
@@ -2835,6 +2956,7 @@ fn main() -> std::process::ExitCode {
                 threshold: 0,
                 history: Arc::clone(&history),
                 network: network.clone().unwrap_or_else(|| "testnet".to_string()),
+                stats_cache: Arc::new(Mutex::new(StatsCache::default())),
             };
             std::thread::spawn(move || http_serve(a, srv, ctx));
         }
@@ -3461,18 +3583,18 @@ mod tests {
         assert!(c.subscribe("probe/0.1").expect("subscribe"));
         assert!(c.authorize_with("w1", "tok1").expect("authorize"));
         // No token, wrong token: 403 (money stays hidden).
-        let (status, body) = worker_api(&gated, "w1", None);
+        let (status, body) = worker_api(&gated, "w1", None, vec![]);
         assert_eq!(status, "403 Forbidden");
         assert!(body.contains("token"));
-        let (status, _) = worker_api(&gated, "w1", Some("Bearer nope"));
+        let (status, _) = worker_api(&gated, "w1", Some("Bearer nope"), vec![]);
         assert_eq!(status, "403 Forbidden");
         // The matching token gets the row (with its money fields).
-        let (status, body) = worker_api(&gated, "w1", Some("Bearer tok1"));
+        let (status, body) = worker_api(&gated, "w1", Some("Bearer tok1"), vec![]);
         assert_eq!(status, "200 OK");
         assert!(body.contains("\"owed\""));
         // Unknown workers also 403 on token pools (the gate runs before
         // the existence check, so there is no known/unknown oracle).
-        let (status, _) = worker_api(&gated, "ghost", Some("Bearer tok1"));
+        let (status, _) = worker_api(&gated, "ghost", Some("Bearer tok1"), vec![]);
         assert_eq!(status, "403 Forbidden");
         gated.stop();
         // Open pools keep the old public behavior.
@@ -3487,10 +3609,68 @@ mod tests {
         let mut c = lm_stratum::client::PoolClient::connect(open.addr()).expect("connect");
         assert!(c.subscribe("probe/0.1").expect("subscribe"));
         assert!(c.authorize_with("w1", "x").expect("authorize"));
-        let (status, body) = worker_api(&open, "w1", None);
+        let (status, body) = worker_api(&open, "w1", None, vec![]);
         assert_eq!(status, "200 OK");
         assert!(body.contains("\"owed\""));
         open.stop();
+    }
+
+    #[test]
+    fn recent_blocks_returns_only_the_tail() {
+        use lm_stratum::server::BlockRecord;
+        let server = spawn_server(
+            MockProvider::new([0xff; 32], [0xff; 32], 1_000, 0),
+            "127.0.0.1:0",
+            None,
+            None,
+            None,
+        )
+        .expect("bind");
+        let rec = |h: u64| BlockRecord {
+            height: h,
+            finder: "m1".to_string(),
+            value: 100,
+            bonus: 0,
+            pot: 0,
+            prize_inflow: 0,
+            faucet: 0,
+            dev: 0,
+            prize_claim: 0,
+            prize_winner: String::new(),
+            payouts: vec![],
+        };
+        server.restore_blocks((1..=5).map(rec).collect());
+        assert_eq!(
+            server
+                .recent_blocks(2)
+                .iter()
+                .map(|b| b.height)
+                .collect::<Vec<_>>(),
+            vec![4, 5]
+        );
+        // Asking for more than exists returns everything (no panic).
+        assert_eq!(server.recent_blocks(99).len(), 5);
+        assert_eq!(server.blocks().len(), 5);
+        server.stop();
+    }
+
+    #[test]
+    fn stats_cache_ttls_gate_rebuilds() {
+        let mut c = StatsCache::default();
+        assert!(!c.body_fresh(1_000), "empty body is never fresh");
+        assert!(!c.boards_fresh(1_000), "no boards yet");
+        assert!(!c.node_fresh(1_000), "no node fields yet");
+        c.body = "{}".to_string();
+        c.body_at = 1_000;
+        assert!(c.body_fresh(1_001));
+        assert!(!c.body_fresh(1_000 + STATS_BODY_TTL_SECS));
+        c.boards_at = 1_000;
+        assert!(c.boards_fresh(1_000 + STATS_BOARDS_TTL_SECS - 1));
+        assert!(!c.boards_fresh(1_000 + STATS_BOARDS_TTL_SECS));
+        c.jackpot = Some(serde_json::json!({}));
+        c.node_at = 1_000;
+        assert!(c.node_fresh(1_000 + STATS_NODE_TTL_SECS - 1));
+        assert!(!c.node_fresh(1_000 + STATS_NODE_TTL_SECS));
     }
 
     #[test]
