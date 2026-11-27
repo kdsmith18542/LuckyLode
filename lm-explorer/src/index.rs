@@ -34,6 +34,9 @@ pub struct Indexer {
     cache_game: serde_json::Value,
     cache_staking: serde_json::Value,
     cache_node_ok: bool,
+    /// One-shot PoS-marker backfill (checked PoW rows cannot be told
+    /// apart from unchecked ones, so retrying is unbounded work).
+    pos_backfilled: bool,
 }
 
 #[derive(Debug, Default)]
@@ -278,7 +281,7 @@ impl Indexer {
             "ALTER TABLE game_blocks ADD COLUMN winner TEXT NOT NULL DEFAULT ''",
             [],
         );
-        let mut this = Self {
+        let this = Self {
             db,
             rpc,
             price_url: None,
@@ -289,16 +292,14 @@ impl Indexer {
             cache_game: serde_json::json!({}),
             cache_staking: serde_json::json!({}),
             cache_node_ok: true,
+            pos_backfilled: false,
         };
         // Backfills run from the sync thread (below), not synchronously
         // here: a first start on an existing DB would otherwise hold the
         // HTTP listener closed while thousands of RPC calls and SQLite
         // commits run. The sync loop bounds each pass and serves between
-        // them. The PoS marker is the exception: a checked PoW row is
-        // indistinguishable from an unchecked one (both `pos = 0`), so
-        // retrying it every pass would re-scan the newest 200 rows
-        // forever. Run it once, before serving (bounded to 200 rows).
-        this.backfill_pos();
+        // them. (`backfill_pos` is a one-shot there — checked PoW rows
+        // look unchecked, so retrying it every pass would never settle.)
         Ok(this)
     }
 
@@ -825,14 +826,19 @@ impl Indexer {
     }
 
     pub fn sync(&mut self) -> Result<SyncReport, String> {
+        // The PoS marker cannot distinguish a checked PoW row from an
+        // unchecked one, so this pass runs once per process (bounded to
+        // the 5000 newest rows) rather than every sync.
+        if !self.pos_backfilled {
+            self.backfill_pos();
+            self.pos_backfilled = true;
+        }
         // Catch up any history the indexer predates (fee totals, exact
         // tx sizes, header details) — bounded per pass so a long chain
         // fills in over several passes instead of stalling the sync or
         // holding the index lock for the whole backfill. Header details
         // are retried here because a box where the explorer starts before
         // the node answers would otherwise stay blank until a restart.
-        // (`backfill_pos` is one-shot in `open`: it cannot tell a checked
-        // PoW row from an unchecked one.)
         self.backfill_block_meta();
         self.backfill_block_header();
         self.backfill_chainwork();
