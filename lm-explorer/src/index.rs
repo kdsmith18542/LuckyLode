@@ -278,7 +278,7 @@ impl Indexer {
             "ALTER TABLE game_blocks ADD COLUMN winner TEXT NOT NULL DEFAULT ''",
             [],
         );
-        let this = Self {
+        let mut this = Self {
             db,
             rpc,
             price_url: None,
@@ -294,7 +294,11 @@ impl Indexer {
         // here: a first start on an existing DB would otherwise hold the
         // HTTP listener closed while thousands of RPC calls and SQLite
         // commits run. The sync loop bounds each pass and serves between
-        // them.
+        // them. The PoS marker is the exception: a checked PoW row is
+        // indistinguishable from an unchecked one (both `pos = 0`), so
+        // retrying it every pass would re-scan the newest 200 rows
+        // forever. Run it once, before serving (bounded to 200 rows).
+        this.backfill_pos();
         Ok(this)
     }
 
@@ -314,7 +318,7 @@ impl Indexer {
     fn backfill_pos(&mut self) {
         let heights: Vec<i64> = self
             .db
-            .prepare("SELECT height FROM blocks WHERE pos = 0 ORDER BY height DESC LIMIT 200")
+            .prepare("SELECT height FROM blocks WHERE pos = 0 ORDER BY height DESC LIMIT 5000")
             .and_then(|mut st| {
                 st.query_map([], |r| r.get(0))
                     .and_then(|it| it.collect::<Result<Vec<_>, _>>())
@@ -827,7 +831,8 @@ impl Indexer {
         // holding the index lock for the whole backfill. Header details
         // are retried here because a box where the explorer starts before
         // the node answers would otherwise stay blank until a restart.
-        self.backfill_pos();
+        // (`backfill_pos` is one-shot in `open`: it cannot tell a checked
+        // PoW row from an unchecked one.)
         self.backfill_block_meta();
         self.backfill_block_header();
         self.backfill_chainwork();
