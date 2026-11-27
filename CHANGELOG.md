@@ -3,7 +3,12 @@
 All notable changes to the Lucky Lode reference software. The project is
 pre-1.0; minor versions may change APIs.
 
-## Unreleased
+## v0.2.0 — 2026-11-27
+
+Hardening release: bounded pool state, safer faucet/state handling,
+chain-wide draw claims in the explorer, draw-assembly QA coverage, a
+standalone KAT gate that runs without a depends tree, green CI on both
+architectures, and the first Stratum V2 authority-key file support.
 
 ### Added
 
