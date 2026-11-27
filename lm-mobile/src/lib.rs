@@ -248,10 +248,7 @@ pub fn scheduler_selftest() -> bool {
     }
     // 5. Overnight flag rides along (pool-side bonus accounting).
     let a = sch.decide(&s(Some(300), 90, true, 23));
-    if !a.mine || !a.overnight_active {
-        return false;
-    }
-    true
+    a.mine && a.overnight_active
 }
 
 // hex decode without a dependency (the probe takes hex from Kotlin).
@@ -263,7 +260,7 @@ mod hex {
         }
         let b = s.as_bytes();
         let mut out = Vec::with_capacity(b.len() / 2);
-        for pair in b.chunks_exact(2) {
+        for pair in b.as_chunks::<2>().0.iter() {
             let hexval = |c: u8| -> Result<u16, ()> {
                 match c {
                     b'0'..=b'9' => Ok((c - b'0') as u16),
