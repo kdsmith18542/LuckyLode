@@ -1210,7 +1210,9 @@ pub fn merkle_root(leaves: &[[u8; 32]]) -> Result<[u8; 32], String> {
             level.push(last);
         }
         level = level
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|pair| {
                 let mut h = Sha256::new();
                 h.update(pair[0]);
