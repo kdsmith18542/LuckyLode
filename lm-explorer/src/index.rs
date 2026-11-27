@@ -55,6 +55,30 @@ struct DivisionBoardRow {
     attested: i64,
 }
 
+/// Header fields as stored/displayed: version, bits, nonce, prev hash.
+/// This fork's `getblock`/`getblockheader` serializes the 256-bit nonce
+/// as a 64-char hex STRING; Bitcoin-style nodes return a JSON number.
+/// Accept both (string wins) so header details never silently go blank.
+fn header_fields(v: &serde_json::Value) -> (i64, String, String, String) {
+    let version = v.get("version").and_then(|x| x.as_i64()).unwrap_or(0);
+    let bits = v
+        .get("bits")
+        .and_then(|x| x.as_str())
+        .unwrap_or("")
+        .to_string();
+    let nonce = match v.get("nonce") {
+        Some(serde_json::Value::String(s)) => s.clone(),
+        Some(n) => n.as_u64().map(|n| format!("{n:016x}")).unwrap_or_default(),
+        None => String::new(),
+    };
+    let prev = v
+        .get("previousblockhash")
+        .and_then(|x| x.as_str())
+        .unwrap_or("")
+        .to_string();
+    (version, bits, nonce, prev)
+}
+
 /// Split a feed URL into (use_tls, host for SNI, connect address,
 /// Host header value, request path). Pure parsing — no I/O, so it is
 /// unit-testable.
@@ -388,17 +412,7 @@ impl Indexer {
             let Ok(hdr) = self.rpc.call("getblockheader", serde_json::json!([hash])) else {
                 continue;
             };
-            let version = hdr.get("version").and_then(|v| v.as_i64()).unwrap_or(0);
-            let bits = hdr.get("bits").and_then(|v| v.as_str()).unwrap_or("");
-            let nonce = hdr
-                .get("nonce")
-                .and_then(|v| v.as_u64())
-                .map(|n| format!("{n:016x}"))
-                .unwrap_or_default();
-            let prev = hdr
-                .get("previousblockhash")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
+            let (version, bits, nonce, prev) = header_fields(&hdr);
             let _ = self.db.execute(
                 "UPDATE blocks SET version = ?1, bits = ?2, nonce = ?3, prevhash = ?4 WHERE height = ?5",
                 rusqlite::params![version, bits, nonce, prev, h],
@@ -565,6 +579,12 @@ impl Indexer {
             .map_err(|e| format!("rollback tx facts: {e}"))?;
         tx.execute("DELETE FROM blocks WHERE height = ?1", [height])
             .map_err(|e| format!("rollback blocks: {e}"))?;
+        // Game rows are per-height too: a reorged-away claim block must
+        // not keep its claim (or inflow) attached to the replacement
+        // height. Re-indexing recreates chain-sourced claims; the pool
+        // feed restores pool rows on its next pass.
+        tx.execute("DELETE FROM game_blocks WHERE height = ?1", [height])
+            .map_err(|e| format!("rollback game blocks: {e}"))?;
         tx.commit().map_err(|e| format!("rollback commit: {e}"))?;
         Ok(())
     }
@@ -593,17 +613,7 @@ impl Indexer {
         // Cumulative work hex — the hashrate chart differentiates this
         // the same way the node's `getnetworkhashps` does.
         let chainwork = b.get("chainwork").and_then(|v| v.as_str()).unwrap_or("");
-        let version = b.get("version").and_then(|v| v.as_i64()).unwrap_or(0);
-        let bits = b.get("bits").and_then(|v| v.as_str()).unwrap_or("");
-        let nonce = b
-            .get("nonce")
-            .and_then(|v| v.as_u64())
-            .map(|n| format!("{n:016x}"))
-            .unwrap_or_default();
-        let prevhash = b
-            .get("previousblockhash")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
+        let (version, bits, nonce, prevhash) = header_fields(&b);
 
         let txn = self
             .db
@@ -682,6 +692,34 @@ impl Indexer {
         // Best-effort: a node that cannot serve the raw tx just leaves
         // size at 0 (the UI then shows "–" rather than a wrong number).
         self.record_block_facts(height, txs);
+        // Consensus draw claims from the chain itself (doc 06 §6.7):
+        // solo (`-gen`/wallet-solo) and staker-built epoch-boundary blocks
+        // pay the winner on-chain but never pass through the pool, so the
+        // pool-fed claim history omits them. getjackpotinfo exposes this
+        // block's own claim epoch/amount — record it WITHOUT touching
+        // pool-sourced columns: pool rows keep their finder/bonus/pot/
+        // winner (the pool feed overwrites them wholesale anyway), and
+        // missing rows are created as chain-sourced (winner unknown from
+        // this RPC — recorded empty, never guessed).
+        let claim_epoch = ji
+            .get("prizeclaimepoch")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        let claim_amount = ji
+            .get("prizeclaimamount")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0) as i64;
+        if claim_epoch > 0 && claim_amount > 0 {
+            self.db
+                .execute(
+                    "INSERT INTO game_blocks(height, bonus, pot, prize, finder, claim, winner)
+                     VALUES (?1, 0, 0, 0, 'chain', ?2, '')
+                     ON CONFLICT(height) DO UPDATE SET claim=excluded.claim
+                     WHERE game_blocks.claim = 0",
+                    params![height as i64, claim_amount],
+                )
+                .map_err(|e| format!("chain claim {height}: {e}"))?;
+        }
         Ok(())
     }
 
@@ -800,7 +838,12 @@ impl Indexer {
     pub fn sync(&mut self) -> Result<SyncReport, String> {
         // Catch up any history the indexer predates (fee totals, exact
         // tx sizes) — bounded per pass so a long chain fills in over
-        // several passes instead of stalling the sync.
+        // several passes instead of stalling the sync. Header details
+        // are retried here too: on a box where the explorer starts
+        // before the node answers, the one-shot startup backfill skips
+        // every row and would otherwise stay blank until a manual restart.
+        self.backfill_block_header();
+        self.backfill_chainwork();
         self.backfill_block_fees();
         self.backfill_tx_facts(200);
         let tip = match self.rpc.call("getblockcount", serde_json::json!([])) {
@@ -1476,11 +1519,13 @@ impl Indexer {
         Ok(rows)
     }
 
-    /// Pool-observed Luckynode Draw claims (newest first): epoch-boundary
-    /// blocks whose coinbase carried the directed claim to the winner.
-    /// Covers pool-mined boundaries only — external finds never pass
-    /// through the pool's block records, so their claims stay node-RPC
-    /// visible but are absent here (same scope as the pool dashboard).
+    /// Luckynode Draw claims (newest first): epoch-boundary blocks whose
+    /// coinbase carried the directed claim to the winner. Pool-mined
+    /// claims arrive via the pool feed (with winner + finder); solo and
+    /// staker-built claims are ingested from the node's own
+    /// getjackpotinfo during indexing (finder 'chain', winner unknown) —
+    /// every consensus claim is listed, with its source visible in the
+    /// finder column.
     pub fn game_claims_recent(&self, limit: i64) -> Result<Vec<serde_json::Value>, String> {
         let mut st = self
             .db
@@ -2679,6 +2724,102 @@ mod tests {
             })
             .expect("count");
         assert_eq!(left, 0);
+        let _ = std::fs::remove_file(&dir);
+    }
+
+    #[test]
+    fn header_fields_accept_hex_string_and_numeric_nonce() {
+        // Lucky Lode's node: 64-char hex string (the whole 256-bit nonce).
+        let v = serde_json::json!({
+            "version": 65540,
+            "bits": "1e160b42",
+            "nonce": "0000000000000000000000000000000000000000000000000000000023df56",
+            "previousblockhash": "abc123",
+        });
+        let (version, bits, nonce, prev) = header_fields(&v);
+        assert_eq!(version, 65540);
+        assert_eq!(bits, "1e160b42");
+        assert_eq!(
+            nonce,
+            "0000000000000000000000000000000000000000000000000000000023df56"
+        );
+        assert_eq!(prev, "abc123");
+        // Bitcoin-style numeric nonce still formats as 16 hex chars.
+        let v = serde_json::json!({"nonce": 4660});
+        assert_eq!(header_fields(&v).2, "0000000000001234");
+        // Missing fields stay empty, never panic.
+        let v = serde_json::json!({});
+        assert_eq!(
+            header_fields(&v),
+            (0, String::new(), String::new(), String::new())
+        );
+    }
+
+    #[test]
+    fn rollback_clears_game_rows_with_the_block() {
+        // A reorged-away claim block must not keep its claim (or inflow)
+        // attached to the replacement height; re-indexing recreates
+        // chain-sourced claims and the pool feed restores pool rows.
+        let rpc = RpcClient::new("127.0.0.1:1", "u", "p");
+        let dir = std::env::temp_dir().join("explorer-rollback-game-test.db");
+        let _ = std::fs::remove_file(&dir);
+        let mut idx = Indexer::open(dir.to_str().expect("path"), rpc).expect("open");
+        idx.db
+            .execute_batch(
+                "INSERT INTO game_blocks(height, bonus, pot, prize, finder, claim, winner)
+                 VALUES (9, 100, 200, 300, 'chain', 400, '');",
+            )
+            .expect("fixture");
+        idx.rollback_height(9).expect("rollback");
+        let left: i64 = idx
+            .db
+            .query_row(
+                "SELECT COUNT(*) FROM game_blocks WHERE height = 9",
+                [],
+                |r| r.get(0),
+            )
+            .expect("count");
+        assert_eq!(left, 0);
+        let _ = std::fs::remove_file(&dir);
+    }
+
+    #[test]
+    fn chain_claim_upsert_never_clobbers_pool_rows() {
+        // The chain-sourced claim path fills empty claims and creates
+        // chain rows, but a pool row's finder/claim/winner always wins.
+        let rpc = RpcClient::new("127.0.0.1:1", "u", "p");
+        let dir = std::env::temp_dir().join("explorer-chain-claim-test.db");
+        let _ = std::fs::remove_file(&dir);
+        let idx = Indexer::open(dir.to_str().expect("path"), rpc).expect("open");
+        // Pool row first: chain upsert must leave it alone.
+        idx.upsert_game_block(10, 5, 6, 7, "m1", 100, "w1")
+            .expect("pool upsert");
+        idx.db
+            .execute(
+                "INSERT INTO game_blocks(height, bonus, pot, prize, finder, claim, winner)
+                 VALUES (10, 0, 0, 0, 'chain', 100, '')
+                 ON CONFLICT(height) DO UPDATE SET claim=excluded.claim
+                 WHERE game_blocks.claim = 0",
+                [],
+            )
+            .expect("chain upsert");
+        let row = idx.game_block(10).expect("read").expect("row");
+        assert_eq!(row.get("finder").and_then(|v| v.as_str()), Some("m1"));
+        assert_eq!(row.get("claim").and_then(|v| v.as_i64()), Some(100));
+        assert_eq!(row.get("winner").and_then(|v| v.as_str()), Some("w1"));
+        // No row: chain upsert creates a chain-sourced one.
+        idx.db
+            .execute(
+                "INSERT INTO game_blocks(height, bonus, pot, prize, finder, claim, winner)
+                 VALUES (11, 0, 0, 0, 'chain', 200, '')
+                 ON CONFLICT(height) DO UPDATE SET claim=excluded.claim
+                 WHERE game_blocks.claim = 0",
+                [],
+            )
+            .expect("chain insert");
+        let row = idx.game_block(11).expect("read").expect("row");
+        assert_eq!(row.get("finder").and_then(|v| v.as_str()), Some("chain"));
+        assert_eq!(row.get("claim").and_then(|v| v.as_i64()), Some(200));
         let _ = std::fs::remove_file(&dir);
     }
 
