@@ -520,6 +520,21 @@ impl TemplateProvider for NodeProvider {
             .collect()
     }
 
+    fn evict_faucet_unmatured_above(&self, tip: u64) {
+        let mut unm = self
+            .faucet_unmatured
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let before = unm.len();
+        unm.retain(|&h, _| h <= tip);
+        if unm.len() != before {
+            eprintln!(
+                "pool: reorg to {tip} dropped {} orphaned faucet-claim record(s)",
+                before - unm.len()
+            );
+        }
+    }
+
     fn restore_faucet_unmatured(&self, claimed: Vec<(u64, u64)>) {
         let mut unm = self
             .faucet_unmatured

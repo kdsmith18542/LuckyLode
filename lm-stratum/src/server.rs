@@ -501,6 +501,13 @@ fn refresh_loop<P: TemplateProvider + 'static>(shared: Arc<Shared<P>>) {
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .retain(|&h, _| h <= tip + 1);
+                // Orphaned faucet claims can never mature — drop them so
+                // a reorged-out top-up stops suppressing future claims.
+                shared
+                    .provider
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .evict_faucet_unmatured_above(tip);
                 *synced = tip;
                 eprintln!(
                     "pool: reorg? tip {tip} below synced {old} — prospective prize map reset"

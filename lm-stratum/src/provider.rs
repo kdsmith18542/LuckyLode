@@ -82,6 +82,10 @@ pub trait TemplateProvider: Send {
     /// Restore in-flight faucet claims (state-file reload). Default is a
     /// no-op (mock chains never claim).
     fn restore_faucet_unmatured(&self, _claimed: Vec<(u64, u64)>) {}
+    /// Drop in-flight faucet claims above a reorged-to tip: an orphaned
+    /// claim can never mature, so keeping it would suppress legitimate
+    /// top-ups until it ages out. Default is a no-op.
+    fn evict_faucet_unmatured_above(&self, _tip: u64) {}
 }
 
 /// Deterministic mock chain for offline development and the e2e suite.
