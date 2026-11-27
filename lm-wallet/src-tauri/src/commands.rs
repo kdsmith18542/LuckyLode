@@ -1767,13 +1767,17 @@ pub fn miner_solo_start(
     let rpc = node::client(&state)?;
     let seed = session_seed(&state)?;
     let net = wallet::network_of(&rpc)?;
-    let (recv_next, change_next) = {
-        let cfg = state
-            .cfg
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        (cfg.recv_next, cfg.change_next)
-    };
+    // Live cursors: the solo loop re-reads these on every template
+    // fetch (a new receive address mid-run must stay covered by the
+    // beneficiary check, not fail it until restart).
+    let cfg_shared = state.cfg.clone();
+    let cursors: std::sync::Arc<dyn Fn() -> (u32, u32) + Send + Sync> =
+        std::sync::Arc::new(move || {
+            let cfg = cfg_shared
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            (cfg.recv_next, cfg.change_next)
+        });
     let label = {
         let cfg = state
             .cfg
@@ -1794,8 +1798,7 @@ pub fn miner_solo_start(
         max_power.unwrap_or(0),
         seed,
         net,
-        recv_next,
-        change_next,
+        cursors,
     )?;
     *state
         .miner

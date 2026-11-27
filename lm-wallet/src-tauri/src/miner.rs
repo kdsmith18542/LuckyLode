@@ -385,6 +385,9 @@ struct Counters {
 /// verify that is one of this wallet's addresses (see
 /// `template_beneficiary`) and refuse otherwise, or solo finds would pay
 /// a stranger. Requires an unlocked wallet (HD scan for the check).
+/// `cursors` is re-read on every template fetch, so a receive address
+/// issued mid-run stays covered instead of failing the check until
+/// restart.
 #[allow(clippy::too_many_arguments)]
 pub fn start_solo(
     node: lm_stratum::rpc::RpcClient,
@@ -399,8 +402,7 @@ pub fn start_solo(
     max_power: u32,
     seed: [u8; 64],
     net: lm_keys::chain::Network,
-    recv_next: u32,
-    change_next: u32,
+    cursors: Arc<dyn Fn() -> (u32, u32) + Send + Sync>,
 ) -> Result<Miner, String> {
     // Surface a bad thermal/duty config before spawning anything.
     let _ = MiningPolicy::new(max_temp, duty.min(100) as i64)?;
@@ -442,8 +444,7 @@ pub fn start_solo(
                 max_power,
                 seed,
                 net,
-                recv_next,
-                change_next,
+                cursors,
             )
         })
         .map_err(|e| format!("cannot spawn mining thread: {e}"))?;
@@ -520,8 +521,7 @@ fn run_solo(
     max_power: u32,
     seed: [u8; 64],
     net: lm_keys::chain::Network,
-    recv_next: u32,
-    change_next: u32,
+    cursors: Arc<dyn Fn() -> (u32, u32) + Send + Sync>,
 ) {
     let policy = match MiningPolicy::new(max_temp, duty.min(100) as i64) {
         Ok(p) => p,
@@ -646,6 +646,9 @@ fn run_solo(
             _ => true,
         };
         if need {
+            // Fresh cursors every fetch: addresses issued since the last
+            // fetch (receive tab, change from a send) stay covered.
+            let (recv_next, change_next) = cursors();
             match fetch_template(&node, &seed, net, recv_next, change_next) {
                 Ok((t, txs, beneficiary, bonus, pot, prize)) => {
                     if Some(t.height) != tpl.as_ref().map(|(old, _)| old.height) {
@@ -1040,8 +1043,7 @@ lucky-coinbase-maturity=1\n";
             0,
             seed,
             net,
-            0,
-            0,
+            std::sync::Arc::new(|| (0u32, 0u32)),
         )
         .expect("solo start");
         // Wait for at least two blocks (claim logic runs on real heights;

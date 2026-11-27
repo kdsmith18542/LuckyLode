@@ -12,11 +12,15 @@ mod pool;
 mod wallet;
 
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use tauri::Manager;
 
 pub struct AppState {
-    pub cfg: Mutex<config::Config>,
+    /// Shared (not just command-scoped): the solo-mining thread re-reads
+    /// the HD cursors through this on every template fetch, so a new
+    /// receive address issued mid-run is covered immediately instead of
+    /// failing the beneficiary check until restart.
+    pub cfg: Arc<Mutex<config::Config>>,
     pub cfg_path: std::path::PathBuf,
     pub services: Mutex<HashMap<String, luckynode::Service>>,
     pub miner: Mutex<Option<miner::Miner>>,
@@ -53,7 +57,7 @@ fn main() {
             let cfg_path = dir.join("config.json");
             let cfg = config::Config::load(&cfg_path);
             app.manage(AppState {
-                cfg: Mutex::new(cfg),
+                cfg: Arc::new(Mutex::new(cfg)),
                 cfg_path,
                 services: Mutex::new(HashMap::new()),
                 miner: Mutex::new(None),
