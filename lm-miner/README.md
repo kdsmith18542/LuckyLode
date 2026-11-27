@@ -25,8 +25,11 @@ cargo run -p lm-miner -- pool --pool 127.0.0.1:3333 --worker rig1 \
 
 Failover: repeat `--fallback-pool HOST:PORT` for ordered backups — the
 miner stays on the primary until a connect fails, then moves to the next
-pool (wrapping back to a recovered primary). The `pool <endpoint> as
-...` line always names the endpoint actually serving.
+pool (wrapping back to a recovered primary). A sustained reject streak
+(8 shares in a row on one endpoint, e.g. a bad vardiff or a pool that no
+longer accepts this worker) also rotates, without waiting for a
+disconnect. The `pool <endpoint> as ...` line always names the endpoint
+actually serving.
 
 `--target` accepts 64-hex-char big-endian, `nbits:XXXXXXXX`
 (Bitcoin compact, e.g. the doc 05 §5.3 `POW_LIMIT`), or `max`.

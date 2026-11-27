@@ -512,34 +512,38 @@ fn run_v1(
 ) -> Outcome {
     let password = cfg.password.clone();
     let tls = cfg.tls.clone();
-    let mut connect = |worker: &str| -> Result<(Box<dyn Wire>, String), String> {
-        // One endpoint per call, sticky on success: the session loop
-        // retries with backoff, so the NEXT call after a failure lands
-        // on the next pool in order.
-        let ep = endpoints.current().clone();
-        let tls_name = tls
-            .as_ref()
-            .and_then(|t| t.server_name.clone())
-            .unwrap_or_else(|| ep.host.clone());
-        let tls_cfg = tls.as_ref().map(|t| TlsCfg {
-            server_name: Some(tls_name),
-            ca_pem: t.ca_pem.clone(),
-            insecure: t.insecure,
-        });
-        match connect_session(ep.addr, &agent, worker, &password, tls_cfg.as_ref()) {
-            Ok(client) => Ok((
-                Box::new(V1Wire {
-                    client,
-                    worker: worker.to_string(),
-                }),
-                ep.arg.clone(),
-            )),
-            Err(e) => {
+    let mut connect =
+        |worker: &str, rotate_first: bool| -> Result<(Box<dyn Wire>, String), String> {
+            // One endpoint per call, sticky on success: the session loop
+            // retries with backoff, so the NEXT call after a failure lands
+            // on the next pool in order.
+            if rotate_first {
                 endpoints.advance();
-                Err(format!("{}: {e}", ep.arg))
             }
-        }
-    };
+            let ep = endpoints.current().clone();
+            let tls_name = tls
+                .as_ref()
+                .and_then(|t| t.server_name.clone())
+                .unwrap_or_else(|| ep.host.clone());
+            let tls_cfg = tls.as_ref().map(|t| TlsCfg {
+                server_name: Some(tls_name),
+                ca_pem: t.ca_pem.clone(),
+                insecure: t.insecure,
+            });
+            match connect_session(ep.addr, &agent, worker, &password, tls_cfg.as_ref()) {
+                Ok(client) => Ok((
+                    Box::new(V1Wire {
+                        client,
+                        worker: worker.to_string(),
+                    }),
+                    ep.arg.clone(),
+                )),
+                Err(e) => {
+                    endpoints.advance();
+                    Err(format!("{}: {e}", ep.arg))
+                }
+            }
+        };
     run_session(cfg, backend, policy, stop, sink, &mut connect)
 }
 
@@ -574,29 +578,33 @@ fn run_v2(
         device_id: cfg.password.clone(),
     };
     let authority = cfg.v2_authority;
-    let mut connect = |worker: &str| -> Result<(Box<dyn Wire>, String), String> {
-        let ep = endpoints.current().clone();
-        let mut setup = base_setup.clone();
-        setup.endpoint_host = ep.host.clone();
-        setup.endpoint_port = ep.addr.port();
-        let opened = (|| {
-            let mut client =
-                V2Client::connect(ep.addr, authority, &setup).map_err(|e| format!("v2: {e}"))?;
-            client
-                .open_channel(1, worker, 0.0, [0xffu8; 32])
-                .map_err(|e| format!("v2 channel refused: {e}"))
-                .map(|opened| (client, opened.channel_id))
-        })();
-        match opened {
-            Ok((client, channel_id)) => {
-                Ok((Box::new(V2Wire { client, channel_id }), ep.arg.clone()))
-            }
-            Err(e) => {
+    let mut connect =
+        |worker: &str, rotate_first: bool| -> Result<(Box<dyn Wire>, String), String> {
+            if rotate_first {
                 endpoints.advance();
-                Err(format!("{}: {e}", ep.arg))
             }
-        }
-    };
+            let ep = endpoints.current().clone();
+            let mut setup = base_setup.clone();
+            setup.endpoint_host = ep.host.clone();
+            setup.endpoint_port = ep.addr.port();
+            let opened = (|| {
+                let mut client = V2Client::connect(ep.addr, authority, &setup)
+                    .map_err(|e| format!("v2: {e}"))?;
+                client
+                    .open_channel(1, worker, 0.0, [0xffu8; 32])
+                    .map_err(|e| format!("v2 channel refused: {e}"))
+                    .map(|opened| (client, opened.channel_id))
+            })();
+            match opened {
+                Ok((client, channel_id)) => {
+                    Ok((Box::new(V2Wire { client, channel_id }), ep.arg.clone()))
+                }
+                Err(e) => {
+                    endpoints.advance();
+                    Err(format!("{}: {e}", ep.arg))
+                }
+            }
+        };
     run_session(cfg, backend, policy, stop, sink, &mut connect)
 }
 
@@ -632,7 +640,24 @@ impl Endpoints {
     }
 }
 
-type WireConnect<'a> = &'a mut dyn FnMut(&str) -> Result<(Box<dyn Wire>, String), String>;
+/// One endpoint per call, sticky on success. `rotate_first` forces the
+/// rotation BEFORE dialing (sustained-reject failover); connect failures
+/// rotate inside the closure, so the session loop stays dumb.
+type WireConnect<'a> = &'a mut dyn FnMut(&str, bool) -> Result<(Box<dyn Wire>, String), String>;
+
+/// Rejects in a row that prove the CURRENT endpoint is bad for us (not
+/// just one dead job): stale/unknown verdicts already retire the job, so
+/// a run this long means systematic rejection. Rotate instead of grinding.
+const ROTATE_AFTER_REJECTS: u64 = 8;
+
+/// Does this reject verdict kill the job? Uses the server's exact strings
+/// (v1.rs Verdict mapping, forwarded verbatim on V2): "stale share" and
+/// "unknown job" retire it. Other rejects leave the job live — "duplicate
+/// share" is our own resubmit, "share below pool target" is a vardiff
+/// race, "malformed nonce" is our bug; none kill the job.
+fn job_dead(err_text: &str) -> bool {
+    err_text.contains("stale") || err_text.contains("unknown job")
+}
 
 fn run_session(
     cfg: &PoolConfig,
@@ -644,6 +669,9 @@ fn run_session(
 ) -> Outcome {
     let mut submitted = 0u64;
     let mut accepted = 0u64;
+    // Set when an endpoint proves systematically bad (sustained rejects):
+    // the next loop-top dial rotates BEFORE connecting (flag consumed).
+    let mut rotate_next = false;
     // Grind each job in chunks and adopt newer jobs as they arrive: one
     // search per rotation left the GPU idle ~80% of the time (the pool's
     // template rotates every ~20 s, the card finishes a search in ~4 s).
@@ -669,7 +697,8 @@ fn run_session(
                 worker: session_worker.clone(),
             });
         }
-        let wire = match connect(&session_worker) {
+        let rotate_first = std::mem::replace(&mut rotate_next, false);
+        let wire = match connect(&session_worker, rotate_first) {
             Ok((w, pool)) => (w, pool),
             Err(e) => {
                 if cfg.fail_fast {
@@ -694,8 +723,11 @@ fn run_session(
             v2: wire.v2(),
             worker: session_worker.clone(),
             detail: backend.detail(),
-            pool,
+            pool: pool.clone(),
         });
+        // Reject streak is per session: a reconnect or endpoint rotation
+        // gives the new endpoint a fresh chance.
+        let mut consecutive_rejects = 0u64;
         let mut current: Option<WireJob> = None;
         let mut pos = cfg.start;
         loop {
@@ -815,6 +847,7 @@ fn run_session(
                         Ok((true, _)) => {
                             submitted += 1;
                             accepted += 1;
+                            consecutive_rejects = 0;
                             sink(Event::ShareAccepted {
                                 job: job.id.clone(),
                                 nonce: sol.nonce,
@@ -822,11 +855,24 @@ fn run_session(
                         }
                         Ok((false, err)) => {
                             submitted += 1;
+                            consecutive_rejects += 1;
                             let err_text = err.clone().unwrap_or_default();
-                            if err_text.contains("stale") {
+                            if job_dead(&err_text) {
                                 // The pool declared this job dead; drop it
                                 // instead of grinding it to exhaustion.
                                 current = None;
+                                consecutive_rejects = 0;
+                            } else if consecutive_rejects >= ROTATE_AFTER_REJECTS {
+                                // Systematic rejection by THIS endpoint
+                                // (not one dead job): rotate to the next
+                                // pool instead of grinding finds it will
+                                // never pay for. Single-pool setups wrap
+                                // straight back around (sticky).
+                                sink(Event::Note(format!(
+                                    "{consecutive_rejects} consecutive shares rejected by {pool}; rotating endpoint"
+                                )));
+                                rotate_next = true;
+                                continue 'session;
                             }
                             sink(Event::ShareRejected {
                                 job: job.id.clone(),
@@ -1105,6 +1151,25 @@ mod tests {
         assert_eq!(eps.current().addr.port(), 3);
         eps.advance();
         assert_eq!(eps.current().addr.port(), 1, "wraps to the primary");
+    }
+
+    /// Reject verdicts that prove the job dead are classified exactly;
+    /// transient/our-fault verdicts leave the job live (rotating on one
+    /// vardiff race would thrash pools).
+    #[test]
+    fn only_dead_job_verdicts_retire_the_job() {
+        for dead in ["stale share", "unknown job", "unknown job id 7"] {
+            assert!(job_dead(dead), "{dead:?} should retire the job");
+        }
+        for alive in [
+            "duplicate share",
+            "share below pool target",
+            "malformed nonce",
+            "unauthorized",
+            "",
+        ] {
+            assert!(!job_dead(alive), "{alive:?} must keep the job");
+        }
     }
 
     /// The embedded loop mines real shares through the same wire the CLI
