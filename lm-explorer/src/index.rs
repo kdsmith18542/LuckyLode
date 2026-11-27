@@ -278,7 +278,7 @@ impl Indexer {
             "ALTER TABLE game_blocks ADD COLUMN winner TEXT NOT NULL DEFAULT ''",
             [],
         );
-        let mut this = Self {
+        let this = Self {
             db,
             rpc,
             price_url: None,
@@ -290,26 +290,11 @@ impl Indexer {
             cache_staking: serde_json::json!({}),
             cache_node_ok: true,
         };
-        // Backfill the exact PoS marker for indexed rows (cheap header
-        // call each — the whole testnet chain is a few hundred blocks).
-        // Rows already marked stay untouched.
-        this.backfill_pos();
-        // Backfill size/merkleroot the same way (one getblock each, skipped
-        // silently when the node is unreachable — the columns just stay 0).
-        this.backfill_block_meta();
-        // Header details (version/bits/nonce/prev) for rows indexed before
-        // the columns existed.
-        this.backfill_block_header();
-        // Backfill chainwork the same way (getblock carries it).
-        this.backfill_chainwork();
-        // Backfill per-block fee totals for rows indexed before the
-        // column existed. Index-only (no node call): a block with no
-        // non-coinbase tx has no fees by definition, so only blocks
-        // that contain spends are recomputed.
-        this.backfill_block_fees();
-        // Backfill exact tx sizes/rates for recent spends (one raw-tx
-        // call each, bounded so a long chain never stalls startup).
-        this.backfill_tx_facts(2000);
+        // Backfills run from the sync thread (below), not synchronously
+        // here: a first start on an existing DB would otherwise hold the
+        // HTTP listener closed while thousands of RPC calls and SQLite
+        // commits run. The sync loop bounds each pass and serves between
+        // them.
         Ok(this)
     }
 
@@ -329,7 +314,7 @@ impl Indexer {
     fn backfill_pos(&mut self) {
         let heights: Vec<i64> = self
             .db
-            .prepare("SELECT height FROM blocks WHERE pos = 0 ORDER BY height DESC LIMIT 2000")
+            .prepare("SELECT height FROM blocks WHERE pos = 0 ORDER BY height DESC LIMIT 200")
             .and_then(|mut st| {
                 st.query_map([], |r| r.get(0))
                     .and_then(|it| it.collect::<Result<Vec<_>, _>>())
@@ -374,7 +359,7 @@ impl Indexer {
         let rows: Vec<(i64, String)> = self
             .db
             .prepare(
-                "SELECT height, hash FROM blocks WHERE size = 0 ORDER BY height DESC LIMIT 5000",
+                "SELECT height, hash FROM blocks WHERE size = 0 ORDER BY height DESC LIMIT 200",
             )
             .and_then(|mut st| {
                 st.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
@@ -402,7 +387,7 @@ impl Indexer {
     fn backfill_block_header(&mut self) {
         let rows: Vec<(i64, String)> = self
             .db
-            .prepare("SELECT height, hash FROM blocks WHERE prevhash = '' AND height > 0 ORDER BY height DESC LIMIT 5000")
+            .prepare("SELECT height, hash FROM blocks WHERE prevhash = '' AND height > 0 ORDER BY height DESC LIMIT 200")
             .and_then(|mut st| {
                 st.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
                     .and_then(|it| it.collect::<Result<Vec<_>, _>>())
@@ -427,7 +412,7 @@ impl Indexer {
     fn backfill_chainwork(&mut self) {
         let rows: Vec<(i64, String)> = self
             .db
-            .prepare("SELECT height, hash FROM blocks WHERE chainwork = '' ORDER BY height DESC LIMIT 5000")
+            .prepare("SELECT height, hash FROM blocks WHERE chainwork = '' ORDER BY height DESC LIMIT 200")
             .and_then(|mut st| {
                 st.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
                     .and_then(|it| it.collect::<Result<Vec<_>, _>>())
@@ -837,11 +822,13 @@ impl Indexer {
 
     pub fn sync(&mut self) -> Result<SyncReport, String> {
         // Catch up any history the indexer predates (fee totals, exact
-        // tx sizes) — bounded per pass so a long chain fills in over
-        // several passes instead of stalling the sync. Header details
-        // are retried here too: on a box where the explorer starts
-        // before the node answers, the one-shot startup backfill skips
-        // every row and would otherwise stay blank until a manual restart.
+        // tx sizes, header details) — bounded per pass so a long chain
+        // fills in over several passes instead of stalling the sync or
+        // holding the index lock for the whole backfill. Header details
+        // are retried here because a box where the explorer starts before
+        // the node answers would otherwise stay blank until a restart.
+        self.backfill_pos();
+        self.backfill_block_meta();
         self.backfill_block_header();
         self.backfill_chainwork();
         self.backfill_block_fees();
