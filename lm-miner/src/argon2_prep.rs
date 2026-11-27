@@ -103,8 +103,8 @@ pub fn initial_blocks(h0: &[u8; 64]) -> [[u64; BLOCK_WORDS]; 2] {
         let i_le = (i as u32).to_le_bytes();
         let l_le = 0u32.to_le_bytes(); // p=1: lane 0
         let bytes = blake2b_long(&[h0, &i_le, &l_le], BLOCK_WORDS * 8);
-        for (w, chunk) in bytes.chunks_exact(8).enumerate() {
-            block[w] = u64::from_le_bytes(chunk.try_into().expect("8 bytes"));
+        for (w, chunk) in bytes.as_chunks::<8>().0.iter().enumerate() {
+            block[w] = u64::from_le_bytes(*chunk);
         }
     }
     out

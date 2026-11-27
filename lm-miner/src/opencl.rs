@@ -603,7 +603,7 @@ impl GpuDevice {
             "clEnqueueReadBuffer(out)",
         )?;
         let mut out = Vec::with_capacity(n);
-        for chunk in out_flat.chunks_exact(128).take(n) {
+        for chunk in out_flat.as_chunks::<128>().0.iter().take(n) {
             let mut block = [0u64; 128];
             block.copy_from_slice(chunk);
             out.push(block);
@@ -868,7 +868,7 @@ impl GpuDevice {
                 "clEnqueueReadBuffer(out)",
             )?;
             let mut out = Vec::with_capacity(n);
-            for chunk in out_flat.chunks_exact(128).take(n) {
+            for chunk in out_flat.as_chunks::<128>().0.iter().take(n) {
                 let mut block = [0u64; 128];
                 block.copy_from_slice(chunk);
                 out.push(block);
@@ -907,7 +907,7 @@ impl PendingBatch {
         )?;
         let n = self.n;
         let mut out = Vec::with_capacity(n);
-        for chunk in self.out_flat.chunks_exact(128).take(n) {
+        for chunk in self.out_flat.as_chunks::<128>().0.iter().take(n) {
             let mut block = [0u64; 128];
             block.copy_from_slice(chunk);
             out.push(block);
