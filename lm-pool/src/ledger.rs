@@ -179,6 +179,28 @@ pub struct Ledger {
     last_prune_day: u64,
     #[serde(default)]
     last_prune_hour: u64,
+    /// Compact never-forget records for miners evicted after a full season
+    /// idle (see `prune_rollups`): the bulky day list, liveness, and
+    /// comeback machine are dropped, but lifetime day count, best streak,
+    /// and last active day survive — a returning veteran keeps their
+    /// record, and the maps stay proportional to recent activity instead
+    /// of all-time Sybils on a long public run. Veterans idle two full
+    /// windows drop entirely (a 60-day-gone miner restarts fresh).
+    /// `default` so old state files still load.
+    #[serde(default)]
+    veterans: HashMap<String, VeteranState>,
+}
+
+/// Compact record for a long-idle evicted miner (see `Ledger::veterans`).
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+struct VeteranState {
+    /// Lifetime active days (live days after a return ADD to this; new
+    /// days always sort after `last_day`, so no double-count).
+    days_active: u32,
+    /// Longest consecutive-day run ever (live best takes the max).
+    best_streak_days: u32,
+    /// Last active UTC day before eviction (expiry + overlap guard).
+    last_day: u64,
 }
 
 /// One retained share plus its submit-time comeback weight (per-mille).
@@ -198,6 +220,14 @@ impl Ledger {
     /// into the miner's activity list, feeds the display rollups
     /// (`day_work`/`hour_work`), and prunes raw shares older than
     /// [`SHARE_RETENTION_SECS`] relative to the newest submission.
+    /// The raw deque stays SORTED by timestamp (binary-search insert;
+    /// in-order appends are still O(1)). Server timestamps are ~now, but
+    /// the clock can step backward (NTP, suspend/resume) and histories
+    /// are built explicitly — positional pruning (front pop) and the
+    /// count cap are only correct on a sorted log, so an out-of-order
+    /// share takes its sorted position instead of lingering past the
+    /// retention window at the back. The work always counts exactly as
+    /// submitted — only the position is normalized, never the credit.
     pub fn submit(&mut self, rec: ShareRec) {
         // Index-keyed: clone the miner id only when a map first sees it,
         // not on every share (three per-submit clones used to be the
@@ -258,12 +288,28 @@ impl Ledger {
         }
         self.prune_rollups(rec.ts);
         let cutoff = rec.ts.saturating_sub(SHARE_RETENTION_SECS);
-        self.shares.push_back(StoredShare {
-            rec,
-            comeback_pm: cb,
-        });
-        // Append order ≈ time order, so the oldest records sit at the
-        // front; prune against the newest submission.
+        // Sorted insert: appends (the common case) skip the search.
+        let pos = if self
+            .shares
+            .back()
+            .map(|s| s.rec.ts <= rec.ts)
+            .unwrap_or(true)
+        {
+            self.shares.len()
+        } else {
+            self.shares
+                .binary_search_by(|s| s.rec.ts.cmp(&rec.ts))
+                .unwrap_or_else(|p| p)
+        };
+        self.shares.insert(
+            pos,
+            StoredShare {
+                rec,
+                comeback_pm: cb,
+            },
+        );
+        // Sorted, so the oldest records sit at the front; prune against
+        // the newest submission.
         while let Some(front) = self.shares.front() {
             if front.rec.ts < cutoff {
                 self.shares.pop_front();
@@ -281,6 +327,10 @@ impl Ledger {
 
     /// Drop rollup buckets that can never overlap a future query window.
     /// Runs on day/hour rollover only, so submit stays amortized O(1).
+    /// Also evicts fully-season-idle miners' bulk state (day list,
+    /// liveness, comeback machine) into the compact veteran record —
+    /// without this the per-miner maps grow with every key ever seen on
+    /// a long public run.
     fn prune_rollups(&mut self, now_ts: u64) {
         let day = day_index(now_ts);
         if day != self.last_prune_day {
@@ -292,6 +342,29 @@ impl Ledger {
                 });
                 !days.is_empty()
             });
+            let idle_cutoff = now_ts.saturating_sub(SEASON_WINDOW_SECS);
+            let evict: Vec<String> = self
+                .last_seen
+                .iter()
+                .filter(|(_, seen)| **seen < idle_cutoff)
+                .map(|(miner, _)| miner.clone())
+                .collect();
+            for miner in evict {
+                if let Some(days) = self.days.remove(&miner) {
+                    // Clone: eviction runs at most once per miner per day.
+                    let v = self.veterans.entry(miner.clone()).or_default();
+                    // Live days always sort after last_day (a 30-day gap
+                    // is enforced before eviction), so adding is exact.
+                    v.days_active = v.days_active.saturating_add(days.len() as u32);
+                    v.best_streak_days = v.best_streak_days.max(best_streak(&days));
+                    v.last_day = v.last_day.max(days.last().copied().unwrap_or(0));
+                }
+                self.last_seen.remove(&miner);
+                self.comeback.remove(&miner);
+            }
+            // Veterans gone two full windows drop entirely.
+            let vet_cutoff = day_index(now_ts.saturating_sub(2 * SEASON_WINDOW_SECS));
+            self.veterans.retain(|_, v| v.last_day >= vet_cutoff);
         }
         let hour = now_ts / 3600;
         if hour != self.last_prune_hour {
@@ -749,6 +822,117 @@ mod tests {
     }
 
     #[test]
+    fn idle_miner_bulk_state_evicts_into_veterans() {
+        let mut l = Ledger::new();
+        // m1: 5 consecutive days, then silence. m2: stays active.
+        for d in 10..=14u64 {
+            l.submit(rec("m1", d, 100));
+        }
+        l.submit(rec("m2", 10, 100));
+        // 40 days later m2 submits: m1 has been idle a full season window.
+        l.submit(rec("m2", 50, 100));
+        assert!(!l.days.contains_key("m1"), "m1 day list evicted");
+        assert!(!l.last_seen.contains_key("m1"), "m1 liveness evicted");
+        assert!(!l.comeback.contains_key("m1"), "m1 comeback evicted");
+        assert!(l.days.contains_key("m2"), "active miner kept");
+        // The record survives as a veteran: 5 lifetime days, best 5,
+        // current streak 0 (idle far past the 48 h gap).
+        let out = l.streaks(50 * D + 100);
+        let m1 = out
+            .iter()
+            .find(|s| s.miner == "m1")
+            .expect("veteran listed");
+        assert_eq!(
+            (m1.days_active, m1.streak_days, m1.best_streak_days),
+            (5, 0, 5)
+        );
+        // A returning veteran merges: new days add to the lifetime count,
+        // the old best stands until beaten.
+        l.submit(rec("m1", 51, 100));
+        l.submit(rec("m1", 52, 100));
+        let out = l.streaks(52 * D + 100);
+        let m1 = out
+            .iter()
+            .find(|s| s.miner == "m1")
+            .expect("returnee listed");
+        assert_eq!(m1.days_active, 7);
+        assert_eq!(m1.streak_days, 2);
+        assert_eq!(m1.best_streak_days, 5);
+        // Veterans gone two full windows drop entirely.
+        l.submit(rec("m2", 130, 100));
+        let out = l.streaks(130 * D + 100);
+        assert!(
+            out.iter().all(|s| s.miner != "m1"),
+            "ancient veteran dropped"
+        );
+    }
+
+    #[test]
+    fn ten_thousand_idle_miners_stay_bounded() {
+        // Sybil/keygen spray on a long public run: 10k one-share miners,
+        // then 40 idle days. Bulk state must evict (no day lists, no
+        // comeback machines for the spray), leaving only compact veteran
+        // records — and after two full windows of continued idleness the
+        // spray is gone entirely while the active miner's record stands.
+        let mut l = Ledger::new();
+        for i in 0..10_000u32 {
+            l.submit(rec(&format!("spray{i}"), 1, 1));
+        }
+        l.submit(rec("real", 1, 100));
+        for d in 2..=41u64 {
+            l.submit(rec("real", d, 100));
+        }
+        assert!(!l.days.contains_key("spray0"), "spray bulk state evicted");
+        let sized41 = serde_json::to_string(&l).expect("serialize").len();
+        // ~10k compact veteran records: bounded hundreds of KB, and —
+        // critically — a second identical wave must NOT double it.
+        assert!(sized41 < 1_000_000, "veterans not compact: {sized41} bytes");
+        for i in 0..10_000u32 {
+            l.submit(rec(&format!("wave2-{i}"), 42, 1));
+        }
+        for d in 43..=82u64 {
+            l.submit(rec("real", d, 100));
+        }
+        let sized82 = serde_json::to_string(&l).expect("serialize").len();
+        assert!(
+            sized82 < sized41 + 1_000_000,
+            "ledger grows cumulatively per spray wave: {sized41} -> {sized82}"
+        );
+        l.submit(rec("real", 200, 100));
+        let json = serde_json::to_string(&l).expect("serialize");
+        assert!(!json.contains("spray"), "ancient spray fully expired");
+        assert!(!json.contains("wave2"), "second wave fully expired");
+        let out = l.streaks(200 * D + 100);
+        assert!(out.iter().any(|s| s.miner == "real"), "active miner kept");
+    }
+
+    #[test]
+    fn backward_clock_steps_do_not_break_tail_order() {
+        // NTP/suspend can stamp a share older than the newest: it takes
+        // its sorted position (so retention pruning reaches it) with its
+        // timestamp AND work intact — never lingering out of window.
+        let mut l = Ledger::new();
+        l.submit(rec("m1", 30, 100));
+        l.submit(rec("m1", 10, 100));
+        l.submit(rec("m1", 31, 100));
+        let ts: Vec<u64> = l.shares.iter().map(|s| s.rec.ts).collect();
+        assert_eq!(
+            ts,
+            vec![10 * D + 100, 30 * D + 100, 31 * D + 100],
+            "sorted, timestamps kept"
+        );
+        assert_eq!(l.shares.len(), 3, "backdated work still counts");
+        // A far-future jump then prunes everything behind the window.
+        l.submit(rec("m1", 100, 100));
+        assert!(
+            l.shares
+                .iter()
+                .all(|s| s.rec.ts >= 100 * D - SHARE_RETENTION_SECS),
+            "retention prune reaches every record"
+        );
+    }
+
+    #[test]
     fn rollups_survive_a_state_save_load_cycle() {
         let mut l = Ledger::new();
         l.submit(rec("m1", 1, 1000));
@@ -982,14 +1166,35 @@ impl Ledger {
             .iter()
             .map(|(miner, days)| {
                 let last_ts = self.last_seen.get(miner).copied().unwrap_or(0);
+                // Returning veterans keep their folded record: new days
+                // always sort after the veteran's last_day, so adding the
+                // lifetime count is exact; best takes the max.
+                let (base_days, base_best) = self
+                    .veterans
+                    .get(miner)
+                    .map(|v| (v.days_active, v.best_streak_days))
+                    .unwrap_or((0, 0));
                 StreakState {
                     miner: miner.clone(),
-                    days_active: days.len() as u32,
+                    days_active: (days.len() as u32).saturating_add(base_days),
                     streak_days: current_streak(days, last_ts, now_ts),
-                    best_streak_days: best_streak(days),
+                    best_streak_days: best_streak(days).max(base_best),
                 }
             })
             .collect();
+        // Evicted veterans with no live state still report (streak 0 by
+        // the 48 h gap rule — they have been idle a full season) so a
+        // returning miner's record survives instead of vanishing.
+        for (miner, v) in self.veterans.iter() {
+            if !self.days.contains_key(miner) {
+                out.push(StreakState {
+                    miner: miner.clone(),
+                    days_active: v.days_active,
+                    streak_days: 0,
+                    best_streak_days: v.best_streak_days,
+                });
+            }
+        }
         out.sort_by(|a, b| a.miner.cmp(&b.miner));
         out
     }
