@@ -205,7 +205,7 @@ class MiningService : Service() {
         const val DEFAULT_POOL_V2 = "luckylode.cc:3347"
 
         /** The official pool's published V2 authority URL key (responder pin). */
-        const val DEFAULT_V2_AUTHORITY = "9bzFz1Zf5AeQz51XqEcokUtip8P2Ci5DCeBRjoRpnLqnUWC74nn"
+        const val DEFAULT_V2_AUTHORITY = "9b1CnVKeCNT4Wj8LowjtV1YAG2iyzL3te7qqZK5j63t7yMrJ8wd"
 
         /** The official pool's public dashboard API (nginx-proxied). */
         const val POOL_STATS_URL = "https://luckylode.cc/pool/api/stats"
