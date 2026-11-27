@@ -22,6 +22,12 @@ pre-1.0; minor versions may change APIs.
 - `--version` on every binary; per-binary CLI contract tests.
 - Contributor setup for node, wallet, Android and a local regtest stack;
   pool/explorer API reference (`guides/api.md`); READMEs for every crate.
+- Node: a draw-assembly regtest suite (`qa/draw_assembly_test.sh`) covering
+  entrant enumeration, liveness/tenure, claims, credit-once, reorg
+  conservation, revocation and the winner-script collision rule; the
+  weekly node CI build runs it.
+- Pool: `--v2-authority-key-file` keeps the V2 authority secret in a
+  0600 file instead of the command line/unit file.
 
 ### Changed
 
@@ -40,6 +46,20 @@ pre-1.0; minor versions may change APIs.
   the wallet and mobile facade.
 - CI: wallet job (tests + clippy + frontend build), CPU-only and
   `lm-mobile` checks.
+- Pool: state files are version-checked on load, dust balances are held
+  below 0.001 when no threshold is configured, and conflicting
+  pot/jackpot divisor flags refuse to start instead of serving templates
+  the node rejects.
+- Miner: eight consecutive rejects on one endpoint rotate to the next
+  fallback pool.
+- Explorer: solo/staker draw claims are indexed from the chain, reorgs
+  drop the height's game row, and header details backfill from the sync
+  loop (this fork's nonce is a 64-char hex string).
+- Wallet solo mining re-reads HD cursors on every template fetch.
+- Android 0.3.1 carries the rotated V2 authority pin.
+- Node: `-prune` is refused on LuckyHash chains (pruned nodes cannot
+  validate draw claims); the identity/address index carries a persisted
+  format version and fails closed on a mismatch.
 
 ### Fixed
 
@@ -55,6 +75,14 @@ pre-1.0; minor versions may change APIs.
   `<=` target comparison, four-seed fair-launch wording.
 - Mutex poisoning could cascade through pool/wallet threads (206 lock
   sites now recover instead of panicking).
+- Faucet: state-changing GET removed (POST-only), exact sat amounts, the
+  per-IP window trusts only the proxy-appended address, and the listener
+  is connection-capped.
+- Node: the PBaaS block cache is keyed by claim-awareness, so GBT and
+  the internal miner no longer share a template that silently forfeited
+  or leaked claims; zero-value claim legs are not emitted; the `lucky`
+  CLI carries the Lucky Lode emission schedules (no more empty-era
+  segfault).
 
 ### Removed
 

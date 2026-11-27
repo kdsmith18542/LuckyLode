@@ -111,9 +111,17 @@ testnet incident or a known gap):**
   zero identities, so the node rejected valid prize claims and stalled
   until a full `-reindex`. `-reindex-chainstate` is not enough once the
   address/identity index drifts.
-- **Node repo CI:** the fork gets its own build + KAT-gate CI (all four
+- **Node repo CI:** the fork gets its own build + KAT-gate CI (all eight
   KAT gates) before the countdown — consensus-critical code must not
-  depend on one machine's build ritual.
+  depend on one machine's build ritual. The weekly job also builds a
+  clean tree and runs the draw-assembly regtest suite (identity draw
+  path: claims, credit-once, reorg conservation, revocation, collision).
+- **Archival validation (added 2026-11-27):** LuckyHash nodes refuse
+  `-prune`. The Luckynode Draw resolves winner tenure through historical
+  identity data; a pruned node would silently compute a different
+  entrant set and fork away from archival nodes. Full `-reindex` (not
+  `-reindex-chainstate`) remains mandatory after any index-affecting
+  change.
 - **Registry persistence decision — SUPERSEDED by the consensus cutover
   (doc 06 §6.7 rev 1.3):** registration is an on-chain `ln-*` identity
   and liveness is an identity update — no pool-side registry exists to

@@ -66,9 +66,12 @@ consensus; the frozen strings below are called out precisely because they
   hard-coded a dev box's conf override as its default and would have
   missed every fresh user's node).
 - **Official pool stratum ports (recorded 2026-10-18):** V1 **3346**,
+  V1-over-TLS **3443** (second bind; the main port stays plaintext),
   V2 (Noise NX) **3347**. The V2 endpoint pins a stable authority key
   whose URL form the pool prints at startup and publishes on the
-  dashboard; clients pin that key as the responder certificate.
+  dashboard; clients pin that key as the responder certificate. The
+  authority secret lives in a 0600 file on the host
+  (`--v2-authority-key-file`), never in the unit or command line.
 
 ## 13.4 Doc numbering
 
