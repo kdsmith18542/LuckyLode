@@ -172,7 +172,7 @@ footer{margin-top:26px;color:var(--dim);font-size:12px;line-height:1.5}
     <label>threshold (<span class="mtick">tLKYL</span>) <input id="mthr" placeholder="pool default" style="max-width:130px"></label>
     <button class="tabbtn" id="msave">Save</button>
   </div>
-  <p style="color:var(--dim);font-size:12px">Payouts send automatically once your balance reaches the threshold. Leave the address empty (or the threshold at 0) to use the defaults. The threshold is a decimal coin amount (empty clears the override); anything else is rejected, not silently cleared.</p>
+  <p style="color:var(--dim);font-size:12px">Payouts send automatically once your balance reaches the threshold. Leave the address empty (or the threshold at 0) to use the defaults. The threshold is a decimal coin amount (empty clears the override); anything else is rejected, not silently cleared. With no threshold set anywhere, balances under 0.001 are held as dust (a 1-sat send costs more chain than it delivers).</p>
 </div>
 <div id="mopen" style="display:none;margin-top:12px">
   <p style="color:var(--dim);font-size:12px">Open pool, no worker tokens: your worker name <b>is</b> the payout destination (point it at your address), the pool default threshold applies, and these numbers are public to anyone who asks for this worker. Custom payout settings need a token pool.</p>
@@ -1559,11 +1559,13 @@ struct PoolState {
     shares: lm_pool::ledger::Ledger,
 }
 
-/// State-file version. v2 was the luckynode registry ID-binding fix
-/// (P1 takeover fix, `register_bound`): the registry is deleted with the
-/// pool-era draw loop, so no registry content restores anymore — old
-/// files' draw/registry/prize_pool keys are ignored on load, everything
-/// else still loads.
+/// State-file version, ENFORCED on load: `load_state` refuses to boot a
+/// file whose version differs (a mismatched ledger must never silently
+/// load — balances could mean different things). v2 was the luckynode
+/// registry ID-binding fix (P1 takeover fix, `register_bound`): the
+/// registry is deleted with the pool-era draw loop, so no registry
+/// content restores anymore — old files' draw/registry/prize_pool keys
+/// are ignored on load, everything else still loads.
 const STATE_VERSION: u32 = 2;
 
 /// Resolve the lifetime credited-coinbase total on state-file load.
@@ -1674,6 +1676,27 @@ fn load_state<P: TemplateProvider + 'static>(
     };
     match serde_json::from_str::<PoolState>(&raw) {
         Ok(st) => {
+            if st.version != STATE_VERSION {
+                return Err(format!(
+                    "state file {} has version {}, this build reads version {STATE_VERSION} — refusing to start with a mismatched ledger (balances could mean different things). Restore a matching file or start with --force-fresh.",
+                    path.display(),
+                    st.version
+                ));
+            }
+            if st.credited_total == 0 && st.blocks.len() == lm_stratum::server::BLOCK_HISTORY_CAP {
+                // Seeding the lifetime counter from a FULL (truncated)
+                // history: the pre-counter blocks beyond the cap are gone,
+                // so the payout identity `coinbases == owed + paid + fees`
+                // may carry a permanent pre-counter gap. Loud, not silent —
+                // and never fail closed here: this is the only upgrade path
+                // for pre-counter files on long chains (--force-fresh would
+                // zero the live ledger instead).
+                eprintln!(
+                    "warning: state file {} seeds credited_total from a truncated {}-block history; the payout reconciliation identity may carry a pre-counter gap for blocks before the retained window",
+                    path.display(),
+                    lm_stratum::server::BLOCK_HISTORY_CAP
+                );
+            }
             server.restore_ledger(st.ledger);
             server.restore_names(&st.names);
             server.restore_agents(&st.agents);
@@ -1816,6 +1839,13 @@ fn term_watcher<P: TemplateProvider + 'static>(
 /// nothing debits — the log shows what would have moved.
 /// Miners due for a payout: balance at or above their own threshold, else
 /// the pool's global one payout settings).
+/// Dust floor for IMPLICIT thresholds: with `--payout-threshold 0` ("pay
+/// everything") a 1-sat balance would otherwise trigger a real sendtoaddress
+/// every round, bloating the chain with uneconomical dust UTXOs. Explicit
+/// per-miner thresholds are honored as set (deliberate operator/miner
+/// choice); only the unset case floors at 100k sats.
+const PAYOUT_DUST_FLOOR: u64 = 100_000;
+
 fn due_miners(
     balances: Vec<(String, u64)>,
     settings: &lm_stratum::server::PayoutSettings,
@@ -1824,10 +1854,11 @@ fn due_miners(
     balances
         .into_iter()
         .filter(|(miner, v)| {
-            let t = settings
-                .get(miner.as_str())
-                .and_then(|s| s.threshold)
-                .unwrap_or(global_threshold);
+            let t = match settings.get(miner.as_str()).and_then(|s| s.threshold) {
+                Some(t) => t,
+                None if global_threshold == 0 => PAYOUT_DUST_FLOOR,
+                None => global_threshold,
+            };
             *v > 0 && *v >= t
         })
         .collect()
@@ -1861,7 +1892,16 @@ fn payout_loop<P: TemplateProvider + 'static>(
     loop {
         std::thread::sleep(std::time::Duration::from_secs(cfg.interval_secs.max(10)));
         let settings = server.payout_settings();
-        let due: Vec<(String, u64)> = due_miners(server.balances(), &settings, cfg.threshold);
+        let balances = server.balances();
+        let due: Vec<(String, u64)> = due_miners(balances.clone(), &settings, cfg.threshold);
+        let dusty = balances
+            .iter()
+            .filter(|(_, v)| *v > 0)
+            .count()
+            .saturating_sub(due.len());
+        if dusty > 0 {
+            println!("payout: holding {dusty} dust balance(s) below the payout floor");
+        }
         if due.is_empty() {
             continue;
         }
@@ -1969,9 +2009,11 @@ const USAGE: &str = "usage:
   when set, only listed workers with a matching token may authorize
   (takes precedence over --pool-password)
   both modes accept [--v2-bind HOST:PORT] to serve Stratum V2 (Noise NX +
-  Lucky jobs) alongside V1; [--v2-authority-key HEX64] pins a stable pool
-  authority secret (default: an ephemeral one, printed at startup —
-  miners pinning it must re-pin after every restart);
+  Lucky jobs) alongside V1; [--v2-authority-key HEX64] or
+  [--v2-authority-key-file PATH] (0600, one hex line — keeps the secret
+  out of ps/unit files) pins a stable pool authority secret (default: an
+  ephemeral one, printed at startup — miners pinning it must re-pin after
+  every restart);
   [--v2-cert-validity SECS] sets the responder certificate lifetime
   (default 2592000 = 30 days); miners pass the pool's §4.7 URL key and
   their pool password/token as the V2 device id
@@ -2026,11 +2068,24 @@ fn parse_target(s: &str, flag: &str) -> Result<[u8; 32], String> {
     Ok(t)
 }
 
+/// Read a one-line 64-hex authority secret from a 0600 file. The file
+/// form keeps the secret out of `ps`/unit files (the flag form is still
+/// accepted for compatibility).
+fn read_authority_key_file(path: &std::path::Path) -> Result<String, String> {
+    let raw = std::fs::read_to_string(path)
+        .map_err(|e| format!("--v2-authority-key-file {}: {e}", path.display()))?;
+    raw.lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty() && !line.starts_with('#'))
+        .map(str::to_string)
+        .ok_or_else(|| format!("--v2-authority-key-file {}: no key line", path.display()))
+}
+
 /// Start the V2 listener when `--v2-bind` was given (both modes). A stable
-/// `--v2-authority-key` keeps miner pins valid across restarts; without one
-/// an ephemeral authority is generated and its URL key printed (miners must
-/// re-pin after every restart). Flag errors exit the process, the same
-/// posture as the other bind paths.
+/// `--v2-authority-key` (or `--v2-authority-key-file`) keeps miner pins
+/// valid across restarts; without one an ephemeral authority is generated
+/// and its URL key printed (miners must re-pin after every restart). Flag
+/// errors exit the process, the same posture as the other bind paths.
 /// Optional second V1 bind serving the same pool over TLS (the main
 /// port stays plaintext). Shared by node and mock modes.
 fn maybe_spawn_tls<P: TemplateProvider + 'static>(
@@ -2061,14 +2116,19 @@ fn maybe_spawn_v2<P: TemplateProvider + 'static>(
     server: &mut RunningServer<P>,
     v2_bind: &Option<String>,
     v2_authority_key: &Option<String>,
+    v2_authority_key_file: &Option<std::path::PathBuf>,
     v2_cert_validity: u64,
 ) {
     use lm_stratum::v2_session::{authority_from_secret, authority_url_key, generate_authority};
     let Some(bind) = v2_bind else {
         return;
     };
-    let authority = match v2_authority_key {
-        Some(hex) => {
+    if v2_authority_key.is_some() && v2_authority_key_file.is_some() {
+        eprintln!("error: pass only one of --v2-authority-key and --v2-authority-key-file");
+        std::process::exit(2);
+    }
+    let authority = match (v2_authority_key, v2_authority_key_file) {
+        (Some(hex), _) => {
             let secret = parse_target(hex, "v2-authority-key").unwrap_or_else(|e| {
                 eprintln!("error: {e}");
                 std::process::exit(2);
@@ -2078,9 +2138,23 @@ fn maybe_spawn_v2<P: TemplateProvider + 'static>(
                 std::process::exit(1);
             })
         }
-        None => {
+        (None, Some(path)) => {
+            let hex = read_authority_key_file(path).unwrap_or_else(|e| {
+                eprintln!("error: {e}");
+                std::process::exit(2);
+            });
+            let secret = parse_target(&hex, "v2-authority-key-file").unwrap_or_else(|e| {
+                eprintln!("error: {e}");
+                std::process::exit(2);
+            });
+            authority_from_secret(&secret).unwrap_or_else(|e| {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            })
+        }
+        (None, None) => {
             let authority = generate_authority();
-            println!("v2: no --v2-authority-key: ephemeral authority (pins die on restart)");
+            println!("v2: no authority key: ephemeral authority (pins die on restart)");
             authority
         }
     };
@@ -2174,6 +2248,7 @@ fn main() -> std::process::ExitCode {
     let mut tls_bind: Option<String> = None;
     let mut v2_bind: Option<String> = None;
     let mut v2_authority_key: Option<String> = None;
+    let mut v2_authority_key_file: Option<std::path::PathBuf> = None;
     let mut v2_cert_validity = 2592000u64; // 30 days
     let mut i = 0;
     while i < args.len() {
@@ -2538,6 +2613,14 @@ fn main() -> std::process::ExitCode {
                     std::process::exit(2);
                 }));
             }
+            "--v2-authority-key-file" => {
+                v2_authority_key_file = Some(std::path::PathBuf::from(
+                    next("v2-authority-key-file").unwrap_or_else(|e| {
+                        eprintln!("error: {e}");
+                        std::process::exit(2);
+                    }),
+                ));
+            }
             "--v2-cert-validity" => {
                 v2_cert_validity = parse_u64(
                     &next("v2-cert-validity").unwrap_or_else(|e| {
@@ -2610,10 +2693,15 @@ fn main() -> std::process::ExitCode {
                     .and_then(|v| v.as_u64())
                 {
                     if node_div != v {
+                        // Fail closed: a mismatched divisor builds claim
+                        // templates the node rejects (`bad-cb-amount` on
+                        // every find). Matching flags always agree (regtest
+                        // included), so disagreement is operator error.
                         eprintln!(
-                            "warning: --pot-divisor {v} != node effective divisor {node_div}; \
-                             claims will disagree — remove the flag except on regtest"
+                            "error: --pot-divisor {v} != node effective divisor {node_div}; \
+                             refusing to serve disagreeing claim templates (remove the flag except on regtest)"
                         );
+                        return std::process::ExitCode::from(1);
                     }
                 }
                 v
@@ -2633,9 +2721,10 @@ fn main() -> std::process::ExitCode {
                 {
                     if node_div != v {
                         eprintln!(
-                            "warning: --jackpot-divisor {v} != node effective {node_div}; \
-                             remove the flag except on regtest"
+                            "error: --jackpot-divisor {v} != node effective divisor {node_div}; \
+                             refusing to serve disagreeing claim templates (remove the flag except on regtest)"
                         );
+                        return std::process::ExitCode::from(1);
                     }
                 }
                 v
@@ -2830,7 +2919,13 @@ fn main() -> std::process::ExitCode {
             server.set_dev_fee(addr, dev_fee_pp);
             println!("dev fee: {dev_fee_pp} per-myriad of each block to {addr}");
         }
-        maybe_spawn_v2(&mut server, &v2_bind, &v2_authority_key, v2_cert_validity);
+        maybe_spawn_v2(
+            &mut server,
+            &v2_bind,
+            &v2_authority_key,
+            &v2_authority_key_file,
+            v2_cert_validity,
+        );
         let server = Arc::new(server);
         if let Some(path) = &state_file {
             std::thread::spawn({
@@ -2980,7 +3075,13 @@ fn main() -> std::process::ExitCode {
         if let Some(addr) = &dev_fee_addr {
             server.set_dev_fee(addr, dev_fee_pp);
         }
-        maybe_spawn_v2(&mut server, &v2_bind, &v2_authority_key, v2_cert_validity);
+        maybe_spawn_v2(
+            &mut server,
+            &v2_bind,
+            &v2_authority_key,
+            &v2_authority_key_file,
+            v2_cert_validity,
+        );
         let server = Arc::new(server);
         if let Some(path) = &state_file {
             std::thread::spawn({
@@ -3067,22 +3168,23 @@ mod tests {
     }
 
     #[test]
-    fn zero_global_threshold_makes_every_nonzero_balance_due() {
+    fn zero_global_threshold_floors_dust_but_pays_real_balances() {
         use lm_stratum::server::PayoutSettings;
-        // --payout-threshold 0 means "pay everything": every non-empty
-        // balance is due (empty ones are skipped so they can't stall the
-        // budget loop), with or without per-miner overrides.
+        // --payout-threshold 0 used to mean "pay everything", including
+        // 1-sat dust every round. Unset balances now floor at
+        // PAYOUT_DUST_FLOOR; explicit per-miner thresholds still apply.
         let settings = PayoutSettings::new();
         let due = due_miners(
             vec![
                 ("m1".to_string(), 5),
                 ("m2".to_string(), 0),
                 ("m3".to_string(), 999),
+                ("m4".to_string(), 100_000),
             ],
             &settings,
             0,
         );
-        assert_eq!(due, vec![("m1".to_string(), 5), ("m3".to_string(), 999)]);
+        assert_eq!(due, vec![("m4".to_string(), 100_000)]);
     }
 
     #[test]
@@ -3824,6 +3926,49 @@ mod tests {
         assert!(dir.with_extension("corrupt").exists(), "file moved aside");
         s3.stop();
         let _ = std::fs::remove_file(dir.with_extension("corrupt"));
+
+        // Version mismatch: a file from another loader generation must
+        // never silently load — balances could mean different things.
+        std::fs::write(
+            &dir,
+            r#"{"version":1,"ledger":{"owed":{},"fees":0,"paid":{}},"names":[],"blocks":[]}"#,
+        )
+        .expect("write old-version state");
+        let s4 = spawn_server(
+            MockProvider::new([0xff; 32], [0xff; 32], 1_000, 0),
+            "127.0.0.1:0",
+            None,
+            None,
+            None,
+        )
+        .expect("spawn");
+        let err =
+            load_state(&s4, &dir).expect_err("version-1 state must refuse on a version-2 loader");
+        assert!(err.contains("has version 1"), "{err}");
+        s4.stop();
+        let _ = std::fs::remove_file(&dir);
+    }
+
+    #[test]
+    fn authority_key_file_reads_first_hex_line() {
+        let dir = std::env::temp_dir().join("pool-authority-key-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("dir");
+        let path = dir.join("authority.key");
+        // Comments/blank leading lines are skipped; the first key line wins.
+        std::fs::write(&path, "# v2 authority\n\n  abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789  \nsecond\n")
+            .expect("write");
+        assert_eq!(
+            read_authority_key_file(&path).expect("read"),
+            "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+        );
+        std::fs::write(&path, "# only comments\n\n").expect("write empty");
+        assert!(
+            read_authority_key_file(&path).is_err(),
+            "empty file fails closed"
+        );
+        assert!(read_authority_key_file(&dir.join("missing")).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

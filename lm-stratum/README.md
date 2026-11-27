@@ -87,8 +87,9 @@ This is the reference implementation; run it on testnet knowing:
 - **Work-identity dedupe is windowed** (2^16 identities). A replay older
   than the window can pass; accepted as the reference trade-off.
 - **Stratum V1 is the default wire; V2 serves alongside it** behind flags
-  (pool `--v2-bind [--v2-authority-key HEX --v2-cert-validity SECS]`,
-  miner `pool --v2 --v2-authority URLKEY|HEX`): Noise NX handshake with
+  (pool `--v2-bind [--v2-authority-key HEX | --v2-authority-key-file PATH
+  --v2-cert-validity SECS]`, miner `pool --v2 --v2-authority URLKEY|HEX`):
+  Noise NX handshake with
   authority pinning, `SetupConnection` negotiation, any number of
   standard channels per encrypted session (per-channel payer/vardiff;
   `CloseChannel` drops one, the connection serves on), `LuckyJob`
