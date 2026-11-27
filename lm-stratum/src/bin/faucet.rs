@@ -1,10 +1,10 @@
 //! Testnet faucet: drip small amounts to miners' addresses (runbook §5).
 //!
 //! Serves a branded form at `/` and `POST /api/drip {"address": ADDR}`
-//! (GET `?address=` kept as a compatible alias). Each address may drip
-//! once per `--per-address-secs` (default 24 h) AND each client IP once
-//! per the same window, so a keypair-per-address keygen spray still
-//! throttles at the IP layer. There is deliberately no CAPTCHA: it needs
+//! (state-changing GET was removed: crawlers mint drips). Each address
+//! may drip once per `--per-address-secs` (default 24 h) AND each client
+//! IP once per the same window, so a keypair-per-address keygen spray
+//! still throttles at the IP layer. There is deliberately no CAPTCHA: it
 //! a provider account/keys the project has not chosen. Amounts
 //! come from the node wallet via `sendtoaddress`, so run it against a
 //! funded testnet wallet — never mainnet, never with real value.
@@ -117,6 +117,73 @@ fn now() -> u64 {
         .unwrap_or(0)
 }
 
+/// One coin = 10^8 sats, integer money everywhere past the CLI.
+const SATS_PER_COIN: u64 = 100_000_000;
+/// Hard ceiling on a single drip: a typo must never drain the reserve
+/// (~100 drips would empty the 100k testnet seed at the ceiling).
+const MAX_DRIP_SATS: u64 = 100 * SATS_PER_COIN;
+
+/// Parse a `--amount` decimal string to exact sats. Rejects NaN/infinity
+/// (f64 back-ends accept both), non-positive, sub-sat dust, and anything
+/// over the ceiling — all fail closed at startup, never at drip time.
+fn parse_amount_sats(s: &str) -> Result<u64, String> {
+    let v: f64 = s
+        .parse()
+        .map_err(|_| format!("--amount expects a number, got {s:?}"))?;
+    if !v.is_finite() || v <= 0.0 {
+        return Err("--amount must be a finite positive number".to_string());
+    }
+    let sats = (v * SATS_PER_COIN as f64).round() as u64;
+    if sats == 0 {
+        return Err("--amount is below one sat".to_string());
+    }
+    if sats > MAX_DRIP_SATS {
+        return Err(format!(
+            "--amount exceeds the {MAX} coin per-drip ceiling",
+            MAX = MAX_DRIP_SATS / SATS_PER_COIN
+        ));
+    }
+    // Decimal-place guard: the string must mean exactly this many sats
+    // (no silent f64 rounding between the flag and the send). Trailing
+    // zeros are harmless and trimmed before counting.
+    let decimals = s
+        .split('.')
+        .nth(1)
+        .map(|f| f.trim_end_matches('0').len())
+        .unwrap_or(0);
+    if decimals > 8 {
+        return Err(format!("--amount {s:?} has more than 8 decimal places"));
+    }
+    Ok(sats)
+}
+
+/// Format sats as a plain decimal coin string (exact — no f64).
+fn coins(sats: u64) -> String {
+    if sats.is_multiple_of(SATS_PER_COIN) {
+        format!("{}", sats / SATS_PER_COIN)
+    } else {
+        let s = format!("{}.{:08}", sats / SATS_PER_COIN, sats % SATS_PER_COIN);
+        s.trim_end_matches('0').to_string()
+    }
+}
+
+/// Client IP for the per-IP window. When the peer is loopback the
+/// connection came via the local reverse proxy, which appends the real
+/// client IP (`$remote_addr`) to X-Forwarded-For — so the LAST entry is
+/// the one the proxy saw and the earlier ones are client-controlled.
+/// On any other peer XFF is attacker-controlled and ignored entirely:
+/// the peer IP is the limit key.
+fn client_ip(peer_ip: &str, peer_is_loopback: bool, xff: Option<&str>) -> String {
+    if peer_is_loopback {
+        if let Some(x) = xff {
+            if let Some(last) = x.split(',').map(str::trim).rfind(|s| !s.is_empty()) {
+                return last.to_string();
+            }
+        }
+    }
+    peer_ip.to_string()
+}
+
 #[derive(Debug, Default)]
 struct Limits {
     /// address -> last drip unix time
@@ -181,12 +248,27 @@ impl Limits {
     fn save(&self, path: &Path) {
         let tmp = path.with_extension("tmp");
         let body = serde_json::json!({"addresses": self.last, "ips": self.ips});
+        // Durability (same pattern as the pool state save): write, fsync
+        // the file, rename, fsync the directory. Without the syncs a
+        // crash can lose the rate limits and reopen every address.
         let result = serde_json::to_vec(&body)
             .map_err(|e| e.to_string())
             .and_then(|text| {
-                std::fs::write(&tmp, text)
-                    .and_then(|_| std::fs::rename(&tmp, path))
-                    .map_err(|e| e.to_string())
+                (|| -> std::io::Result<()> {
+                    use std::io::Write as _;
+                    let mut f = std::fs::File::create(&tmp)?;
+                    f.write_all(&text)?;
+                    f.sync_all()?;
+                    drop(f);
+                    std::fs::rename(&tmp, path)?;
+                    if let Some(dir) = path.parent() {
+                        if let Ok(d) = std::fs::File::open(dir) {
+                            let _ = d.sync_all();
+                        }
+                    }
+                    Ok(())
+                })()
+                .map_err(|e| e.to_string())
             });
         if let Err(e) = result {
             // Loud: a lost rate-limit file reopens every address.
@@ -221,7 +303,7 @@ impl Limits {
 
 struct Ctx {
     rpc: RpcClient,
-    amount: f64,
+    amount_sats: u64,
     period: u64,
     state_file: Option<PathBuf>,
     limits: Mutex<Limits>,
@@ -234,38 +316,6 @@ fn respond(stream: &mut TcpStream, code: &str, ctype: &str, body: &str) {
         body
     );
     let _ = stream.write_all(resp.as_bytes());
-}
-
-fn query_param(path: &str, key: &str) -> Option<String> {
-    let q = path.split_once('?')?.1;
-    for pair in q.split('&') {
-        let (k, v) = pair.split_once('=')?;
-        if k == key {
-            return Some(v.replace('+', " ").chars().collect::<String>());
-        }
-    }
-    None
-}
-
-// Minimal percent-decoding for addresses (base58 has no reserved chars,
-// but be lenient).
-fn url_decode(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let mut it = s.as_bytes().iter().peekable();
-    while let Some(&b) = it.next() {
-        if b == b'%' {
-            let h: String = it.by_ref().take(2).map(|c| *c as char).collect();
-            if let Ok(v) = u8::from_str_radix(&h, 16) {
-                out.push(v as char);
-                continue;
-            }
-            out.push('%');
-            out.push_str(&h);
-        } else {
-            out.push(b as char);
-        }
-    }
-    out
 }
 
 fn handle(mut stream: TcpStream, ctx: &Ctx) {
@@ -327,44 +377,34 @@ fn handle(mut stream: TcpStream, ctx: &Ctx) {
             }
         }
     }
-    // Client IP for the per-IP window: X-Forwarded-For when present
-    // (production nginx sets it — see the runbook), else the peer.
-    // Direct spoofed XFF is accepted only because the loopback/no-proxy
-    // path is operator-only; the public path always comes via nginx.
-    let mut ip = stream
-        .peer_addr()
+    // Client IP for the per-IP window: the LAST X-Forwarded-For entry,
+    // but only when the peer is loopback (i.e. the connection came via
+    // the local reverse proxy, which appends the real client IP). On any
+    // other peer XFF is attacker-controlled and ignored entirely.
+    let peer = stream.peer_addr().ok();
+    let peer_ip = peer
+        .as_ref()
         .map(|a| a.ip().to_string())
         .unwrap_or_default();
+    let peer_is_loopback = peer.as_ref().map(|a| a.ip().is_loopback()).unwrap_or(false);
+    let mut xff: Option<&str> = None;
     for line in req.lines().skip(1) {
         let line = line.trim_end_matches('\r');
         if line.is_empty() {
             break;
         }
-        if let Some(v) = line.strip_prefix("X-Forwarded-For:") {
-            if let Some(first) = v.split(',').next() {
-                let f = first.trim().to_string();
-                if !f.is_empty() {
-                    ip = f;
-                }
-            }
-            break;
-        } else if let Some(v) = line.strip_prefix("x-forwarded-for:") {
-            if let Some(first) = v.split(',').next() {
-                let f = first.trim().to_string();
-                if !f.is_empty() {
-                    ip = f;
-                }
-            }
+        if let Some(v) = line
+            .strip_prefix("X-Forwarded-For:")
+            .or_else(|| line.strip_prefix("x-forwarded-for:"))
+        {
+            xff = Some(v);
             break;
         }
     }
+    let ip = client_ip(&peer_ip, peer_is_loopback, xff);
 
     if path == "/" || path.starts_with("/?") {
-        let amount = if ctx.amount.fract() == 0.0 {
-            format!("{}", ctx.amount as i64)
-        } else {
-            format!("{}", ctx.amount)
-        };
+        let amount = coins(ctx.amount_sats);
         // Live faucet reserve (best-effort: the page renders regardless).
         let reserve = ctx
             .rpc
@@ -387,23 +427,31 @@ fn handle(mut stream: TcpStream, ctx: &Ctx) {
         return;
     }
 
-    // Drips are state-changing: POST with a JSON body is the real API
-    // (`{"address": "..."}`); GET `api/drip?address=` stays as a
-    // compatible alias for the page/docs (never linked anywhere, so
-    // prefetch risk stays theoretical; the per-address window bounds any
-    // accidental hit to one drip). CAPTCHA is deliberately absent: it
-    // needs a provider account/keys the project has not chosen — per-IP
-    // windows are the anti-spray layer until then.
-    if let Some(rest) = path.strip_prefix("/api/drip") {
-        let mut address = query_param(rest, "address").unwrap_or_default();
-        if method == "POST" && !body.trim().is_empty() {
+    // Drips are state-changing: POST with a JSON body is the ONLY API
+    // (`{"address": "..."}`). GET used to be a compatible alias but a
+    // state-changing GET is a crawler/prefetch drip machine, so it now
+    // answers 405. CAPTCHA is deliberately absent: it needs a provider
+    // account/keys the project has not chosen — per-IP windows are the
+    // anti-spray layer until then.
+    if path.strip_prefix("/api/drip").is_some() {
+        if method != "POST" {
+            respond(
+                &mut stream,
+                "405 Method Not Allowed",
+                "application/json",
+                r#"{"ok":false,"error":"use POST api/drip"}"#,
+            );
+            return;
+        }
+        let mut address = String::new();
+        if !body.trim().is_empty() {
             if let Ok(v) = serde_json::from_str::<serde_json::Value>(&body) {
                 if let Some(a) = v.get("address").and_then(|a| a.as_str()) {
                     address = a.to_string();
                 }
             }
         }
-        let address = url_decode(&address).trim().to_string();
+        let address = address.trim().to_string();
         if address.is_empty() || address.len() > 64 {
             respond(
                 &mut stream,
@@ -447,9 +495,11 @@ fn handle(mut stream: TcpStream, ctx: &Ctx) {
             );
             return;
         }
+        // Decimal string, not f64: the node parses it exactly.
+        let amount_str = coins(ctx.amount_sats);
         match ctx
             .rpc
-            .call("sendtoaddress", serde_json::json!([address, ctx.amount]))
+            .call("sendtoaddress", serde_json::json!([address, amount_str]))
         {
             Ok(txid) => {
                 limits.last.insert(address.clone(), t);
@@ -463,7 +513,8 @@ fn handle(mut stream: TcpStream, ctx: &Ctx) {
                 let body = serde_json::json!({
                     "ok": true,
                     "address": address,
-                    "amount": ctx.amount,
+                    "amount": ctx.amount_sats as f64 / SATS_PER_COIN as f64,
+                    "amount_sats": ctx.amount_sats,
                     "txid": txid,
                 })
                 .to_string();
@@ -495,7 +546,7 @@ fn main() -> ExitCode {
     let mut rpc_user = "u".to_string();
     let mut rpc_pass = "p".to_string();
     let mut bind: Option<String> = None;
-    let mut amount = 1.0f64;
+    let mut amount_sats = SATS_PER_COIN; // default 1.0
     let mut period = 86_400u64;
     let mut state_file: Option<PathBuf> = None;
     let mut allow_mainnet = false;
@@ -532,17 +583,16 @@ fn main() -> ExitCode {
                 }))
             }
             "--amount" => {
-                amount = next("amount")
-                    .and_then(|v| v.parse().map_err(|_| "--amount expects a number".into()))
-                    .unwrap_or_else(|e| {
+                let raw = next("amount").unwrap_or_else(|e| {
+                    eprintln!("error: {e}");
+                    std::process::exit(2);
+                });
+                match parse_amount_sats(&raw) {
+                    Ok(sats) => amount_sats = sats,
+                    Err(e) => {
                         eprintln!("error: {e}");
-                        std::process::exit(2);
-                    });
-                // NaN passes `<= 0.0` and fails later at sendtoaddress;
-                // infinity would drip the universe. Reject both up front.
-                if !amount.is_finite() || amount <= 0.0 {
-                    eprintln!("error: --amount must be a finite positive number");
-                    return ExitCode::from(2);
+                        return ExitCode::from(2);
+                    }
                 }
             }
             "--per-address-secs" => {
@@ -613,7 +663,7 @@ fn main() -> ExitCode {
     }
     let ctx = Arc::new(Ctx {
         rpc,
-        amount,
+        amount_sats,
         period,
         state_file,
         limits: Mutex::new(limits),
@@ -625,10 +675,39 @@ fn main() -> ExitCode {
             return ExitCode::from(1);
         }
     };
-    println!("faucet on http://{bind}/ ({amount} per drip, one per {period}s per address)");
+    println!(
+        "faucet on http://{bind}/ ({} per drip, one per {period}s per address and per IP)",
+        coins(amount_sats)
+    );
+    // Bounded threads like the pool HTTP listener: an 8k-socket flood
+    // must 503, not OOM the process (loopback-behind-nginx today, but
+    // the guard is cheap).
+    let active: Arc<std::sync::atomic::AtomicUsize> =
+        Arc::new(std::sync::atomic::AtomicUsize::new(0));
     for stream in listener.incoming().flatten() {
+        if active.load(std::sync::atomic::Ordering::SeqCst) >= 64 {
+            eprintln!(
+                "faucet: connection cap hit, 503 for peer {}",
+                stream
+                    .peer_addr()
+                    .map(|a| a.to_string())
+                    .unwrap_or_else(|_| "?".to_string())
+            );
+            let mut stream = stream;
+            use std::io::Write as _;
+            let _ = writeln!(
+                stream,
+                "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            );
+            continue;
+        }
+        active.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let ctx = Arc::clone(&ctx);
-        std::thread::spawn(move || handle(stream, &ctx));
+        let active = Arc::clone(&active);
+        std::thread::spawn(move || {
+            handle(stream, &ctx);
+            active.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+        });
     }
     ExitCode::SUCCESS
 }
@@ -673,6 +752,38 @@ mod tests {
         assert_eq!(back.wait("m9", 86_400, 12_345), 86_400);
         assert!(back.ips.is_empty());
         let _ = std::fs::remove_file(&dir);
+    }
+
+    #[test]
+    fn amount_parsing_is_exact_and_capped() {
+        assert_eq!(parse_amount_sats("10").expect("int"), 1_000_000_000);
+        assert_eq!(parse_amount_sats("0.00000001").expect("dust"), 1);
+        assert_eq!(parse_amount_sats("100").expect("ceiling"), 10_000_000_000);
+        assert!(parse_amount_sats("100.00000001").is_err(), "over ceiling");
+        assert!(parse_amount_sats("0").is_err(), "non-positive");
+        assert!(parse_amount_sats("-5").is_err(), "negative");
+        assert!(parse_amount_sats("NaN").is_err(), "NaN");
+        assert!(parse_amount_sats("inf").is_err(), "infinity");
+        assert!(parse_amount_sats("abc").is_err(), "not a number");
+        assert!(parse_amount_sats("0.000000001").is_err(), "sub-sat");
+        assert!(parse_amount_sats("1.123456789").is_err(), "9 decimals");
+        assert_eq!(coins(1_000_000_000), "10");
+        assert_eq!(coins(10), "0.0000001");
+        assert_eq!(coins(100_000_000), "1");
+    }
+
+    #[test]
+    fn client_ip_trusts_only_proxy_seen_address() {
+        // Loopback peer (via nginx): last XFF entry wins (proxy-appended),
+        // earlier entries are client-controlled and ignored.
+        assert_eq!(
+            client_ip("127.0.0.1", true, Some("9.9.9.9, 8.8.8.8, 1.2.3.4")),
+            "1.2.3.4"
+        );
+        assert_eq!(client_ip("127.0.0.1", true, None), "127.0.0.1");
+        // Direct peer: XFF ignored entirely, even when present.
+        assert_eq!(client_ip("5.6.7.8", false, Some("9.9.9.9")), "5.6.7.8");
+        assert_eq!(client_ip("5.6.7.8", false, None), "5.6.7.8");
     }
 
     #[test]
