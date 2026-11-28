@@ -24,6 +24,16 @@ Verus/Komodo/Zcash code that are not reachable from Lucky Lode's
 configuration (report those upstream — the node repository retains
 their `responsible_disclosure.md`).
 
+## Known upstream advisories
+
+- **`glib` 0.18.x — GHSA-wrw7-89jp-8q8g (medium).** The Linux desktop
+  wallet pulls `glib` 0.18 through Tauri's GTK 0.18 bindings. Its
+  `VariantStrIter` implementation is unsound and can crash optimized
+  builds with a NULL dereference; the fix ships in `glib` 0.20, which
+  the GTK 0.18 stack cannot consume. Wallet code does not use
+  `VariantStrIter`; exposure is limited to GTK internals. The advisory
+  is tracked for removal when Tauri moves to gtk-rs 0.20.
+
 ## Handling
 
 Reports are triaged as they arrive. Consensus-relevant findings are
